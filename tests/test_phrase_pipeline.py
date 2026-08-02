@@ -10,16 +10,20 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import main as main_module
-from config.settings import AUDIO_DIR
 from src.db.staging_db import DatabaseManager
 
 
 @pytest.fixture
 def phrase_environment(tmp_path: Path, monkeypatch):
-    # Isolate the real audio dir: stale phrase_* files from earlier tests
-    # would short-circuit the existing-file check in generate_audio_file.
-    for stale in AUDIO_DIR.glob("phrase_*"):
-        stale.unlink(missing_ok=True)
+    # Redirect ALL AudioGenerator output to a per-test tmp dir so tests
+    # never read or write the production data/audio directory.
+    audio_dir = tmp_path / "audio"
+    init_defaults = main_module.AudioGenerator.__init__.__defaults__
+    monkeypatch.setattr(
+        main_module.AudioGenerator.__init__,
+        "__defaults__",
+        (audio_dir,) + init_defaults[1:]
+    )
     # Sample Kaikki dump with multi-word entries
     kaikki_file = tmp_path / "kaikki.jsonl"
     entries = [
@@ -133,6 +137,43 @@ def test_run_phrase_step_checkpoint_skips(phrase_environment, monkeypatch):
         mock_audio_gen.assert_not_called()
 
     assert stats["phrases"] == 600
+
+
+def test_run_phrase_step_repairs_missing_audio(phrase_environment, monkeypatch):
+    db_manager, db_path = phrase_environment
+    args = argparse.Namespace(force_reset=False)
+
+    # Corrupted state left by a mid-loop crash: phrases exist but audio is
+    # incomplete. The checkpoint must NOT skip — the step must re-run to repair.
+    phrases = [
+        {"phrase": f"checkpoint phrase {i}", "phrase_type": "idiom", "pos": "idiom",
+         "cefr_level": "B1", "difficulty_score": 2.0, "definition_en": "x",
+         "definition_vi": None, "ipa": None,
+         "audio_std": None, "audio_fast": None, "audio_status": "ok"}
+        for i in range(600)
+    ]
+    db_manager.insert_phrases_batch(phrases)
+
+    # Mock edge-tts to write nothing: audio generation runs to completion but
+    # every phrase is marked failed — the point is the step RAN and did not skip.
+    with patch("edge_tts.Communicate.save", new_callable=AsyncMock) as mock_save, \
+         patch.object(main_module, "PhraseParser") as mock_parser:
+        mock_save.side_effect = lambda target_path: None
+
+        stats = main_module.run_phrase_step(db_manager, args)
+
+        # Regression catch: the old count-only checkpoint skipped here
+        mock_parser.assert_called_once()
+
+    # The mocked parser yields no items, so nothing new is ingested
+    assert stats["phrases"] == 0
+
+    # The repair pass rewrote every corrupted row: all 600 pre-seeded phrases
+    # with missing audio got their status updated instead of being skipped
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT count(*) FROM phrases WHERE audio_status = 'failed';")
+    assert cursor.fetchone()[0] == 600
 
 
 def test_run_phrase_step_audio_failure_sets_failed_status(phrase_environment, monkeypatch):
