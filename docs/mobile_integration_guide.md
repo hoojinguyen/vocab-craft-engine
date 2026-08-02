@@ -1,20 +1,20 @@
-# Hướng Dẫn Tích Hợp Cơ Sở Dữ Liệu SQLite Về Di Động (Mobile Integration Guide)
+# Mobile Integration Guide
 
-Tài liệu này hướng dẫn cách nhúng và truy vấn file **`english_dataset.db`** trên các nền tảng di động (iOS, Android, React Native, Flutter) đạt hiệu năng truy vấn siêu tốc (< 5ms).
-
----
-
-## 1. Giới Thiệu File `english_dataset.db`
-
-- **Định dạng:** SQLite 3 (Chế độ `WAL` - Write-Ahead Logging).
-- **Dung lượng ước tính:** ~30 - 60 MB cho 20,000 từ vựng, 50,000 câu ví dụ và 1,000 bài tập phản xạ.
-- **Tính chất:** File dữ liệu tĩnh Read-Only nhúng trực tiếp vào bundle ứng dụng.
+This guide provides step-by-step instructions for embedding and querying the **`english_dataset.db`** SQLite database across mobile platforms (iOS, Android, React Native, Flutter) with high query performance (< 5ms).
 
 ---
 
-## 2. Các Câu Lệnh SQL Truy Vấn Mẫu (Sample SQL Queries)
+## 1. Database Overview
 
-### A. Truy Vấn Bài Tập Phản Xạ Tốc Độ Cao (< 2.5s)
+- **Format:** SQLite 3 (Configured with `WAL` - Write-Ahead Logging mode).
+- **Estimated Size:** ~30 - 60 MB for 20,000 words, 50,000 sentences, 1,000 reflex drills, and 50 dialogue trees.
+- **Access Pattern:** Read-only offline dataset bundled directly into the mobile application asset package.
+
+---
+
+## 2. Sample SQL Queries
+
+### A. High-Speed Reflex Drill Card Query (< 2.5s Target)
 ```sql
 SELECT 
     r.id,
@@ -31,9 +31,9 @@ WHERE s.cefr_level = 'B1' AND r.drill_type = 'speed_translation'
 ORDER BY RANDOM()
 LIMIT 1;
 ```
-*Thời gian phản hồi trên thiết bị: ~1.5ms - 3.2ms.*
+*Average device response latency: 1.5ms – 3.2ms.*
 
-### B. Truy Vấn Cây Hội Thoại Rẽ Nhánh (Branching Dialogue Nodes)
+### B. Branching Dialogue Nodes Query
 ```sql
 SELECT 
     n.id,
@@ -47,7 +47,7 @@ JOIN sentences s ON n.sentence_id = s.id
 WHERE n.tree_id = ? AND (n.parent_node_id = ? OR (? IS NULL AND n.parent_node_id IS NULL));
 ```
 
-### C. Tra Cứu Từ Vựng & Phiên Âm IPA
+### C. Vocabulary & IPA Phonetic Lookup
 ```sql
 SELECT 
     w.lemma,
@@ -65,13 +65,13 @@ LIMIT 1;
 
 ---
 
-## 3. Hướng Dẫn Tích Hợp Trên iOS (Swift / SwiftData / FMDB)
+## 3. iOS Integration (Swift / SwiftData / SQLite3)
 
-### Thêm File DB Vào App Bundle
-1. Kéo thả file `english_dataset.db` vào Xcode project, chọn **Copy items if needed**.
-2. Đảm bảo file nằm trong danh sách **Target Membership**.
+### Adding DB to App Bundle
+1. Drag and drop `english_dataset.db` into your Xcode project navigator and select **Copy items if needed**.
+2. Ensure the database file is checked under **Target Membership**.
 
-### Code Mẫu Tra Cứu (Swift + SQLite3):
+### Swift Query Implementation:
 ```swift
 import Foundation
 import SQLite3
@@ -98,6 +98,7 @@ class DatasetEngine {
         var statement: OpaquePointer?
         if sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK {
             sqlite3_bind_text(statement, 1, (cefr as NSString).utf8String, -1, nil)
+            
             if sqlite3_step(statement) == SQLITE_ROW {
                 let prompt = String(cString: sqlite3_column_text(statement, 0))
                 let answer = String(cString: sqlite3_column_text(statement, 1))
@@ -118,12 +119,12 @@ class DatasetEngine {
 
 ---
 
-## 4. Hướng Dẫn Tích Hợp Trên Android (Kotlin / Room Asset)
+## 4. Android Integration (Kotlin / Room Asset)
 
-### Thêm File DB Vào Assets
-1. Đặt file vào thư mục `app/src/main/assets/databases/english_dataset.db`.
+### Adding DB to Assets
+1. Place the database file under `app/src/main/assets/databases/english_dataset.db`.
 
-### Code Mẫu (Kotlin + Room):
+### Kotlin Implementation (Room Database Asset):
 ```kotlin
 @Database(entities = [WordEntity::class, SentenceEntity::class], version = 1)
 abstract class AppDatabase : RoomDatabase() {
@@ -140,7 +141,7 @@ abstract class AppDatabase : RoomDatabase() {
 
 ---
 
-## 5. Hướng Dẫn Tích Hợp Trên Flutter (sqflite)
+## 5. Flutter Integration (sqflite)
 
 ```dart
 import 'dart:io';
@@ -165,7 +166,7 @@ Future<Database> openDatasetDatabase() async {
 
 ---
 
-## 6. Hướng Dẫn Tích Hợp Trên React Native (expo-sqlite)
+## 6. React Native Integration (expo-sqlite)
 
 ```typescript
 import * as FileSystem from 'expo-file-system';

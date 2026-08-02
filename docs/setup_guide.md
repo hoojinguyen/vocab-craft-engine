@@ -1,20 +1,20 @@
-# Hướng Dẫn Cài Đặt Môi Trường & Chạy Pipeline
+# Environment Setup & Pipeline Execution Guide
 
-Tài liệu này hướng dẫn chi tiết cách thiết lập môi trường phát triển Python, tự động tải dữ liệu thô và chạy pipeline đóng gói dữ liệu cho hệ thống **English Dataset Engine**.
+This document provides step-by-step instructions for setting up the Python environment, downloading raw linguistic datasets, running the automated ETL pipeline, and verifying system health for **VocabCraft Engine**.
 
 ---
 
-## 1. Yêu Cầu Tiền Đề (Prerequisites)
+## 1. Prerequisites
 
 - **Python 3.11+**
-- **Make** (`make`)
+- **GNU Make** (`make`)
 - **Git**
 
 ---
 
-## 2. Thiết Lập Môi Trường Tự Động Với `make`
+## 2. Automated Environment Setup
 
-Mở terminal tại thư mục gốc dự án và chạy duy nhất lệnh sau để tự động khởi tạo môi trường ảo `.venv`, cài đặt thư viện, mô hình spaCy và NLTK tagger:
+Run the following command in the project root to create the Python virtual environment (`.venv`), install dependencies, and download required spaCy / NLTK models:
 
 ```bash
 make setup
@@ -22,9 +22,9 @@ make setup
 
 ---
 
-## 3. Tải Dữ Liệu Thô (Raw Datasets)
+## 3. Downloading Raw Datasets
 
-Để tự động tải bộ dữ liệu thô (Kaikki Wiktionary 3.18GB & Tatoeba Anh-Việt) vào thư mục `data/raw/`:
+To download raw open-source datasets (Kaikki Wiktionary 3.18GB dump & Tatoeba parallel sentence pairs) into `data/raw/`:
 
 ```bash
 make download-data
@@ -32,15 +32,17 @@ make download-data
 
 ---
 
-## 4. Thực Thi Pipeline & Đóng Gói Database
+## 4. Pipeline Execution & Database Packaging
 
-Chạy toàn bộ pipeline ETL 5 bước có hiển thị progress log thời gian thực:
+To run the complete 5-step ETL and linguistic enrichment pipeline with real-time progress logging:
 
 ```bash
 make run
 ```
 
-*Trong quá trình chạy, hệ thống sẽ in log tiến độ chi tiết theo định dạng:*
+### Pipeline Execution Output
+
+The pipeline displays progress logs for each milestone:
 - `[Step 1/5] Initializing SQLite Database Schema...`
 - `[Step 2/5] Ingesting Kaikki Dictionary (3.18 GB dump)...`
   - `-> Processed 50,000 dictionary entries...`
@@ -49,9 +51,17 @@ make run
 - `[Step 4/5] Running NLP Enrichment (Collocations, Scenarios, Reflex Drills)...`
 - `[Step 5/5] Packaging & Optimizing SQLite Mobile Database...`
 
+To force a clean rebuild from scratch (bypassing step auto-resume checkpoints):
+
+```bash
+make run-fresh
+```
+
 ---
 
-## 5. Chạy Kiểm Thử Tự Động (Pytest)
+## 5. Running Automated Tests
+
+To execute the automated test suite and ensure pipeline integrity:
 
 ```bash
 make test

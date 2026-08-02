@@ -1,5 +1,5 @@
 # ==============================================================================
-# Makefile for English Dataset System Engine
+# Makefile for VocabCraft Engine
 # ==============================================================================
 
 VENV_DIR = .venv
@@ -11,7 +11,7 @@ PYTEST = $(VENV_DIR)/bin/pytest
 
 help:
 	@echo "========================================================================"
-	@echo "               ENGLISH DATASET SYSTEM ENGINE COMMANDS                   "
+	@echo "                      VOCABCRAFT ENGINE COMMANDS                        "
 	@echo "========================================================================"
 	@echo "  make setup          : Set up Python virtualenv & install dependencies"
 	@echo "  make download-data  : Download raw datasets (Kaikki & Tatoeba)"

@@ -1,123 +1,120 @@
-# Kế Hoạch Triển Khai Chi Tiết Từng Giai Đoạn (Detailed Phase-by-Phase Execution Plan)
+# Phase-by-Phase Execution Plan
 
-## Tổng Quan Mục Tiêu
-Xây dựng một **English Dataset System Engine** hoàn chỉnh, tự động hóa từ bước thu thập dữ liệu thô (Kaikki, Tatoeba, OPUS), xử lý NLP (Lemmatization, CEFR, Collocations, Reflex Drills, Dialogue Trees), sinh âm thanh song song (Edge-TTS), cho đến đóng gói ra file **SQLite DB (`english_dataset.db`)** đạt chuẩn hiệu năng di động (< 5ms query) và hệ thống tài liệu hướng dẫn tích hợp đầy đủ.
+## Objective Overview
+
+Build a production-grade **VocabCraft Engine** pipeline automating raw data ingestion (Kaikki, Tatoeba, OPUS), NLP enrichment (Lemmatization, CEFR grading, Collocations, Reflex Drills, Dialogue Trees), dual-speed neural audio synthesis (Edge-TTS), and packaging into a high-performance offline **SQLite database (`english_dataset.db`)** (< 5ms query response) with complete developer documentation.
 
 ---
 
-## Giai Đoạn 1: Môi Trường Dự Án & Cấu Trúc Khởi Tạo (Project Setup & Tooling)
+## Phase 1: Project Setup & Infrastructure
 
-### 1.1 Khởi Tạo Cấu Trúc Thư Mục
-Tạo cấu trúc dự án chuẩn Python modulize:
+### 1.1 Directory Structure Initialization
+Initialize standard Python package structure:
 ```
-EnglishDataset/
+vocab-craft-engine/
 ├── config/                  # Configuration & Environment Settings
 │   └── settings.py
 ├── data/                    # Local storage (GitIgnored)
 │   ├── raw/                 # Kaikki JSON, Tatoeba CSV, OPUS
 │   ├── processed/           # Intermediate DuckDB / Parquet
 │   ├── audio/               # Generated MP3s (1.0x & 1.2x)
-│   └── output/              # Final english_dataset.db
+│   └── output/              # Final packaged english_dataset.db
 ├── docs/                    # Architecture & Guides
 │   ├── dataset_system_architecture.md
 │   ├── execution_plan.md
 │   └── mobile_integration_guide.md
 ├── src/
-│   ├── ingestion/           # Parsers (Kaikki, Tatoeba, OPUS)
-│   ├── nlp/                 # Lemmatizer, CEFR, Reflex & Tree Builder
-│   ├── media/               # Edge-TTS & IPA Mapper
+│   ├── ingestion/           # Streaming Parsers (Kaikki, Tatoeba, OPUS)
+│   ├── nlp/                 # Lemmatizer, CEFR Grader, Collocations, Reflex & Tree Builder
+│   ├── media/               # Edge-TTS Synthesizer & IPA Mapper
 │   ├── db/                  # Database Manager & Transactions
-│   └── export/              # SQLite Exporter & Indexing
+│   └── export/              # SQLite Exporter & Indexing Optimizer
 ├── tests/                   # Pytest Validation Suite
-├── .gitignore
-├── pyproject.toml
+├── Makefile                 # Automation Makefile
+├── pyproject.toml           # Package configuration & dependencies
 └── README.md
 ```
 
-### 1.2 Cấu Hình Dependencies & Quản Lý Gói
-- Tạo file `pyproject.toml` hoặc `requirements.txt`:
-  - `spacy>=3.7.0` (NLP Processing)
-  - `ijson>=3.2.0` (Stream parsing file JSON dung lượng lớn)
-  - `duckdb>=0.9.0` (Staging DB siêu tốc)
-  - `edge-tts>=6.1.0` (Neural TTS engine miễn phí)
-  - `polars>=0.20.0` (Xử lý dataframe tốc độ cao)
-  - `pytest>=8.0.0` & `pytest-asyncio` (Test suite)
-- Cài đặt mô hình spaCy: `python -m spacy download en_core_web_sm`.
+### 1.2 Dependency Management (`pyproject.toml`)
+- Configured dependencies:
+  - `spacy>=3.7.0` (Deterministic NLP processing)
+  - `ijson>=3.2.0` (Stream parsing large JSON dumps)
+  - `duckdb>=0.9.0` (Fast staging database)
+  - `edge-tts>=6.1.0` (Free Neural TTS engine)
+  - `polars>=0.20.0` (High-performance DataFrame processing)
+  - `pytest>=8.0.0` & `pytest-asyncio` (Automated testing suite)
+- spaCy model installation: `python -m spacy download en_core_web_sm`.
 
-### 1.3 Thiết Lập Settings & Dynamic Configuration (`config/settings.py`)
-- Định nghĩa các hằng số: `BATCH_SIZE = 1000`, `MAX_CONCURRENT_AUDIO = 5`, `TARGET_REFLEX_TIME_MS = 2500`.
-- Thiết lập đường dẫn tương đối (Pathlib) độc lập với môi trường chạy.
-
-### 1.4 Viết Khởi Tạo Docs (`README.md` & `docs/setup_guide.md`)
-- Hướng dẫn clone dự án, tạo virtualenv, tải data dumps thô và chạy pipeline.
+### 1.3 Settings Configuration (`config/settings.py`)
+- Configured key runtime constants: `BATCH_SIZE = 1000`, `MAX_CONCURRENT_AUDIO = 5`, `TARGET_REFLEX_TIME_MS = 2500`.
+- Pathlib-based relative path management.
 
 ---
 
-## Giai Đoạn 2: Xây Dựng Tầng Thu Thập & Parse Dữ Liệu Thô (Ingestion Layer)
+## Phase 2: Ingestion Layer
 
 ### 2.1 Kaikki JSON Streaming Parser (`src/ingestion/kaikki_parser.py`)
-- Sử dụng `ijson` để stream từng bản ghi từ `kaikki.org-dictionary-English.json`.
-- Trích xuất: `word`, `pos`, `senses` (definitions & examples), `sounds` (IPA UK/US).
-- Viết unit test `tests/test_kaikki_parser.py` đảm bảo parse đúng cấu trúc JSON.
+- Uses `ijson` to stream records from `kaikki.org-dictionary-English.json`.
+- Extracts: `word`, `pos`, `senses` (definitions & examples), `sounds` (IPA UK/US).
 
-### 2.2 Tatoeba Sentence Pair Parser (`src/ingestion/tatoeba_parser.py`)
-- Đọc file `sentences.csv` & `links.csv`.
-- Khai thác các cặp câu dịch tương ứng Anh - Việt (`text_en`, `text_vi`).
-- Lọc nhiễu: Bỏ các câu có ký tự lạ, câu dài > 30 từ hoặc câu ngắn < 2 từ.
+### 2.2 Tatoeba Parallel Corpus Parser (`src/ingestion/tatoeba_parser.py`)
+- Reads `sentences.csv` & `links.csv`.
+- Extracts aligned parallel sentence pairs (`text_en`, `text_vi`).
+- Filters out corrupt or overly long (> 30 words) sentences.
 
-### 2.3 OPUS Subtitles Dialogue Parser (`src/ingestion/opus_parser.py`)
-- Trích xuất các luồng hội thoại ngắn (2 - 10 từ) để chuẩn bị dữ liệu cho kịch bản hội thoại (`dialogue_nodes`).
+### 2.3 OPUS Dialogue Parser (`src/ingestion/opus_parser.py`)
+- Mines short dialogue turns (2 – 10 words) to feed interactive branching trees (`dialogue_nodes`).
 
 ### 2.4 Staging Database Manager (`src/db/staging_db.py`)
-- Quản lý kết nối DuckDB/SQLite với cơ chế **Transaction batching** (`BEGIN` ... `COMMIT` mỗi 1,000 bản ghi).
-- Đảm bảo tính **Idempotent**: Dùng `INSERT OR IGNORE` trên các khóa `UNIQUE` (`words.lemma`, `sentences.text_en`).
+- Manages DuckDB/SQLite connections with **Transaction batching** (`BEGIN` ... `COMMIT` every 1,000 records).
+- Idempotent execution using `INSERT OR IGNORE` on `UNIQUE` keys (`words.lemma`, `sentences.text_en`).
 
 ---
 
-## Giai Đoạn 3: Tầng NLP, Phân Cấp CEFR & Tạo Dữ Liệu Phản Xạ (NLP & Enrichment)
+## Phase 3: NLP Enrichment & Reflex Drill Generation
 
 ### 3.1 Lemmatizer & POS Tagger (`src/nlp/lemmatizer.py`)
-- Sử dụng `spaCy.pipe` xử lý câu theo batch 500 câu/lần để tiết kiệm bộ nhớ.
-- Tạo bảng liên kết `word_sentence_map`.
+- Uses `spaCy.pipe` batch processing (500 sentences/batch) for RAM efficiency.
+- Populates `word_sentence_map`.
 
-### 3.2 Tự Động Chấm Cấp Độ CEFR (`src/nlp/cefr_grader.py`)
-- Nạp danh sách tần suất từ vựng (SUBTLEX-US / Oxford 3000-5000).
-- Tính điểm độ khó từ vựng và tự động gán nhãn CEFR (A1, A2, B1, B2, C1, C2) cho từ vựng và câu.
+### 3.2 Automated CEFR Difficulty Grader (`src/nlp/cefr_grader.py`)
+- Ingests SUBTLEX-US frequency rankings.
+- Computes difficulty scores and assigns CEFR levels (A1, A2, B1, B2, C1, C2) to words and sentences.
 
-### 3.3 Extractor Cụm Từ & Collocations (`src/nlp/chunk_extractor.py`)
-- Trích xuất các cụm `Verb + Noun` (e.g. *take a break*) và `Verb + Preposition` (e.g. *look for*) qua spaCy Dependency Parsing.
+### 3.3 Collocation & Chunk Extractor (`src/nlp/chunk_extractor.py`)
+- Mines `Verb + Noun` (e.g., *take a break*) and `Verb + Preposition` (e.g., *look for*) collocations via spaCy dependency parsing.
 
-### 3.4 Generator Bài Tập Phản Xạ (`src/nlp/reflex_builder.py`)
-- Tự động quét kho câu, trích xuất đáp án chuẩn (`correct_answer`) và tạo sẵn mảng JSON 3 đáp án nhiễu (`distractors_json`) cùng cấp độ CEFR.
+### 3.4 Speed Reflex Drill Generator (`src/nlp/reflex_builder.py`)
+- Scans sentence pool, extracts `correct_answer`, and pre-generates 3 distractor choices in JSON array payloads.
 
-### 3.5 Generator Cây Hội Thoại Rẽ Nhánh (`src/nlp/scenario_builder.py`)
-- Ghép nối các lượt hội thoại từ OPUS/Local LLM thành cấu trúc cây rẽ nhánh (`dialogue_trees` & `dialogue_nodes`).
+### 3.5 Scenario Tree Generator (`src/nlp/scenario_builder.py`)
+- Assembles conversational dialogue turns into branching trees (`dialogue_trees` & `dialogue_nodes`).
 
 ---
 
-## Giai Đoạn 4: Tầng Âm Thanh & Xử Lý Media (Media Pipeline)
+## Phase 4: Media & Audio Synthesis Pipeline
 
 ### 4.1 Phonetic & IPA Mapper (`src/media/ipa_mapper.py`)
-- Gán phiên âm IPA từ Kaikki. Dùng `g2p_en` làm fallback cho các từ out-of-vocabulary.
+- Maps Kaikki IPA transcriptions with `g2p_en` fallback for out-of-vocabulary terms.
 
-### 4.2 Batch Audio Generator (`src/media/audio_generator.py`)
-- Sử dụng `edge-tts` với `asyncio.Semaphore(5)` để tạo file `.mp3` ở 2 tốc độ:
-  - `Standard (1.0x)` cho học từ vựng/câu ví dụ.
-  - `Fast Reflex (1.2x)` cho bài tập phản xạ.
-- Tích hợp cơ chế **Exponential Backoff Retry** (3 lần thử lại nếu gặp lỗi kết nối).
+### 4.2 Batch Neural Audio Synthesizer (`src/media/audio_generator.py`)
+- Uses `edge-tts` with `asyncio.Semaphore(5)` to produce `.mp3` files at dual speeds:
+  - `Standard (1.0x)` for vocabulary and sentence cards.
+  - `Fast Reflex (1.2x)` for reaction speed exercises.
+- Exponential backoff retry handler (3 retries on network timeout).
 
 ---
 
-## Giai Đoạn 5: Đóng Gói SQLite, Kiểm Thử & Docs Tích Hợp (Export & Integration Docs)
+## Phase 5: SQLite Packaging & Verification
 
 ### 5.1 Mobile SQLite Exporter (`src/export/sqlite_exporter.py`)
-- Export dữ liệu sang file `english_dataset.db`.
-- Tối ưu hóa SQLite PRAGMAs (`journal_mode = WAL`, `synchronous = NORMAL`).
-- Tạo đầy đủ các Composite Indexes (`idx_words_lemma`, `idx_reflex_cefr_type`, `idx_nodes_tree_parent`).
+- Packages staged tables into `english_dataset.db`.
+- Optimizes SQLite PRAGMAs (`journal_mode = WAL`, `synchronous = NORMAL`).
+- Creates multi-column composite indexes (`idx_words_lemma`, `idx_reflex_cefr_type`, `idx_nodes_tree_parent`).
 
-### 5.2 Automated Validation Suite (`tests/`)
-- `tests/test_schema.py`: Kiểm tra tính toàn vẹn khóa ngoại (`PRAGMA foreign_key_check`).
-- `tests/test_performance.py`: Benchmark tốc độ truy vấn bài tập phản xạ (< 5ms).
+### 5.2 Automated Verification Suite (`tests/`)
+- `tests/test_schema.py`: Verifies foreign key constraints (`PRAGMA foreign_key_check`).
+- `tests/test_performance.py`: Benchmarks reflex drill query latency (< 5ms).
 
-### 5.3 Tài Liệu Hướng Dẫn Tích Hợp Mobile (`docs/mobile_integration_guide.md`)
-- Hướng dẫn nhúng file `english_dataset.db` vào iOS (SwiftData/FMDB), Android (Room), React Native, Flutter kèm các đoạn code SQL mẫu.
+### 5.3 Mobile Integration Documentation (`docs/mobile_integration_guide.md`)
+- Provides code examples for iOS (SwiftData/FMDB), Android (Room), React Native (expo-sqlite), and Flutter (sqflite).
