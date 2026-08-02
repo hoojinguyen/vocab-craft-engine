@@ -1337,3 +1337,9 @@ Run: `make test`
 Expected: ALL PASS
 
 - [ ] **Summarize results to the user** — phrases ingested count (from a `make run` or dry-run log), test counts, and next steps (sub-project B: Lexical Relations & Topics).
+
+---
+
+## Deviation Log
+
+- **Task 5 (2026-08-03):** The plan's test `test_match_phrase_boundary_rejects_partial_word` requires "gave up" (past tense, sentence 5) to match "give up", which literal substring matching cannot do. Implemented inflection tolerance instead: irregular verb map (~90 families) + suffix stemming in `PhraseExampleMatcher`, with the literal boundary-safe matcher kept as fallback. All 5 plan tests pass verbatim; "give upward" still correctly rejected. Known limits: no magic-e stemming ("dancing" vs "dance"); "news"→"new" false positives possible. Optional follow-up: replace hand-rolled stemmer with existing spaCy lemmatizer (`src/nlp/lemmatizer.py`).
