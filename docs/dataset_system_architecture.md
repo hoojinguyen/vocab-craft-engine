@@ -34,6 +34,8 @@ erDiagram
     SENTENCES ||--o{ REFLEX_DRILLS : formatted_as
     DIALOGUE_TREES ||--o{ DIALOGUE_NODES : contains
     SENTENCES ||--o{ DIALOGUE_NODES : spoken_in
+    PHRASES ||--o{ PHRASE_SENTENCES : appears_in
+    SENTENCES ||--o{ PHRASE_SENTENCES : contains
 ```
 
 ### Table Definitions
@@ -97,6 +99,26 @@ erDiagram
    - `distractors_json`: TEXT (JSON array containing 3 pre-generated distractor options)
    - `target_time_ms`: INTEGER DEFAULT 2500 (Target response time in milliseconds)
 
+8. **`phrases` (Multi-Word Expressions)**
+   - `id`: INTEGER PRIMARY KEY AUTOINCREMENT
+   - `phrase`: TEXT UNIQUE NOT NULL (Idioms, phrasal verbs, proverbs, fixed expressions)
+   - `phrase_type`: TEXT NOT NULL (idiom, phrasal_verb, proverb, phrase)
+   - `pos`: TEXT (Part of Speech from Kaikki)
+   - `cefr_level`: TEXT (Graded from constituent word rarity)
+   - `difficulty_score`: REAL (Difficulty score computed from constituent word rarity)
+   - `definition_en`: TEXT (English definition)
+   - `definition_vi`: TEXT (Vietnamese translation)
+   - `ipa`: TEXT (IPA phonetic transcription)
+   - `audio_std`: TEXT (Relative path to 1.0x .mp3)
+   - `audio_fast`: TEXT (Relative path to 1.2x .mp3)
+   - `audio_status`: TEXT DEFAULT 'ok'
+
+9. **`phrase_sentences` (Phrase - Sentence Map)**
+   - `phrase_id`: INTEGER NOT NULL (FK -> phrases.id)
+   - `sentence_id`: INTEGER NOT NULL (FK -> sentences.id)
+   - `rank`: INTEGER (Example sentence priority)
+   - PRIMARY KEY (`phrase_id`, `sentence_id`)
+
 ---
 
 ## 3. Pipeline Layers & Data Flow
@@ -123,6 +145,17 @@ erDiagram
   - `CREATE INDEX idx_reflex_cefr_type ON reflex_drills(drill_type, sentence_id);`
   - `CREATE INDEX idx_nodes_tree_parent ON dialogue_nodes(tree_id, parent_node_id);`
   - `CREATE INDEX idx_word_sentence_join ON word_sentence_map(word_id, sentence_id);`
+
+### Step 4G: Multi-Word Expressions (Thành ngữ & Cụm từ cố định)
+
+Re-scans the Kaikki dump to extract idioms, phrasal verbs, proverbs, and fixed expressions (multi-word entries dropped by the single-word ingestion step). Each phrase is:
+
+- Graded for CEFR from constituent words (`PhraseGrader`, reusing `CEFRGrader`)
+- Linked to 1-5 Tatoeba example sentences, easy sentences first (`PhraseExampleMatcher`)
+- Translated into Vietnamese (Kaikki translations, fallback `Translator`)
+- Synthesized into dual-speed 1.0x/1.2x audio (`AudioGenerator.generate_dual_speed_phrase`)
+
+Stored in the `phrases` and `phrase_sentences` tables and exported with `english_dataset.db` using dedicated indexes (`idx_phrases_cefr`, `idx_phrases_type`, ...).
 
 ---
 
