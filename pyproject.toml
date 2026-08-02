@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "english-dataset-engine"
+version = "0.1.0"
+description = "Automated ETL & Linguistic Enrichment Pipeline for English Learning Applications"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "EnglishDataset System" }
+]
+dependencies = [
+    "spacy>=3.7.0",
+    "ijson>=3.2.0",
+    "duckdb>=0.9.0",
+    "edge-tts>=6.1.0",
+    "polars>=0.20.0",
+    "pydantic>=2.5.0",
+    "g2p-en>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "black>=24.1.0",
+    "ruff>=0.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
