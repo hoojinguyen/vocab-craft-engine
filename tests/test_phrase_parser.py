@@ -82,3 +82,39 @@ def test_parse_raw_items_yields_unfiltered_dicts(kaikki_jsonl: Path):
     assert len(items) == 8
     assert items[0]["word"] == "break a leg"
     assert items[3]["word"] == "cat"
+
+
+def test_phrase_parser_extracts_only_valid_multiword(kaikki_jsonl: Path):
+    parser = PhraseParser(kaikki_jsonl)
+    phrases = list(parser.parse_phrases())
+
+    by_phrase = {p["phrase"]: p for p in phrases}
+    assert "break a leg" in by_phrase
+    assert "give up" in by_phrase
+    assert "all that glitters is not gold" in by_phrase
+
+    # Reject single-word, >6 word non-proverb, no-definition entries
+    assert "cat" not in by_phrase
+    assert "a very long multi word expression that nobody uses at all" not in by_phrase
+    assert "no definition here" not in by_phrase
+
+    # Proverb longer than 6 words IS kept
+    assert "too many cooks spoil the broth" in by_phrase
+
+    # Field extraction
+    leg = by_phrase["break a leg"]
+    assert leg["phrase_type"] == "idiom"
+    assert leg["definition_en"] == "A phrase of encouragement."
+    assert leg["definition_vi"] == "chúc may mắn"
+    assert leg["ipa"] == "breɪk ə leɡ"
+
+    up = by_phrase["give up"]
+    assert up["phrase_type"] == "phrasal_verb"
+
+
+def test_phrase_parser_rejects_unclean_chars(kaikki_jsonl: Path):
+    parser = PhraseParser(kaikki_jsonl)
+    # "break 1 leg" contains a digit -> must be rejected (quality filter)
+    phrases = list(parser.parse_phrases())
+    by_phrase = {p["phrase"]: p for p in phrases}
+    assert "break 1 leg" not in by_phrase
