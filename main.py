@@ -32,6 +32,9 @@ from src.nlp.translator import Translator
 from src.media.ipa_mapper import IPAMapper
 from src.media.audio_generator import AudioGenerator
 from src.export.sqlite_exporter import SQLiteExporter
+from src.ingestion.phrase_parser import PhraseParser
+from src.nlp.phrase_grader import PhraseGrader
+from src.nlp.phrase_example_matcher import PhraseExampleMatcher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +49,93 @@ def parse_arguments():
     parser.add_argument("--force-reset", action="store_true", help="Force complete database reset and re-ingest everything from scratch.")
     parser.add_argument("--skip-dict", action="store_true", help="Skip Step 2 (Kaikki Dictionary Ingestion) if dictionary data is already ingested.")
     return parser.parse_args()
+
+
+def run_phrase_step(db_manager, args) -> dict:
+    """
+    Step 4G: Ingest multi-word expressions (idioms, phrasal verbs, proverbs)
+    from the Kaikki dump, grade CEFR, link Tatoeba examples, generate audio.
+    Count-based checkpoint: skips when > 500 phrases already exist.
+    """
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT count(*) FROM phrases;")
+    existing_phrases = cursor.fetchone()[0]
+
+    if existing_phrases > 500 and not args.force_reset:
+        logger.info("[4G] CHECKPOINT DETECTED: %s phrases already exist. Skipping.", f"{existing_phrases:,}")
+        return {"phrases": existing_phrases, "links": 0}
+
+    logger.info("   [4G] Ingesting Multi-Word Expressions (Idioms, Phrasal Verbs, Proverbs)...")
+    phrase_parser = PhraseParser(KAIKKI_JSON_PATH)
+    grader = PhraseGrader(CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH))
+    translator = Translator()
+
+    phrases_batch = []
+    phrase_count = 0
+    for item in phrase_parser.parse_phrases():
+        graded = grader.grade_phrase(item["phrase"])
+        phrases_batch.append({
+            "phrase": item["phrase"],
+            "phrase_type": item["phrase_type"],
+            "pos": item["pos"],
+            "cefr_level": graded["cefr_level"],
+            "difficulty_score": graded["difficulty_score"],
+            "definition_en": item["definition_en"],
+            "definition_vi": item.get("definition_vi") or translator.translate_text(item["phrase"]),
+            "ipa": item.get("ipa"),
+            "audio_std": None,
+            "audio_fast": None,
+            "audio_status": "ok"
+        })
+
+        if len(phrases_batch) >= 1000:
+            db_manager.insert_phrases_batch(phrases_batch)
+            phrase_count += len(phrases_batch)
+            phrases_batch = []
+            logger.info("   -> Staged %s phrases...", f"{phrase_count:,}")
+
+    if phrases_batch:
+        db_manager.insert_phrases_batch(phrases_batch)
+        phrase_count += len(phrases_batch)
+    logger.info("   [4G] Stored %s multi-word expressions.", f"{phrase_count:,}")
+
+    # Link example sentences from Tatoeba
+    cursor.execute("SELECT id, text_en, cefr_level FROM sentences;")
+    sentence_pool = [
+        {"id": r[0], "text_en": r[1], "cefr_level": r[2]}
+        for r in cursor.fetchall()
+    ]
+    matcher = PhraseExampleMatcher(sentence_pool)
+
+    cursor.execute("SELECT id, phrase FROM phrases;")
+    stored_phrases = [{"id": r[0], "phrase": r[1]} for r in cursor.fetchall()]
+    link_batch = matcher.match_phrases(stored_phrases)
+    for i in range(0, len(link_batch), 5000):
+        db_manager.insert_phrase_sentences_batch(link_batch[i:i + 5000])
+    logger.info("   [4G] Linked %s example sentences to phrases.", f"{len(link_batch):,}")
+
+    # Generate TTS audio for all phrases
+    async def generate_phrase_audio():
+        audio_gen = AudioGenerator()
+        for pid, ptext in stored_phrases:
+            res = await audio_gen.generate_dual_speed_phrase(pid, ptext)
+            status = "ok" if res["standard_path"] and res["fast_path"] else "failed"
+            db_manager.update_phrase_audio(
+                pid,
+                str(res["standard_path"]) if res["standard_path"] else None,
+                str(res["fast_path"]) if res["fast_path"] else None,
+                status
+            )
+
+    try:
+        asyncio.run(generate_phrase_audio())
+        logger.info("   [4G] Generated phrase audio files.")
+    except Exception as e:
+        logger.warning("   [4G] Phrase audio generation warning: %s", e)
+
+    return {"phrases": phrase_count, "links": len(link_batch)}
 
 
 def run_pipeline():
@@ -363,6 +453,12 @@ def run_pipeline():
         logger.info("   [4F] Generated physical MP3 audio files in data/audio/")
     except Exception as e:
         logger.warning("   [4F] Audio generation warning: %s", e)
+
+    # 4G. Multi-Word Expressions (Idioms, Phrasal Verbs, Proverbs)
+    logger.info("   [4G] Building Multi-Word Expression Database...")
+    phrase_stats = run_phrase_step(db_manager, args)
+    logger.info("   [4G] Completed: %s phrases, %s example sentence links.",
+                f"{phrase_stats['phrases']:,}", f"{phrase_stats['links']:,}")
 
     # Step 5: Export & Optimize SQLite Mobile DB
     logger.info("[Step 5/5] Packaging & Optimizing SQLite Mobile Database...")
