@@ -10,11 +10,16 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import main as main_module
+from config.settings import AUDIO_DIR
 from src.db.staging_db import DatabaseManager
 
 
 @pytest.fixture
 def phrase_environment(tmp_path: Path, monkeypatch):
+    # Isolate the real audio dir: stale phrase_* files from earlier tests
+    # would short-circuit the existing-file check in generate_audio_file.
+    for stale in AUDIO_DIR.glob("phrase_*"):
+        stale.unlink(missing_ok=True)
     # Sample Kaikki dump with multi-word entries
     kaikki_file = tmp_path / "kaikki.jsonl"
     entries = [
@@ -96,28 +101,58 @@ def test_run_phrase_step_populates_db(phrase_environment, monkeypatch):
     cursor.execute("SELECT COUNT(*) FROM phrase_sentences;")
     assert cursor.fetchone()[0] >= 2
 
-    # Audio status recorded
-    cursor.execute("SELECT audio_status FROM phrases;")
-    statuses = {row[0] for row in cursor.fetchall()}
-    assert statuses == {"ok"}
+    # Audio status recorded with actual output paths linked to rows
+    cursor.execute("SELECT audio_std, audio_fast, audio_status FROM phrases;")
+    rows = cursor.fetchall()
+    assert len(rows) == 2
+    for audio_std, audio_fast, audio_status in rows:
+        assert audio_std is not None and audio_std.endswith("_std.mp3")
+        assert audio_fast is not None and audio_fast.endswith("_fast.mp3")
+        assert audio_status == "ok"
 
 
 def test_run_phrase_step_checkpoint_skips(phrase_environment, monkeypatch):
     db_manager, db_path = phrase_environment
     args = argparse.Namespace(force_reset=False)
 
-    # Pre-populate enough phrases to trigger the checkpoint
+    # Pre-populate enough phrases with complete audio to trigger the checkpoint
     phrases = [
         {"phrase": f"checkpoint phrase {i}", "phrase_type": "idiom", "pos": "idiom",
          "cefr_level": "B1", "difficulty_score": 2.0, "definition_en": "x",
          "definition_vi": None, "ipa": None,
-         "audio_std": None, "audio_fast": None, "audio_status": "ok"}
+         "audio_std": f"phrase_{i}_std.mp3", "audio_fast": f"phrase_{i}_fast.mp3",
+         "audio_status": "ok"}
         for i in range(600)
     ]
     db_manager.insert_phrases_batch(phrases)
 
-    with patch.object(main_module, "PhraseParser") as mock_parser:
+    with patch.object(main_module, "PhraseParser") as mock_parser, \
+         patch.object(main_module, "AudioGenerator") as mock_audio_gen:
         stats = main_module.run_phrase_step(db_manager, args)
         mock_parser.assert_not_called()
+        mock_audio_gen.assert_not_called()
 
     assert stats["phrases"] == 600
+
+
+def test_run_phrase_step_audio_failure_sets_failed_status(phrase_environment, monkeypatch):
+    db_manager, db_path = phrase_environment
+    args = argparse.Namespace(force_reset=False)
+
+    # Mock edge-tts to produce no output files (silent failure) so paths stay None
+    with patch("edge_tts.Communicate.save", new_callable=AsyncMock) as mock_save:
+        mock_save.side_effect = lambda target_path: None
+
+        stats = main_module.run_phrase_step(db_manager, args)
+
+    assert stats["phrases"] == 2
+
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT audio_std, audio_fast, audio_status FROM phrases;")
+    rows = cursor.fetchall()
+    assert len(rows) == 2
+    for audio_std, audio_fast, audio_status in rows:
+        assert audio_std is None
+        assert audio_fast is None
+        assert audio_status == "failed"

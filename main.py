@@ -55,16 +55,18 @@ def run_phrase_step(db_manager, args) -> dict:
     """
     Step 4G: Ingest multi-word expressions (idioms, phrasal verbs, proverbs)
     from the Kaikki dump, grade CEFR, link Tatoeba examples, generate audio.
-    Count-based checkpoint: skips when > 500 phrases already exist.
+    Checkpoint: skips only when > 500 phrases exist AND all have complete audio.
     """
     conn = db_manager.get_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT count(*) FROM phrases;")
     existing_phrases = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM phrases WHERE audio_std IS NULL OR audio_fast IS NULL;")
+    missing_audio = cursor.fetchone()[0]
 
-    if existing_phrases > 500 and not args.force_reset:
-        logger.info("[4G] CHECKPOINT DETECTED: %s phrases already exist. Skipping.", f"{existing_phrases:,}")
+    if existing_phrases > 500 and missing_audio == 0 and not args.force_reset:
+        logger.info("[4G] CHECKPOINT DETECTED: %s phrases with complete audio already exist. Skipping.", f"{existing_phrases:,}")
         return {"phrases": existing_phrases, "links": 0}
 
     logger.info("   [4G] Ingesting Multi-Word Expressions (Idioms, Phrasal Verbs, Proverbs)...")
@@ -116,18 +118,28 @@ def run_phrase_step(db_manager, args) -> dict:
         db_manager.insert_phrase_sentences_batch(link_batch[i:i + 5000])
     logger.info("   [4G] Linked %s example sentences to phrases.", f"{len(link_batch):,}")
 
-    # Generate TTS audio for all phrases
+    # Generate TTS audio for all phrases (batched, one commit per chunk)
     async def generate_phrase_audio():
         audio_gen = AudioGenerator()
-        for pid, ptext in stored_phrases:
-            res = await audio_gen.generate_dual_speed_phrase(pid, ptext)
-            status = "ok" if res["standard_path"] and res["fast_path"] else "failed"
-            db_manager.update_phrase_audio(
-                pid,
-                str(res["standard_path"]) if res["standard_path"] else None,
-                str(res["fast_path"]) if res["fast_path"] else None,
-                status
+        for i in range(0, len(stored_phrases), 10):
+            chunk = stored_phrases[i:i + 10]
+            results = await asyncio.gather(
+                *[audio_gen.generate_dual_speed_phrase(item["id"], item["phrase"]) for item in chunk]
             )
+            updates = []
+            for item, res in zip(chunk, results):
+                status = "ok" if res["standard_path"] and res["fast_path"] else "failed"
+                updates.append((
+                    str(res["standard_path"]) if res["standard_path"] else None,
+                    str(res["fast_path"]) if res["fast_path"] else None,
+                    status,
+                    item["id"]
+                ))
+            cursor.executemany(
+                "UPDATE phrases SET audio_std = ?, audio_fast = ?, audio_status = ? WHERE id = ?;",
+                updates
+            )
+            conn.commit()
 
     try:
         asyncio.run(generate_phrase_audio())
