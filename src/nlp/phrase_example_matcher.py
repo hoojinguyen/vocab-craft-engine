@@ -3,11 +3,13 @@ Tatoeba Example Sentence Matcher for English Dataset System Engine.
 Links multi-word expressions to example sentences with boundary-safe matching
 and CEFR-priority ranking (easy sentences first).
 
-Matching tolerates verb inflection (e.g. phrase "give up" matches a sentence
-containing "gave up") via a small irregular-form map plus suffix-stemming,
-because Tatoeba sentences use inflected forms far more often than dictionary
-base forms. Literal boundary-safe substring matching is kept as a fallback so
-hyphenated spellings (e.g. "well-known" for "well known") still match.
+Matching tolerates verb inflection (e.g. "give up" matches "gave up",
+"spring up" matches "springs up") via an irregular-form map plus suffix-
+stemming, because Tatoeba sentences use inflected forms far more often than
+dictionary base forms. Hyphens are normalized to spaces so "well-known" and
+"well known" match each other. Phrase words must appear in order but may have
+up to MAX_INSERTED_WORDS words between them, covering object/particle
+insertion in phrasal verbs (e.g. "strings her along" for "string along").
 """
 
 import logging
@@ -18,6 +20,7 @@ from src.nlp.phrase_grader import STOPWORDS
 logger = logging.getLogger(__name__)
 
 MAX_EXAMPLES_PER_PHRASE = 5
+MAX_INSERTED_WORDS = 2
 CEFR_ORDER = {"A1": 0, "A2": 1, "B1": 2, "B2": 3, "C1": 4, "C2": 5}
 PUNCT = ".,!?;:\"'()[]-"
 
@@ -87,6 +90,34 @@ IRREGULAR_BASES = {
     "rides": "ride", "rode": "ride", "ridden": "ride", "riding": "ride",
     "hits": "hit", "hitting": "hit",
     "lets": "let", "letting": "let",
+    "used": "use", "using": "use",
+    "lived": "live", "living": "live",
+    "loved": "love", "loving": "love",
+    "moved": "move", "moving": "move",
+    # identity entries: words ending in "ing" where "ing" is part of the root,
+    # so the base form stems to itself instead of an over-stripped fragment
+    "spring": "spring", "sprang": "spring", "sprung": "spring",
+    "string": "string", "strung": "string",
+    "ring": "ring", "rang": "ring", "rung": "ring",
+    "thing": "thing",
+    "bring": "bring",
+    "king": "king",
+    "sing": "sing",
+    "wing": "wing",
+    "swing": "swing", "swung": "swing",
+    "sting": "sting", "stung": "sting",
+    "cling": "cling", "clung": "cling",
+    "fling": "fling", "flung": "fling",
+    "sling": "sling", "slung": "sling",
+    "wring": "wring", "wrung": "wring",
+    "morning": "morning",
+    "evening": "evening",
+    "during": "during",
+    "ceiling": "ceiling",
+    "nothing": "nothing",
+    "something": "something",
+    "anything": "anything",
+    "everything": "everything",
 }
 
 INFLECTION_SUFFIXES = ("ing", "ied", "ed", "ies", "es", "s")
@@ -119,7 +150,7 @@ class PhraseExampleMatcher:
     def _build_index(self):
         """Index sentences by the base form of each word they contain."""
         for sent in self.sentences:
-            text = sent["text_en"].lower()
+            text = sent["text_en"].lower().replace("-", " ")
             for word in set(text.split()):
                 key = _stem(word.strip(PUNCT))
                 if key:
@@ -138,15 +169,34 @@ class PhraseExampleMatcher:
             start = sentence.find(phrase, start + 1)
         return False
 
-    @classmethod
-    def _tokens_match_phrase(cls, phrase_words: List[str], sentence: str) -> bool:
-        """True if phrase words appear consecutively in sentence, tolerating inflection."""
-        tokens = [t for t in (w.strip(PUNCT) for w in sentence.split()) if t]
-        for i in range(len(tokens) - len(phrase_words) + 1):
+    @staticmethod
+    def _tokens_match_phrase(phrase_words: List[str], sentence: str) -> bool:
+        """
+        True if phrase words appear in order in sentence, tolerating inflection,
+        hyphens, and up to MAX_INSERTED_WORDS words between phrase words.
+        """
+        tokens = [
+            t for t in (w.strip(PUNCT) for w in sentence.replace("-", " ").split())
+            if t
+        ]
+        if len(phrase_words) > len(tokens):
+            return False
+        for start, token in enumerate(tokens):
+            if token != phrase_words[0] and _stem(token) != _stem(phrase_words[0]):
+                continue
+            pos = start + 1
             matched = True
-            for j, phrase_word in enumerate(phrase_words):
-                token = tokens[i + j]
-                if token != phrase_word and _stem(token) != _stem(phrase_word):
+            for phrase_word in phrase_words[1:]:
+                found = False
+                for gap in range(MAX_INSERTED_WORDS + 1):
+                    idx = pos + gap
+                    if idx >= len(tokens):
+                        break
+                    if tokens[idx] == phrase_word or _stem(tokens[idx]) == _stem(phrase_word):
+                        pos = idx + 1
+                        found = True
+                        break
+                if not found:
                     matched = False
                     break
             if matched:
@@ -158,7 +208,7 @@ class PhraseExampleMatcher:
         Returns up to MAX_EXAMPLES_PER_PHRASE mapping dicts
         {'phrase_id', 'sentence_id', 'rank'} for matching sentences.
         """
-        words = [w.strip(PUNCT) for w in phrase.lower().split()]
+        words = [w.strip(PUNCT) for w in phrase.lower().replace("-", " ").split()]
         words = [w for w in words if w]
         key_words = [w for w in words if w not in STOPWORDS] or words
         if not key_words:
@@ -167,7 +217,7 @@ class PhraseExampleMatcher:
         candidates = self._word_index.get(_stem(key_words[0]), [])
         matches = [
             sent for sent in candidates
-            if self._is_boundary_match(phrase, sent["text_en"].lower())
+            if self._is_boundary_match(phrase.lower(), sent["text_en"].lower())
             or self._tokens_match_phrase(words, sent["text_en"].lower())
         ]
         matches.sort(key=lambda s: CEFR_ORDER.get(s.get("cefr_level"), 2))
