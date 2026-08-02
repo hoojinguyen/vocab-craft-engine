@@ -1,11 +1,11 @@
-# English Dataset System Engine
+# VocabCraft Engine
 
 Hệ thống tự động thu thập, phân tích NLP, gán nhãn độ khó CEFR, tạo âm thanh song song và đóng gói cơ sở dữ liệu tiếng Anh (Từ vựng, Collocations, Mẫu câu, Kịch bản hội thoại rẽ nhánh, Bài tập phản xạ) dưới dạng file **SQLite DB (`english_dataset.db`)** sẵn sàng tích hợp cho các ứng dụng di động (iOS, Android, Flutter, React Native).
 
 ## 🚀 Cấu Trúc Dự Án
 
 ```
-EnglishDataset/
+vocab-craft-engine/
 ├── config/                  # Cấu hình dự án (settings.py)
 ├── data/                    # Thư mục chứa dữ liệu thô, nén và DB xuất bản
 │   ├── raw/                 # File Kaikki JSON, Tatoeba CSV, OPUS Subtitles
