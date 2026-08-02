@@ -58,6 +58,35 @@ class KaikkiParser:
                 except json.JSONDecodeError:
                     continue
 
+    def parse_raw_items(self) -> Iterator[Dict[str, Any]]:
+        """
+        Yields raw (unfiltered) dictionary items, detecting JSON Lines vs JSON array.
+        Used by consumers that need multi-word entries (e.g. PhraseParser).
+        """
+        if not self.file_path.exists():
+            raise FileNotFoundError(f"Kaikki dump not found at {self.file_path}")
+
+        with open(self.file_path, "r", encoding="utf-8") as f:
+            first_char = f.read(1).strip()
+
+        if first_char == "[":
+            with open(self.file_path, "rb") as f:
+                for item in ijson.items(f, "item"):
+                    if isinstance(item, dict):
+                        yield item
+        else:
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                        if isinstance(item, dict):
+                            yield item
+                    except json.JSONDecodeError:
+                        continue
+
     @staticmethod
     def extract_fields(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
