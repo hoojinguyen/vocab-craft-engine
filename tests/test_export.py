@@ -61,3 +61,57 @@ def test_sqlite_exporter_benchmark_speed(populated_db: Path):
     avg_ms = exporter.benchmark_reflex_query_speed(iterations=20)
     assert avg_ms >= 0.0
     assert avg_ms < 5.0  # Must be under 5ms benchmark target
+
+
+def test_exporter_creates_phrase_indexes(populated_db: Path):
+    db_manager = DatabaseManager(db_path=populated_db)
+    db_manager.init_schema()
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+
+    # Insert one phrase + one sentence mapping so indexes have data
+    db_manager.insert_phrases_batch([
+        {"phrase": "break a leg", "phrase_type": "idiom", "pos": "idiom",
+         "cefr_level": "B1", "difficulty_score": 2.5, "definition_en": "Good luck!",
+         "definition_vi": None, "ipa": None,
+         "audio_std": None, "audio_fast": None, "audio_status": "ok"}
+    ])
+    phrase_id = db_manager.get_phrase_id_by_text("break a leg")
+    db_manager.insert_phrase_sentences_batch([
+        {"phrase_id": phrase_id, "sentence_id": 1, "rank": 1}
+    ])
+    db_manager.close()
+
+    exporter = SQLiteExporter(db_path=populated_db)
+    exporter.optimize_and_package()
+
+    conn = sqlite3.connect(str(populated_db))
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('phrases', 'phrase_sentences');")
+    indexes = {row[0] for row in cursor.fetchall()}
+    conn.close()
+
+    assert "idx_phrases_cefr" in indexes
+    assert "idx_phrases_type" in indexes
+    assert "idx_phrase_sentences_phrase" in indexes
+    assert "idx_phrase_sentences_sentence" in indexes
+
+
+def test_exporter_phrase_foreign_keys(populated_db: Path):
+    db_manager = DatabaseManager(db_path=populated_db)
+    db_manager.init_schema()
+    db_manager.insert_phrases_batch([
+        {"phrase": "give up", "phrase_type": "phrasal_verb", "pos": "phrasal verb",
+         "cefr_level": "A2", "difficulty_score": 1.8, "definition_en": "Stop trying.",
+         "definition_vi": None, "ipa": None,
+         "audio_std": None, "audio_fast": None, "audio_status": "ok"}
+    ])
+    phrase_id = db_manager.get_phrase_id_by_text("give up")
+    db_manager.insert_phrase_sentences_batch([
+        {"phrase_id": phrase_id, "sentence_id": 1, "rank": 1}
+    ])
+    db_manager.close()
+
+    exporter = SQLiteExporter(db_path=populated_db)
+    violations = exporter.verify_foreign_keys()
+    assert len(violations) == 0
