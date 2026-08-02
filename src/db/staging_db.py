@@ -151,11 +151,45 @@ class DatabaseManager:
             );
         """)
 
+        # 10. Phrases table (multi-word expressions)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS phrases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phrase TEXT UNIQUE NOT NULL,
+                phrase_type TEXT NOT NULL,
+                pos TEXT,
+                cefr_level TEXT,
+                difficulty_score REAL,
+                definition_en TEXT,
+                definition_vi TEXT,
+                ipa TEXT,
+                audio_std TEXT,
+                audio_fast TEXT,
+                audio_status TEXT DEFAULT 'ok'
+            );
+        """)
+
+        # 11. Phrase - Sentence Map table (N - N)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS phrase_sentences (
+                phrase_id INTEGER NOT NULL,
+                sentence_id INTEGER NOT NULL,
+                rank INTEGER,
+                PRIMARY KEY (phrase_id, sentence_id),
+                FOREIGN KEY (phrase_id) REFERENCES phrases (id) ON DELETE CASCADE,
+                FOREIGN KEY (sentence_id) REFERENCES sentences (id) ON DELETE CASCADE
+            );
+        """)
+
         # Indexes for fast mobile and pipeline queries
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_words_lemma ON words(lemma);")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sentences_text_en ON sentences(text_en);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_reflex_cefr_type ON reflex_drills(drill_type, sentence_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_tree_parent ON dialogue_nodes(tree_id, parent_node_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrases_cefr ON phrases(cefr_level);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrases_type ON phrases(phrase_type);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_phrase ON phrase_sentences(phrase_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_sentence ON phrase_sentences(sentence_id);")
 
         conn.commit()
         logger.info("Database schema initialized successfully at %s", self.db_path)
@@ -257,3 +291,55 @@ class DatabaseManager:
         cursor.execute("SELECT id FROM words WHERE lemma = ? LIMIT 1;", (lemma,))
         row = cursor.fetchone()
         return row[0] if row else None
+
+    def insert_phrases_batch(self, phrases_data: List[Dict[str, Any]]) -> int:
+        """Batch insert phrases into `phrases` table with IGNORE on duplicate phrase."""
+        if not phrases_data:
+            return 0
+
+        conn = self.get_connection()
+        query = """
+            INSERT OR IGNORE INTO phrases
+            (phrase, phrase_type, pos, cefr_level, difficulty_score, definition_en,
+             definition_vi, ipa, audio_std, audio_fast, audio_status)
+            VALUES (:phrase, :phrase_type, :pos, :cefr_level, :difficulty_score,
+                    :definition_en, :definition_vi, :ipa, :audio_std, :audio_fast, :audio_status);
+        """
+        cursor = conn.cursor()
+        cursor.executemany(query, phrases_data)
+        conn.commit()
+        return cursor.rowcount
+
+    def get_phrase_id_by_text(self, phrase: str) -> Optional[int]:
+        """Fetch phrase_id for a given phrase text."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM phrases WHERE phrase = ? LIMIT 1;", (phrase,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    def insert_phrase_sentences_batch(self, mappings_data: List[Dict[str, Any]]) -> int:
+        """Batch insert mappings into `phrase_sentences` table."""
+        if not mappings_data:
+            return 0
+
+        conn = self.get_connection()
+        query = """
+            INSERT OR IGNORE INTO phrase_sentences (phrase_id, sentence_id, rank)
+            VALUES (:phrase_id, :sentence_id, :rank);
+        """
+        cursor = conn.cursor()
+        cursor.executemany(query, mappings_data)
+        conn.commit()
+        return cursor.rowcount
+
+    def update_phrase_audio(self, phrase_id: int, audio_std: Optional[str],
+                            audio_fast: Optional[str], audio_status: str = "ok") -> None:
+        """Update audio paths and status for a phrase."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE phrases SET audio_std = ?, audio_fast = ?, audio_status = ? WHERE id = ?;",
+            (audio_std, audio_fast, audio_status, phrase_id)
+        )
+        conn.commit()

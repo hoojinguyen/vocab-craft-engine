@@ -78,3 +78,63 @@ def test_foreign_key_check(temp_db: DatabaseManager):
     cursor.execute("PRAGMA foreign_key_check;")
     violations = cursor.fetchall()
     assert len(violations) == 0
+
+
+def test_phrase_tables_exist(temp_db: DatabaseManager):
+    conn = temp_db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    tables = {row[0] for row in cursor.fetchall()}
+    assert {"phrases", "phrase_sentences"}.issubset(tables)
+
+
+def test_insert_phrases_batch_and_idempotency(temp_db: DatabaseManager):
+    phrases = [
+        {"phrase": "break a leg", "phrase_type": "idiom", "pos": "idiom",
+         "cefr_level": "B1", "difficulty_score": 2.5, "definition_en": "Good luck!",
+         "definition_vi": "Chúc may mắn!", "ipa": "breɪk ə leɡ",
+         "audio_std": None, "audio_fast": None, "audio_status": "ok"},
+        {"phrase": "give up", "phrase_type": "phrasal_verb", "pos": "phrasal verb",
+         "cefr_level": "A2", "difficulty_score": 1.8, "definition_en": "To stop trying.",
+         "definition_vi": "Từ bỏ", "ipa": None,
+         "audio_std": None, "audio_fast": None, "audio_status": "ok"}
+    ]
+    temp_db.insert_phrases_batch(phrases)
+
+    assert temp_db.get_phrase_id_by_text("break a leg") is not None
+    assert temp_db.get_phrase_id_by_text("give up") is not None
+
+    # Idempotency: INSERT OR IGNORE on duplicate phrase
+    temp_db.insert_phrases_batch(phrases)
+    conn = temp_db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM phrases;")
+    assert cursor.fetchone()[0] == 2
+
+
+def test_insert_phrase_sentences_batch_and_update_audio(temp_db: DatabaseManager):
+    temp_db.insert_phrases_batch([
+        {"phrase": "break a leg", "phrase_type": "idiom", "pos": "idiom",
+         "cefr_level": "B1", "difficulty_score": 2.5, "definition_en": "Good luck!",
+         "definition_vi": None, "ipa": None,
+         "audio_std": None, "audio_fast": None, "audio_status": "ok"}
+    ])
+    temp_db.insert_sentences_batch([
+        {"text_en": "Break a leg at the show tonight!", "text_vi": None,
+         "difficulty_score": 2.0, "cefr_level": "B1", "audio_path": None, "source": "Tatoeba"}
+    ])
+    phrase_id = temp_db.get_phrase_id_by_text("break a leg")
+
+    conn = temp_db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM sentences WHERE text_en = ?;", ("Break a leg at the show tonight!",))
+    sentence_id = cursor.fetchone()[0]
+
+    temp_db.insert_phrase_sentences_batch([
+        {"phrase_id": phrase_id, "sentence_id": sentence_id, "rank": 1}
+    ])
+    temp_db.update_phrase_audio(phrase_id, "audio/break_1_std.mp3", "audio/break_1_fast.mp3", "ok")
+
+    cursor.execute("SELECT audio_std, audio_fast, audio_status FROM phrases WHERE id = ?;", (phrase_id,))
+    row = cursor.fetchone()
+    assert row == ("audio/break_1_std.mp3", "audio/break_1_fast.mp3", "ok")
