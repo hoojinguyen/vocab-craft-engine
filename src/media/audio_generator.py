@@ -93,6 +93,29 @@ class AudioGenerator:
             "fast_path": fast_path
         }
 
+    async def generate_dual_speed_phrase(
+        self,
+        phrase_id: int,
+        text_en: str,
+        voice: str = TTS_VOICES["US_FEMALE"]
+    ) -> Dict[str, Optional[Path]]:
+        """
+        Generates standard (1.0x) and fast reflex (1.2x) audio files for a phrase.
+        Uses phrase_{id}_*.mp3 naming to avoid collision with sentence audio.
+        """
+        fn_std = f"phrase_{phrase_id}_std.mp3"
+        fn_fast = f"phrase_{phrase_id}_fast.mp3"
+
+        std_path, fast_path = await asyncio.gather(
+            self.generate_audio_file(text_en, fn_std, voice=voice, speed=TTS_SPEED_STANDARD),
+            self.generate_audio_file(text_en, fn_fast, voice=voice, speed=TTS_SPEED_FAST_REFLEX)
+        )
+
+        return {
+            "standard_path": std_path,
+            "fast_path": fast_path
+        }
+
     async def generate_batch_sentences(
         self,
         sentences: List[Dict[str, Any]],
