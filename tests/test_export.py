@@ -66,10 +66,7 @@ def test_sqlite_exporter_benchmark_speed(populated_db: Path):
 def test_exporter_creates_phrase_indexes(populated_db: Path):
     db_manager = DatabaseManager(db_path=populated_db)
     db_manager.init_schema()
-    conn = db_manager.get_connection()
-    cursor = conn.cursor()
 
-    # Insert one phrase + one sentence mapping so indexes have data
     db_manager.insert_phrases_batch([
         {"phrase": "break a leg", "phrase_type": "idiom", "pos": "idiom",
          "cefr_level": "B1", "difficulty_score": 2.5, "definition_en": "Good luck!",
@@ -80,6 +77,14 @@ def test_exporter_creates_phrase_indexes(populated_db: Path):
     db_manager.insert_phrase_sentences_batch([
         {"phrase_id": phrase_id, "sentence_id": 1, "rank": 1}
     ])
+
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DROP INDEX IF EXISTS idx_phrases_cefr;")
+    cursor.execute("DROP INDEX IF EXISTS idx_phrases_type;")
+    cursor.execute("DROP INDEX IF EXISTS idx_phrase_sentences_phrase;")
+    cursor.execute("DROP INDEX IF EXISTS idx_phrase_sentences_sentence;")
+    conn.commit()
     db_manager.close()
 
     exporter = SQLiteExporter(db_path=populated_db)
