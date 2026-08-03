@@ -41,6 +41,7 @@ from src.ingestion.relation_parser import RelationParser
 RELATION_CHECKPOINT = 50_000
 TOPIC_CHECKPOINT = 1_000
 VI_EMPTY_BACKFILL_CHECKPOINT = 0  # skip when no candidates remain
+VI_BATCH_SLEEP_SECONDS = 0.1  # gentle pacing between translation batches (rate-limit backoff)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -325,6 +326,7 @@ def run_vietnamese_step(db_manager, args) -> dict:
             batches_done += 1
             if batches_done % 10 == 0:
                 logger.info("   -> Translated %s %s so far...", f"{updated:,}", table)
+            time.sleep(VI_BATCH_SLEEP_SECONDS)
         return updated
 
     translated_defs = _backfill(priority_definitions, "definitions", "id", "definition_vi")
@@ -453,7 +455,7 @@ def run_pipeline():
                     definitions_batch.append({
                         "word_id": word_id,
                         "definition_en": def_item["definition_en"],
-                        "definition_vi": def_item.get("definition_vi") or def_item["definition_en"],
+                        "definition_vi": def_item.get("definition_vi"),
                         "example": def_item.get("example"),
                         "source": def_item["source"]
                     })

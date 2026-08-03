@@ -96,3 +96,16 @@ def test_opus_parser(tmp_path: Path):
     assert turns[0]["text_en"] == "Where are you going?"
     assert turns[0]["text_vi"] == "Bạn đang đi đâu thế?"
     assert turns[1]["text_en"] == "Yes, I agree."
+
+
+def test_extract_fields_definition_vi_none_without_vietnamese_translation():
+    item = {
+        "word": "dog",
+        "pos": "noun",
+        "sounds": [],
+        "translations": [],  # no Vietnamese translations
+        "senses": [{"glosses": ["A loyal animal."]}]
+    }
+    parsed = KaikkiParser.extract_fields(item)
+    assert parsed["vi_translations"] is None
+    assert parsed["definitions"][0]["definition_vi"] is None
