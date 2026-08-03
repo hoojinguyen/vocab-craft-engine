@@ -33,8 +33,8 @@ vocab-craft-engine/
 │   └── setup_guide.md
 ├── scripts/                 # Utility scripts & dataset downloaders
 ├── src/                     # Core engine package
-│   ├── ingestion/           # Streaming parsers (Kaikki, Tatoeba, OPUS)
-│   ├── nlp/                 # Lemmatizer, CEFR grader, collocations, reflex, phrase engine, relation & topic engine
+│   ├── ingestion/           # Streaming parsers (Kaikki, Tatoeba, OPUS), incl. phrase & relation parsers
+│   ├── nlp/                 # Lemmatizer, CEFR grader, collocations, reflex, phrase engine, topic mapper
 │   ├── media/               # Edge-TTS audio synthesizer & IPA mapper
 │   ├── db/                  # Staging connection & transaction manager
 │   └── export/              # Mobile SQLite packager & index optimizer
