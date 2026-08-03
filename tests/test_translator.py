@@ -53,3 +53,11 @@ def test_cache_never_stores_passthrough(tmp_path: Path):
     tr = make_translator(tmp_path, SimpleNamespace(translate=lambda text: "The dog is an animal"))
     tr.translate_text("dog")
     assert "dog" not in tr.cache
+
+
+def test_cache_polluted_entries_purged_on_load(tmp_path: Path):
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text('{"dog": "The dog is an animal", "cat": "con mèo"}', encoding="utf-8")
+    tr = make_translator(tmp_path, SimpleNamespace(translate=lambda text: "con chó"))
+    assert tr.translate_text("cat") == "con mèo"   # valid cache entry served
+    assert tr.translate_text("dog") == "con chó"   # polluted entry purged, re-translated

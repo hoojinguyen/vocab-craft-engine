@@ -24,9 +24,9 @@ class Translator:
     def __init__(self, cache_path: Path = CACHE_FILE):
         self.cache_path = Path(cache_path)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self.validator = VietnameseTextValidator()
         self.cache: Dict[str, str] = self._load_cache()
         self._translator = None
-        self.validator = VietnameseTextValidator()
 
     def _get_translator(self):
         if self._translator is None:
@@ -41,7 +41,11 @@ class Translator:
         if self.cache_path.exists():
             try:
                 with open(self.cache_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                return {
+                    key: value for key, value in data.items()
+                    if isinstance(value, str) and self.validator.is_vietnamese(value)
+                }
             except Exception:
                 return {}
         return {}
