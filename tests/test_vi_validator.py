@@ -37,3 +37,14 @@ def test_accepts_short_ambiguous_text(validator):
 def test_rejects_empty_and_whitespace(validator):
     assert validator.is_vietnamese("") is False
     assert validator.is_vietnamese("   ") is False
+
+
+def test_rejects_contractions_and_punctuation(validator):
+    assert validator.is_vietnamese("It's a loyal animal.") is False
+    assert validator.is_vietnamese("He doesn't like the weather here.") is False
+    assert validator.is_vietnamese("This is the dog — it loves you.") is False
+
+
+def test_accepts_vietnamese_punctuation(validator):
+    assert validator.is_vietnamese("Con chó đang chạy!") is True
+    assert validator.is_vietnamese("Xin chào — bạn khỏe không?") is True

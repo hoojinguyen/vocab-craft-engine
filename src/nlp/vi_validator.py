@@ -5,9 +5,12 @@ Used to reject English passthrough from machine translation providers.
 """
 
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+_WORD_SPLIT = re.compile(r"[^a-zà-ỹ]+")
 
 
 class VietnameseTextValidator:
@@ -19,7 +22,8 @@ class VietnameseTextValidator:
     TONE_MARKED_VOWELS = set("àáảãạèéẻẽẹìíỉĩịòóỏõọùúủũụỳýỷỹỵ")
     ENGLISH_FUNCTION_WORDS = {
         "the", "and", "of", "to", "with", "for", "is", "are",
-        "a", "an", "this", "that", "you", "in", "on", "it", "as"
+        "a", "an", "this", "that", "you", "in", "on", "it", "as",
+        "he"
     }
 
     def is_vietnamese(self, text: Optional[str]) -> bool:
@@ -27,18 +31,16 @@ class VietnameseTextValidator:
         if not text or not text.strip():
             return False
 
-        clean = text.strip()
+        clean = text.strip().lower()
 
         # 1. Vietnamese-specific characters or tone-marked vowels -> accept
         if any(ch in self.VIETNAMESE_SPECIFIC_CHARS for ch in clean) or \
            any(ch in self.TONE_MARKED_VOWELS for ch in clean):
             return True
 
-        # 2. Pure ASCII: count English function words -> reject if >= 2
-        function_word_hits = sum(
-            1 for w in clean.split()
-            if w.strip(".,!?;:\"'()[]").lower() in self.ENGLISH_FUNCTION_WORDS
-        )
+        # 2. Split on non-letters (handles contractions, dashes, punctuation)
+        tokens = [w for w in _WORD_SPLIT.split(clean) if w]
+        function_word_hits = sum(1 for w in tokens if w in self.ENGLISH_FUNCTION_WORDS)
         if function_word_hits >= 2:
             return False
 
