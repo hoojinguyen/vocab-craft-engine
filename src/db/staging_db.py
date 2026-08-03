@@ -181,6 +181,31 @@ class DatabaseManager:
             );
         """)
 
+        # 12. Word Lexical Relations table (N-1 to words, self-referencing)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS word_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                word_id INTEGER NOT NULL,
+                relation_type TEXT NOT NULL,
+                target_text TEXT NOT NULL,
+                target_word_id INTEGER,
+                inverted INTEGER NOT NULL DEFAULT 0,
+                source TEXT,
+                FOREIGN KEY (word_id) REFERENCES words (id) ON DELETE CASCADE,
+                FOREIGN KEY (target_word_id) REFERENCES words (id) ON DELETE CASCADE
+            );
+        """)
+
+        # 13. Word Topics table (N-1 to words)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS word_topics (
+                word_id INTEGER NOT NULL,
+                topic TEXT NOT NULL,
+                raw_topic TEXT,
+                FOREIGN KEY (word_id) REFERENCES words (id) ON DELETE CASCADE
+            );
+        """)
+
         # Indexes for fast mobile and pipeline queries
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_words_lemma ON words(lemma);")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sentences_text_en ON sentences(text_en);")
@@ -190,6 +215,10 @@ class DatabaseManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrases_type ON phrases(phrase_type);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_phrase ON phrase_sentences(phrase_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_sentence ON phrase_sentences(sentence_id);")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_relations_unique ON word_relations(word_id, relation_type, target_text);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_relations_target ON word_relations(target_word_id);")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic);")
 
         conn.commit()
         logger.info("Database schema initialized successfully at %s", self.db_path)
@@ -330,6 +359,36 @@ class DatabaseManager:
         """
         cursor = conn.cursor()
         cursor.executemany(query, mappings_data)
+        conn.commit()
+        return cursor.rowcount
+
+    def insert_word_relations_batch(self, relations_data: List[Dict[str, Any]]) -> int:
+        """Batch insert lexical relations with IGNORE on duplicate (word_id, relation_type, target_text)."""
+        if not relations_data:
+            return 0
+
+        conn = self.get_connection()
+        query = """
+            INSERT OR IGNORE INTO word_relations (word_id, relation_type, target_text, target_word_id, inverted, source)
+            VALUES (:word_id, :relation_type, :target_text, :target_word_id, :inverted, :source);
+        """
+        cursor = conn.cursor()
+        cursor.executemany(query, relations_data)
+        conn.commit()
+        return cursor.rowcount
+
+    def insert_word_topics_batch(self, topics_data: List[Dict[str, Any]]) -> int:
+        """Batch topic insert with IGNORE on duplicate (word_id, topic)."""
+        if not topics_data:
+            return 0
+
+        conn = self.get_connection()
+        query = """
+            INSERT OR IGNORE INTO word_topics (word_id, topic, raw_topic)
+            VALUES (:word_id, :topic, :raw_topic);
+        """
+        cursor = conn.cursor()
+        cursor.executemany(query, topics_data)
         conn.commit()
         return cursor.rowcount
 

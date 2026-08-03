@@ -138,3 +138,53 @@ def test_insert_phrase_sentences_batch_and_update_audio(temp_db: DatabaseManager
     cursor.execute("SELECT audio_std, audio_fast, audio_status FROM phrases WHERE id = ?;", (phrase_id,))
     row = cursor.fetchone()
     assert row == ("audio/break_1_std.mp3", "audio/break_1_fast.mp3", "ok")
+
+
+def test_relation_tables_exist(temp_db: DatabaseManager):
+    conn = temp_db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    tables = {row[0] for row in cursor.fetchall()}
+    assert {"word_relations", "word_topics"}.issubset(tables)
+
+
+def test_insert_word_relations_batch_and_idempotency(temp_db: DatabaseManager):
+    temp_db.insert_words_batch([
+        {"lemma": "dog", "pos": "noun", "ipa_uk": None, "ipa_us": None, "frequency_rank": 100, "cefr_level": "A1"},
+        {"lemma": "animal", "pos": "noun", "ipa_uk": None, "ipa_us": None, "frequency_rank": 300, "cefr_level": "A1"},
+        {"lemma": "hound", "pos": "noun", "ipa_uk": None, "ipa_us": None, "frequency_rank": 8000, "cefr_level": "B2"}
+    ])
+    dog_id = temp_db.get_word_id_by_lemma("dog")
+    animal_id = temp_db.get_word_id_by_lemma("animal")
+    hound_id = temp_db.get_word_id_by_lemma("hound")
+
+    relations = [
+        {"word_id": dog_id, "relation_type": "synonym", "target_text": "hound",
+         "target_word_id": hound_id, "inverted": 0, "source": "synonyms"},
+        {"word_id": dog_id, "relation_type": "hypernym", "target_text": "animal",
+         "target_word_id": animal_id, "inverted": 0, "source": "hypernyms"},
+    ]
+    temp_db.insert_word_relations_batch(relations)
+    # Idempotency: UNIQUE (word_id, relation_type, target_text) + OR IGNORE
+    temp_db.insert_word_relations_batch(relations)
+
+    conn = temp_db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM word_relations;")
+    assert cursor.fetchone()[0] == 2
+
+
+def test_insert_word_topics_batch_and_idempotency(temp_db: DatabaseManager):
+    temp_db.insert_words_batch([
+        {"lemma": "dog", "pos": "noun", "ipa_uk": None, "ipa_us": None, "frequency_rank": 100, "cefr_level": "A1"}
+    ])
+    dog_id = temp_db.get_word_id_by_lemma("dog")
+
+    topics = [{"word_id": dog_id, "topic": "Nature & Animals", "raw_topic": "zoology"}]
+    temp_db.insert_word_topics_batch(topics)
+    temp_db.insert_word_topics_batch(topics)
+
+    conn = temp_db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM word_topics;")
+    assert cursor.fetchone()[0] == 1
