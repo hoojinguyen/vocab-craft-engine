@@ -1037,3 +1037,5 @@ git commit -m "docs: Step 4H lexical relations and topics pipeline documentation
 | # | Plan | Implementation | Reason |
 |---|---|---|---|
 | 1 | (plan addition) | `word_relations` & `word_topics` added to the `--force-reset` drop list | Without this, a forced rebuild orphans existing relation rows → `verify_foreign_keys` fails. Pre-existing `phrases`/`phrase_sentences` omission untouched (out of scope). |
+| 2 | TopicMapper accessed via `TopicMapper.THEME_MAP` | Class-body alias removed; `map_topic` references module-level `THEME_MAP` directly | Python does NOT resolve module globals through the class; the alias read as a bug. Owner: Task 2. |
+| 3 | Cap test fixture `{"word": f"synonym{i}" for i in range(30)}` | Fixture changed to letter-only targets `"synonym" + "a" * (i + 1)` | `CLEAN_CHARS_PATTERN` rejects digit-containing targets, so the planned fixture made the cap test vacuously pass (entry → None). Test-data fix; implementation unchanged. Owner: Task 3. |
