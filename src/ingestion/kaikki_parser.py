@@ -146,7 +146,7 @@ class KaikkiParser:
             for gloss in glosses:
                 definitions.append({
                     "definition_en": gloss.strip(),
-                    "definition_vi": vi_trans_str or gloss.strip(),
+                    "definition_vi": vi_trans_str,
                     "example": example_text,
                     "source": "Kaikki/Wiktionary"
                 })
