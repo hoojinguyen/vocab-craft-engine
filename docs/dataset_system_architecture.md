@@ -185,6 +185,17 @@ Re-scans the Kaikki dump a third time for single-word entries, mapping every kno
 
 Persisted in `word_relations` (target text plus an optional link to `words.id`) and `word_topics`, both with UNIQUE indexes for idempotent re-runs. Checkpointed at 50,000 relations / 1,000 topics (with at least one inverse link present); a self-healing re-run fills in any gap.
 
+### Step 4I: Vietnamese Translation Quality & Backfill
+
+Scans every table with a Vietnamese translation column (definitions, collocations, phrases) to:
+
+- Clean up legacy data: rows with English passthrough (`definition_vi` = `definition_en`) are reset to NULL
+- Backfill in priority order: graded words first (`cefr_level` set) → collocations → phrases
+- Every MT result is checked by `VietnameseTextValidator` (pure heuristic: Vietnamese-specific characters / tone marks → accept; ≥ 2 English function words in ASCII text → reject)
+- Rejected or failed translations stay NULL (never English text)
+
+Count-based checkpoint: re-runs skip when no missing translations remain. Source fix: `KaikkiParser` no longer falls back to the English gloss for `definition_vi`.
+
 ---
 
 ## 4. Recommended Technology Stack
