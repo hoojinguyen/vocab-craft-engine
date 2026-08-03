@@ -40,7 +40,7 @@ from src.ingestion.relation_parser import RelationParser
 
 RELATION_CHECKPOINT = 50_000
 TOPIC_CHECKPOINT = 1_000
-VI_PRIORITY_SUBSET_CHECKPOINT = 0  # skip when no prioritized candidates remain
+VI_EMPTY_BACKFILL_CHECKPOINT = 0  # skip when no candidates remain
 
 logging.basicConfig(
     level=logging.INFO,
@@ -290,8 +290,8 @@ def run_vietnamese_step(db_manager, args) -> dict:
     priority_phrases = cursor.fetchall()
 
     remaining = len(priority_definitions) + len(priority_collocations) + len(priority_phrases)
-    if remaining == VI_PRIORITY_SUBSET_CHECKPOINT and not args.force_reset:
-        logger.info("[4I] CHECKPOINT DETECTED: no missing Vietnamese translations for prioritized content. Skipping.")
+    if remaining == VI_EMPTY_BACKFILL_CHECKPOINT and not args.force_reset:
+        logger.info("[4I] CHECKPOINT DETECTED: no missing Vietnamese translations remain. Skipping.")
         return {"definitions": 0, "collocations": 0, "phrases": 0}
 
     logger.info("   [4I] Backfilling Vietnamese translations (%s definitions, %s collocations, %s phrases)...",
@@ -306,6 +306,7 @@ def run_vietnamese_step(db_manager, args) -> dict:
     def _backfill(rows, table, id_col, target_col):
         """Translate each row and UPDATE the target column; returns translated count."""
         updated = 0
+        batches_done = 0
         for batch_start in range(0, len(rows), 1000):
             batch = rows[batch_start:batch_start + 1000]
             updates = []
@@ -314,16 +315,24 @@ def run_vietnamese_step(db_manager, args) -> dict:
                 if vi and validator.is_vietnamese(vi):
                     updates.append((vi, row_id))
             if updates:
+                # table/id_col/target_col are hardcoded literals at call sites; values are parameterized
                 cursor.executemany(
                     f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;",
                     updates
                 )
                 conn.commit()
                 updated += len(updates)
+            batches_done += 1
+            if batches_done % 10 == 0:
+                logger.info("   -> Translated %s %s so far...", f"{updated:,}", table)
         return updated
 
     translated_defs = _backfill(priority_definitions, "definitions", "id", "definition_vi")
+    if hasattr(translator, "save_cache"):
+        translator.save_cache()
     translated_colls = _backfill(priority_collocations, "collocations", "id", "meaning_vi")
+    if hasattr(translator, "save_cache"):
+        translator.save_cache()
     translated_phrases = _backfill(priority_phrases, "phrases", "id", "definition_vi")
     if hasattr(translator, "save_cache"):
         translator.save_cache()

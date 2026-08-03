@@ -142,18 +142,23 @@ def test_run_vietnamese_step_prioritizes_graded_words(vi_environment, monkeypatc
     db_manager = vi_environment
     args = argparse.Namespace(force_reset=False)
 
-    # Only translate dog's definition (graded); cat stays NULL
-    class LimitedTranslator:
+    calls = []
+
+    class BudgetTranslator:
         @staticmethod
         def translate_text(text):
-            if text == "A loyal animal.":
+            calls.append(text)
+            # Only the FIRST call gets a valid translation — and it must be
+            # the graded word's definition, proving graded-first ordering.
+            if len(calls) == 1 and text == "A loyal animal.":
                 return "Một loài vật trung thành."
-            return ""  # budget exhausted for ungraded
+            return ""
 
-    monkeypatch.setattr(main_module, "Translator", LimitedTranslator)
+    monkeypatch.setattr(main_module, "Translator", BudgetTranslator)
 
     stats = main_module.run_vietnamese_step(db_manager, args)
 
+    assert calls[0] == "A loyal animal."
     conn = db_manager.get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT definition_vi FROM definitions d JOIN words w ON w.id = d.word_id WHERE w.lemma='dog';")
