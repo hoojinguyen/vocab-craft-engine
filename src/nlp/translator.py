@@ -5,6 +5,7 @@ Translates collocations and definition glosses into Vietnamese with local JSON c
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -21,9 +22,10 @@ class Translator:
 
     MAX_ATTEMPTS = 2  # one initial call + one retry
 
-    def __init__(self, cache_path: Path = CACHE_FILE):
+    def __init__(self, cache_path: Path = CACHE_FILE, backoff_seconds: float = 0.5):
         self.cache_path = Path(cache_path)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self.backoff_seconds = backoff_seconds
         self.validator = VietnameseTextValidator()
         self.cache: Dict[str, str] = self._load_cache()
         self._translator = None
@@ -79,6 +81,8 @@ class Translator:
                 except Exception as e:
                     logger.debug("Translation attempt %s failed for '%s': %s",
                                  attempt + 1, clean_text[:30], e)
+                if attempt < self.MAX_ATTEMPTS - 1:
+                    time.sleep(self.backoff_seconds)
 
         return ""
 

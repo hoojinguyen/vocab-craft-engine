@@ -11,7 +11,7 @@ from src.nlp.translator import Translator
 
 
 def make_translator(tmp_path: Path, fake) -> Translator:
-    tr = Translator(cache_path=tmp_path / "cache.json")
+    tr = Translator(cache_path=tmp_path / "cache.json", backoff_seconds=0)
     tr._translator = fake
     return tr
 
@@ -61,3 +61,22 @@ def test_cache_polluted_entries_purged_on_load(tmp_path: Path):
     tr = make_translator(tmp_path, SimpleNamespace(translate=lambda text: "con chó"))
     assert tr.translate_text("cat") == "con mèo"   # valid cache entry served
     assert tr.translate_text("dog") == "con chó"   # polluted entry purged, re-translated
+
+
+def test_translate_backoff_between_attempts(tmp_path: Path):
+    import time
+
+    class SlowFake:
+        def __init__(self):
+            self.calls = 0
+        def translate(self, text):
+            self.calls += 1
+            return "" if self.calls == 1 else "con chó"
+
+    tr = Translator(cache_path=tmp_path / "cache.json", backoff_seconds=0.05)
+    tr._translator = SlowFake()
+    start = time.monotonic()
+    result = tr.translate_text("dog")
+    elapsed = time.monotonic() - start
+    assert result == "con chó"
+    assert elapsed >= 0.04  # slept between attempts
