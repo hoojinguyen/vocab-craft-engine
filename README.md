@@ -1,6 +1,6 @@
 # VocabCraft Engine
 
-An automated ETL, linguistic enrichment, CEFR grading, dual-speed neural audio synthesis, Thành ngữ & Cụm từ cố định (Idioms, Phrasal Verbs, Proverbs), and mobile-ready SQLite packaging engine for English learning applications (iOS, Android, Flutter, React Native).
+An automated ETL, linguistic enrichment, CEFR grading, dual-speed neural audio synthesis, Thành ngữ & Cụm từ cố định (Idioms, Phrasal Verbs, Proverbs), lexical relations & topics (Synonyms, Antonyms, Hypernyms, Hyponyms, and 18 curated themes), and mobile-ready SQLite packaging engine for English learning applications (iOS, Android, Flutter, React Native).
 
 ---
 
@@ -34,7 +34,7 @@ vocab-craft-engine/
 ├── scripts/                 # Utility scripts & dataset downloaders
 ├── src/                     # Core engine package
 │   ├── ingestion/           # Streaming parsers (Kaikki, Tatoeba, OPUS)
-│   ├── nlp/                 # Lemmatizer, CEFR grader, collocations, reflex, phrase engine
+│   ├── nlp/                 # Lemmatizer, CEFR grader, collocations, reflex, phrase engine, relation & topic engine
 │   ├── media/               # Edge-TTS audio synthesizer & IPA mapper
 │   ├── db/                  # Staging connection & transaction manager
 │   └── export/              # Mobile SQLite packager & index optimizer

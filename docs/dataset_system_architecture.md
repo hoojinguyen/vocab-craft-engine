@@ -36,6 +36,8 @@ erDiagram
     SENTENCES ||--o{ DIALOGUE_NODES : spoken_in
     PHRASES ||--o{ PHRASE_SENTENCES : appears_in
     SENTENCES ||--o{ PHRASE_SENTENCES : contains
+    WORDS ||--o{ WORD_RELATIONS : relates_to
+    WORDS ||--o{ WORD_TOPICS : tagged_with
 ```
 
 ### Table Definitions
@@ -119,6 +121,9 @@ erDiagram
    - `rank`: INTEGER (Example sentence priority)
    - PRIMARY KEY (`phrase_id`, `sentence_id`)
 
+10. **`word_relations`** — id (PK), word_id (FK->words.id), relation_type (synonym/antonym/hypernym/hyponym), target_text, target_word_id (FK->words.id, nullable), inverted (0/1), source. UNIQUE (word_id, relation_type, target_text); index on target_word_id.
+11. **`word_topics`** — word_id (FK->words.id), topic, raw_topic. UNIQUE (word_id, topic); index on topic.
+
 ---
 
 ## 3. Pipeline Layers & Data Flow
@@ -156,6 +161,16 @@ Re-scans the Kaikki dump to extract idioms, phrasal verbs, proverbs, and fixed e
 - Synthesized into dual-speed 1.0x/1.2x audio (`AudioGenerator.generate_dual_speed_phrase`)
 
 Stored in the `phrases` and `phrase_sentences` tables and exported with `english_dataset.db` using dedicated indexes (`idx_phrases_cefr`, `idx_phrases_type`, ...).
+
+### Step 4H: Lexical Relations & Topics
+
+Re-scans the Kaikki dump a third time for single-word entries, mapping every word to:
+
+- Its **synonyms, antonyms, hypernyms, and hyponyms** (from entry-level and sense-level relation sections, capped at 25 targets per relation type per word).
+- Every hypernym `(A -> B)` also generates an **inverse hyponym** `(B -> A, inverted=1)` so the taxonomy is navigable in both directions.
+- **Topic categories** from each sense's `topics` field, mapped through a curated 18-theme taxonomy (e.g. `computing` -> `Technology`) with a normalized raw fallback.
+
+Persisted in `word_relations` (target text plus an optional link to `words.id`) and `word_topics`, both with UNIQUE indexes for idempotent re-runs. Checkpointed at 50,000 relations / 1,000 topics; a self-healing re-run fills in any gap.
 
 ---
 
