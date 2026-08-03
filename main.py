@@ -35,6 +35,10 @@ from src.export.sqlite_exporter import SQLiteExporter
 from src.ingestion.phrase_parser import PhraseParser
 from src.nlp.phrase_grader import PhraseGrader
 from src.nlp.phrase_example_matcher import PhraseExampleMatcher
+from src.ingestion.relation_parser import RelationParser
+
+RELATION_CHECKPOINT = 50_000
+TOPIC_CHECKPOINT = 1_000
 
 logging.basicConfig(
     level=logging.INFO,
@@ -150,6 +154,102 @@ def run_phrase_step(db_manager, args) -> dict:
     return {"phrases": phrase_count, "links": len(link_batch)}
 
 
+def run_relations_step(db_manager, args) -> dict:
+    """
+    Step 4H: Ingest lexical relations (synonyms, antonyms, hypernyms,
+    hyponyms) and topics from the Kaikki dump for single-word entries.
+    Checkpoint: skips when > RELATION_CHECKPOINT relations AND
+    > TOPIC_CHECKPOINT topic rows already exist.
+    """
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT count(*) FROM word_relations;")
+    existing_relations = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM word_topics;")
+    existing_topics = cursor.fetchone()[0]
+
+    if existing_relations > RELATION_CHECKPOINT and existing_topics > TOPIC_CHECKPOINT and not args.force_reset:
+        logger.info("[4H] CHECKPOINT DETECTED: %s relations, %s topics already exist. Skipping.", f"{existing_relations:,}", f"{existing_topics:,}")
+        return {"relations": existing_relations, "links": 0, "topics": existing_topics}
+
+    logger.info("   [4H] Building Lexical Relations & Topics (Synonyms, Antonyms, Hypernyms, Hyponyms, Topics)...")
+    relation_parser = RelationParser(KAIKKI_JSON_PATH)
+
+    # Lemma -> id map so relation targets can be linked back to the words table
+    cursor.execute("SELECT id, lemma FROM words;")
+    lemma_map = {lemma: word_id for word_id, lemma in cursor.fetchall()}
+
+    relations_batch = []
+    topics_batch = []
+    relation_count = 0
+    topics_count = 0
+
+    for item in relation_parser.parse_entries():
+        word_id = lemma_map.get(item["word"])
+        if word_id is None:
+            continue
+        for rel in item["relations"]:
+            relations_batch.append({
+                "word_id": word_id,
+                "relation_type": rel["relation_type"],
+                "target_text": rel["target"],
+                "target_word_id": lemma_map.get(rel["target"]),
+                "inverted": 0,
+                "source": rel["source"]
+            })
+            if len(relations_batch) >= 1000:
+                db_manager.insert_word_relations_batch(relations_batch)
+                relation_count += len(relations_batch)
+                relations_batch = []
+                logger.info("   -> Staged %s relations...", f"{relation_count:,}")
+        for top in item["topics"]:
+            topics_batch.append({"word_id": word_id, "topic": top["topic"], "raw_topic": top["raw_topic"]})
+            if len(topics_batch) >= 1000:
+                db_manager.insert_word_topics_batch(topics_batch)
+                topics_count += len(topics_batch)
+                topics_batch = []
+
+    if relations_batch:
+        db_manager.insert_word_relations_batch(relations_batch)
+        relation_count += len(relations_batch)
+    if topics_batch:
+        db_manager.insert_word_topics_batch(topics_batch)
+        topics_count += len(topics_batch)
+    logger.info("   [4H] Stored %s relations and %s topic assignments.", f"{relation_count:,}", f"{topics_count:,}")
+
+    # Inverse pass: each natural hypernym (A -> B) generates hyponym (B -> A), inverted=1
+    cursor.execute("""
+        SELECT wr.word_id, w.lemma, wr.target_word_id, wr.source
+        FROM word_relations wr
+        JOIN words w ON w.id = wr.word_id
+        WHERE wr.relation_type = 'hypernym' AND wr.inverted = 0 AND wr.target_word_id IS NOT NULL;
+    """)
+    natural_hypernyms = cursor.fetchall()
+
+    inverse_batch = []
+    link_count = 0
+    for word_id, lemma, target_word_id, source in natural_hypernyms:
+        inverse_batch.append({
+            "word_id": target_word_id,
+            "relation_type": "hyponym",
+            "target_text": lemma,
+            "target_word_id": word_id,
+            "inverted": 1,
+            "source": source
+        })
+        if len(inverse_batch) >= 5000:
+            db_manager.insert_word_relations_batch(inverse_batch)
+            link_count += len(inverse_batch)
+            inverse_batch = []
+    if inverse_batch:
+        db_manager.insert_word_relations_batch(inverse_batch)
+        link_count += len(inverse_batch)
+    logger.info("   [4H] Generated %s inverse hyponym links.", f"{link_count:,}")
+
+    return {"relations": relation_count, "links": link_count, "topics": topics_count}
+
+
 def run_pipeline():
     args = parse_arguments()
     start_time = time.time()
@@ -173,7 +273,7 @@ def run_pipeline():
         cursor = conn.cursor()
         conn.execute("PRAGMA foreign_keys = OFF;")
         tables_to_drop = [
-            "word_sentence_map", "reflex_drills", "dialogue_nodes",
+            "word_relations", "word_topics", "word_sentence_map", "reflex_drills", "dialogue_nodes",
             "dialogue_trees", "sentences", "sentence_patterns",
             "collocations", "definitions", "words"
         ]
@@ -471,6 +571,12 @@ def run_pipeline():
     phrase_stats = run_phrase_step(db_manager, args)
     logger.info("   [4G] Completed: %s phrases, %s example sentence links.",
                 f"{phrase_stats['phrases']:,}", f"{phrase_stats['links']:,}")
+
+    # 4H. Lexical Relations & Topics (Synonyms, Antonyms, Hypernyms, Hyponyms, Topics)
+    logger.info("   [4H] Building Lexical Relations & Topics Database...")
+    relation_stats = run_relations_step(db_manager, args)
+    logger.info("   [4H] Completed: %s relations, %s inverse links, %s topic assignments.",
+                f"{relation_stats['relations']:,}", f"{relation_stats['links']:,}", f"{relation_stats['topics']:,}")
 
     # Step 5: Export & Optimize SQLite Mobile DB
     logger.info("[Step 5/5] Packaging & Optimizing SQLite Mobile Database...")
