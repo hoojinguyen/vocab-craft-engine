@@ -159,7 +159,8 @@ def run_relations_step(db_manager, args) -> dict:
     Step 4H: Ingest lexical relations (synonyms, antonyms, hypernyms,
     hyponyms) and topics from the Kaikki dump for single-word entries.
     Checkpoint: skips when > RELATION_CHECKPOINT relations AND
-    > TOPIC_CHECKPOINT topic rows already exist.
+    > TOPIC_CHECKPOINT topic rows exist AND at least one inverted
+    (inverse-pass) link exists.
     """
     conn = db_manager.get_connection()
     cursor = conn.cursor()
@@ -168,9 +169,12 @@ def run_relations_step(db_manager, args) -> dict:
     existing_relations = cursor.fetchone()[0]
     cursor.execute("SELECT count(*) FROM word_topics;")
     existing_topics = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM word_relations WHERE inverted = 1;")
+    existing_inverse = cursor.fetchone()[0]
 
-    if existing_relations > RELATION_CHECKPOINT and existing_topics > TOPIC_CHECKPOINT and not args.force_reset:
-        logger.info("[4H] CHECKPOINT DETECTED: %s relations, %s topics already exist. Skipping.", f"{existing_relations:,}", f"{existing_topics:,}")
+    if (existing_relations > RELATION_CHECKPOINT and existing_topics > TOPIC_CHECKPOINT
+            and existing_inverse > 0 and not args.force_reset):
+        logger.info("[4H] CHECKPOINT DETECTED: %s relations, %s inverse links, %s topics already exist. Skipping.", f"{existing_relations:,}", f"{existing_inverse:,}", f"{existing_topics:,}")
         return {"relations": existing_relations, "links": 0, "topics": existing_topics}
 
     logger.info("   [4H] Building Lexical Relations & Topics (Synonyms, Antonyms, Hypernyms, Hyponyms, Topics)...")
@@ -179,6 +183,8 @@ def run_relations_step(db_manager, args) -> dict:
     # Lemma -> id map so relation targets can be linked back to the words table
     cursor.execute("SELECT id, lemma FROM words;")
     lemma_map = {lemma: word_id for word_id, lemma in cursor.fetchall()}
+    if not lemma_map:
+        logger.warning("   [4H] words table is empty — no relations or topics will be linked. Run Step 2 first.")
 
     relations_batch = []
     topics_batch = []

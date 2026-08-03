@@ -95,6 +95,10 @@ def test_run_relations_step_checkpoint_skips(relation_environment, monkeypatch):
          "target_word_id": None, "inverted": 0, "source": "synonyms"}
         for i in range(12)
     ])
+    db_manager.insert_word_relations_batch([
+        {"word_id": dog_id, "relation_type": "hyponym", "target_text": "seedinv",
+         "target_word_id": None, "inverted": 1, "source": "hypernyms"}
+    ])
     db_manager.insert_word_topics_batch([
         {"word_id": dog_id, "topic": f"Seed{i}", "raw_topic": "seed"} for i in range(12)
     ])
@@ -103,6 +107,52 @@ def test_run_relations_step_checkpoint_skips(relation_environment, monkeypatch):
         stats = main_module.run_relations_step(db_manager, args)
         mock_parser.assert_not_called()
 
-    assert stats["relations"] == 12
+    assert stats["relations"] == 13
     assert stats["links"] == 0
     assert stats["topics"] == 12
+
+
+def test_run_relations_step_repairs_missing_inverse(relation_environment, monkeypatch):
+    db_manager = relation_environment
+    args = argparse.Namespace(force_reset=False)
+
+    monkeypatch.setattr(main_module, "RELATION_CHECKPOINT", 10)
+    monkeypatch.setattr(main_module, "TOPIC_CHECKPOINT", 10)
+
+    dog_id = db_manager.get_word_id_by_lemma("dog")
+    db_manager.insert_word_relations_batch([
+        {"word_id": dog_id, "relation_type": "synonym", "target_text": f"seed{i}",
+         "target_word_id": None, "inverted": 0, "source": "synonyms"}
+        for i in range(12)
+    ])
+    db_manager.insert_word_topics_batch([
+        {"word_id": dog_id, "topic": f"Seed{i}", "raw_topic": "seed"} for i in range(12)
+    ])
+
+    with patch.object(main_module, "RelationParser") as mock_parser:
+        stats = main_module.run_relations_step(db_manager, args)
+        mock_parser.assert_called_once()
+
+    assert stats["relations"] == 0
+    assert stats["topics"] == 0
+
+
+def test_run_relations_step_idempotent_rerun(relation_environment):
+    db_manager = relation_environment
+    args = argparse.Namespace(force_reset=False)
+
+    main_module.run_relations_step(db_manager, args)
+    main_module.run_relations_step(db_manager, args)
+
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT count(*) FROM word_relations;")
+    rel_count = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM word_relations WHERE inverted = 1;")
+    inv_count = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM word_topics;")
+    top_count = cursor.fetchone()[0]
+
+    assert rel_count == 5
+    assert inv_count == 1
+    assert top_count == 2
