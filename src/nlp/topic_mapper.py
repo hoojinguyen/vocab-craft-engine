@@ -55,6 +55,7 @@ THEME_MAP: Dict[str, str] = {
     "aviation": "Travel & Transportation",
     "rail transport": "Travel & Transportation",
     "automotive": "Travel & Transportation",
+    "nautical": "Travel & Transportation",
     # Food & Drink
     "food": "Food & Drink",
     "cooking": "Food & Drink",
@@ -90,6 +91,7 @@ THEME_MAP: Dict[str, str] = {
     "ichthyology": "Nature & Animals",
     "mammals": "Nature & Animals",
     "ecology": "Nature & Animals",
+    "agriculture": "Nature & Animals",
     # Science & Mathematics
     "mathematics": "Science & Mathematics",
     "math": "Science & Mathematics",
@@ -149,12 +151,10 @@ THEME_MAP: Dict[str, str] = {
 class TopicMapper:
     """Maps raw Kaikki topic keys to curated themes."""
 
-    THEME_MAP = THEME_MAP
-
     @staticmethod
     def map_topic(raw: str) -> str:
         key = raw.strip().lower()
-        theme = TopicMapper.THEME_MAP.get(key)
+        theme = THEME_MAP.get(key)
         if theme:
             return theme
         return key.replace("-", " ").title()
