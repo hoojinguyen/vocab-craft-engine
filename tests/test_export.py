@@ -120,3 +120,41 @@ def test_exporter_phrase_foreign_keys(populated_db: Path):
     exporter = SQLiteExporter(db_path=populated_db)
     violations = exporter.verify_foreign_keys()
     assert len(violations) == 0
+
+
+def test_exporter_creates_relation_indexes(populated_db: Path):
+    db_manager = DatabaseManager(db_path=populated_db)
+    db_manager.init_schema()
+
+    run_id = db_manager.get_word_id_by_lemma("run")
+    jump_id = db_manager.get_word_id_by_lemma("jump")
+    db_manager.insert_word_relations_batch([
+        {"word_id": run_id, "relation_type": "synonym", "target_text": "jump",
+         "target_word_id": jump_id, "inverted": 0, "source": "synonyms"}
+    ])
+    db_manager.insert_word_topics_batch([
+        {"word_id": run_id, "topic": "Technology", "raw_topic": "computing"}
+    ])
+
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DROP INDEX IF EXISTS idx_word_relations_unique;")
+    cursor.execute("DROP INDEX IF EXISTS idx_word_relations_target;")
+    cursor.execute("DROP INDEX IF EXISTS idx_word_topics_unique;")
+    cursor.execute("DROP INDEX IF EXISTS idx_word_topics_topic;")
+    conn.commit()
+    db_manager.close()
+
+    exporter = SQLiteExporter(db_path=populated_db)
+    exporter.optimize_and_package()
+
+    conn = sqlite3.connect(str(populated_db))
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('word_relations', 'word_topics');")
+    indexes = {row[0] for row in cursor.fetchall()}
+    conn.close()
+
+    assert "idx_word_relations_unique" in indexes
+    assert "idx_word_relations_target" in indexes
+    assert "idx_word_topics_unique" in indexes
+    assert "idx_word_topics_topic" in indexes
