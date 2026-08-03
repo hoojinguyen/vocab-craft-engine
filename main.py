@@ -29,6 +29,7 @@ from src.nlp.chunk_extractor import ChunkExtractor
 from src.nlp.reflex_builder import ReflexBuilder
 from src.nlp.scenario_builder import ScenarioBuilder
 from src.nlp.translator import Translator
+from src.nlp.vi_validator import VietnameseTextValidator
 from src.media.ipa_mapper import IPAMapper
 from src.media.audio_generator import AudioGenerator
 from src.export.sqlite_exporter import SQLiteExporter
@@ -39,6 +40,7 @@ from src.ingestion.relation_parser import RelationParser
 
 RELATION_CHECKPOINT = 50_000
 TOPIC_CHECKPOINT = 1_000
+VI_PRIORITY_SUBSET_CHECKPOINT = 0  # skip when no prioritized candidates remain
 
 logging.basicConfig(
     level=logging.INFO,
@@ -254,6 +256,82 @@ def run_relations_step(db_manager, args) -> dict:
     logger.info("   [4H] Generated %s inverse hyponym links.", f"{link_count:,}")
 
     return {"relations": relation_count, "links": link_count, "topics": topics_count}
+
+
+def run_vietnamese_step(db_manager, args) -> dict:
+    """
+    Step 4I: Vietnamese translation quality & backfill.
+    Cleans English passthrough rows, then backfills missing Vietnamese
+    translations (definitions, collocations, phrases) via Translator,
+    priority-ordered (graded words first). Only translations that pass
+    Vietnamese validation are written. Checkpoint: skips when no
+    candidates remain NULL.
+    """
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+
+    # One-time cleanup: English passthrough -> NULL
+    cursor.execute("UPDATE definitions SET definition_vi = NULL WHERE definition_vi = definition_en;")
+    cursor.execute("UPDATE phrases SET definition_vi = NULL WHERE definition_vi = definition_en;")
+    cursor.execute("UPDATE collocations SET meaning_vi = NULL WHERE meaning_vi = phrase;")
+    conn.commit()
+
+    # Candidates: missing Vietnamese, graded words first
+    cursor.execute("""
+        SELECT d.id, d.definition_en FROM definitions d
+        JOIN words w ON w.id = d.word_id
+        WHERE d.definition_vi IS NULL OR d.definition_vi = ''
+        ORDER BY (w.cefr_level IS NULL), d.id;
+    """)
+    priority_definitions = cursor.fetchall()
+    cursor.execute("SELECT id, phrase FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '';")
+    priority_collocations = cursor.fetchall()
+    cursor.execute("SELECT id, definition_en FROM phrases WHERE definition_vi IS NULL OR definition_vi = '';")
+    priority_phrases = cursor.fetchall()
+
+    remaining = len(priority_definitions) + len(priority_collocations) + len(priority_phrases)
+    if remaining == VI_PRIORITY_SUBSET_CHECKPOINT and not args.force_reset:
+        logger.info("[4I] CHECKPOINT DETECTED: no missing Vietnamese translations for prioritized content. Skipping.")
+        return {"definitions": 0, "collocations": 0, "phrases": 0}
+
+    logger.info("   [4I] Backfilling Vietnamese translations (%s definitions, %s collocations, %s phrases)...",
+                f"{len(priority_definitions):,}", f"{len(priority_collocations):,}", f"{len(priority_phrases):,}")
+
+    translator = Translator()
+    validator = VietnameseTextValidator()
+    translated_defs = 0
+    translated_colls = 0
+    translated_phrases = 0
+
+    def _backfill(rows, table, id_col, target_col):
+        """Translate each row and UPDATE the target column; returns translated count."""
+        updated = 0
+        for batch_start in range(0, len(rows), 1000):
+            batch = rows[batch_start:batch_start + 1000]
+            updates = []
+            for row_id, text in batch:
+                vi = translator.translate_text(text)
+                if vi and validator.is_vietnamese(vi):
+                    updates.append((vi, row_id))
+            if updates:
+                cursor.executemany(
+                    f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;",
+                    updates
+                )
+                conn.commit()
+                updated += len(updates)
+        return updated
+
+    translated_defs = _backfill(priority_definitions, "definitions", "id", "definition_vi")
+    translated_colls = _backfill(priority_collocations, "collocations", "id", "meaning_vi")
+    translated_phrases = _backfill(priority_phrases, "phrases", "id", "definition_vi")
+    if hasattr(translator, "save_cache"):
+        translator.save_cache()
+
+    logger.info("   [4I] Translated: %s definitions, %s collocations, %s phrases (rest kept NULL).",
+                f"{translated_defs:,}", f"{translated_colls:,}", f"{translated_phrases:,}")
+
+    return {"definitions": translated_defs, "collocations": translated_colls, "phrases": translated_phrases}
 
 
 def run_pipeline():
@@ -583,6 +661,12 @@ def run_pipeline():
     relation_stats = run_relations_step(db_manager, args)
     logger.info("   [4H] Completed: %s relations, %s inverse links, %s topic assignments.",
                 f"{relation_stats['relations']:,}", f"{relation_stats['links']:,}", f"{relation_stats['topics']:,}")
+
+    # 4I. Vietnamese Translation Quality & Backfill
+    logger.info("   [4I] Building Vietnamese Translation Backfill...")
+    vi_stats = run_vietnamese_step(db_manager, args)
+    logger.info("   [4I] Completed: %s definitions, %s collocations, %s phrases translated.",
+                f"{vi_stats['definitions']:,}", f"{vi_stats['collocations']:,}", f"{vi_stats['phrases']:,}")
 
     # Step 5: Export & Optimize SQLite Mobile DB
     logger.info("[Step 5/5] Packaging & Optimizing SQLite Mobile Database...")
