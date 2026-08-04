@@ -7,6 +7,10 @@ PYTHON = $(VENV_DIR)/bin/python
 PIP = $(VENV_DIR)/bin/pip
 PYTEST = $(VENV_DIR)/bin/pytest
 
+# NLTK 3.10.1 import security blocks any package that resolves inside the CWD.
+# Since .venv lives inside the repo, everything is blocked (false positive).
+export NLTK_DISABLE_IMPORT_SECURITY := 1
+
 .PHONY: help setup download-data run run-fresh test clean clean-db
 
 help:
@@ -27,7 +31,7 @@ setup:
 	python3 -m venv $(VENV_DIR)
 	@echo "==> Upgrading pip & installing dependencies..."
 	$(PIP) install --upgrade pip
-	$(PIP) install -e .
+	$(PIP) install -e ".[dev]"
 	@echo "==> Downloading spaCy English model (en_core_web_sm)..."
 	$(PYTHON) -m spacy download en_core_web_sm
 	@echo "==> Downloading NLTK tagger data..."

@@ -46,7 +46,9 @@ class Translator:
                     data = json.load(f)
                 return {
                     key: value for key, value in data.items()
-                    if isinstance(value, str) and self.validator.is_vietnamese(value)
+                    if isinstance(value, str)
+                    and self.validator.is_vietnamese(value)
+                    and not self._is_passthrough(key, value)
                 }
             except Exception:
                 return {}
@@ -75,7 +77,7 @@ class Translator:
             for attempt in range(self.MAX_ATTEMPTS):
                 try:
                     translated = t.translate(clean_text)
-                    if translated and self.validator.is_vietnamese(translated):
+                    if translated and self.validator.is_vietnamese(translated) and not self._is_passthrough(clean_text, translated):
                         self.cache[clean_text] = translated
                         return translated
                 except Exception as e:
@@ -85,6 +87,13 @@ class Translator:
                     time.sleep(self.backoff_seconds)
 
         return ""
+
+    @staticmethod
+    def _is_passthrough(source: str, translated: str) -> bool:
+        """True when the translation is identical to the source (case/punctuation-insensitive),
+        e.g. proper nouns like 'Angstrom.' which Google Translate returns unchanged."""
+        norm = lambda s: s.strip().strip(".").strip().lower()
+        return bool(norm(source)) and norm(source) == norm(translated)
 
     def translate_collocations_batch(self, collocations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

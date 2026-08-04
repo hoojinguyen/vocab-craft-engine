@@ -27,6 +27,13 @@ def test_translate_english_passthrough_rejected(tmp_path: Path):
     assert tr.translate_text("dog") == ""
 
 
+def test_translate_unchanged_text_rejected(tmp_path: Path):
+    tr = make_translator(tmp_path, SimpleNamespace(translate=lambda text: "Angstrom."))
+    assert tr.translate_text("Angstrom.") == ""
+    assert tr.translate_text("angstrom") == ""
+    assert "Angstrom." not in tr.cache
+
+
 def test_translate_retries_once_then_returns_empty(tmp_path: Path):
     calls = {"n": 0}
 
@@ -61,6 +68,14 @@ def test_cache_polluted_entries_purged_on_load(tmp_path: Path):
     tr = make_translator(tmp_path, SimpleNamespace(translate=lambda text: "con chó"))
     assert tr.translate_text("cat") == "con mèo"   # valid cache entry served
     assert tr.translate_text("dog") == "con chó"   # polluted entry purged, re-translated
+
+
+def test_cache_unchanged_text_purged_on_load(tmp_path: Path):
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text('{"Angstrom.": "Angstrom.", "mèo": "con mèo"}', encoding="utf-8")
+    tr = make_translator(tmp_path, SimpleNamespace(translate=lambda text: "bản dịch"))
+    assert tr.translate_text("Angstrom.") == "bản dịch"  # passthrough entry purged
+    assert tr.translate_text("mèo") == "con mèo"         # valid entry still served
 
 
 def test_translate_backoff_between_attempts(tmp_path: Path):

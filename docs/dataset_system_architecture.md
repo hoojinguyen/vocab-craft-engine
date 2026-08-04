@@ -196,6 +196,8 @@ Scans every table with a Vietnamese translation column (definitions, collocation
 
 Count-based checkpoint: re-runs skip when no missing translations remain. Source fix: `KaikkiParser` no longer falls back to the English gloss for `definition_vi`.
 
+**MT budget cap:** free Google Translate runs at ~1 request/second, so a full backfill of ~1.4M definitions would take ~15 days in a single run. `run_vietnamese_step` therefore consumes at most `VI_TRANSLATION_BUDGET` attempts per run (default 1000, override with `--vi-budget N`), always in graded-first priority order. Each run commits its batch and saves the translation cache, so re-running `make run` resumes the backfill where it left off until no NULL translations remain.
+
 ---
 
 ## 4. Recommended Technology Stack

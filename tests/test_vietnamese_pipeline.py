@@ -138,9 +138,76 @@ def test_run_vietnamese_step_idempotent(vi_environment):
     assert second["definitions"] == 0  # already translated -> checkpoint
 
 
+def test_run_vietnamese_step_budget_caps_attempts(vi_environment):
+    db_manager = vi_environment
+    args = argparse.Namespace(force_reset=False, vi_budget=1)
+
+    calls = []
+
+    class OneCallTranslator:
+        @staticmethod
+        def translate_text(text):
+            calls.append(text)
+            return f"bản dịch của {text}"
+
+    vi_module = main_module
+    from unittest.mock import patch
+    with patch.object(vi_module, "Translator", OneCallTranslator):
+        stats = main_module.run_vietnamese_step(db_manager, args)
+
+    assert len(calls) == 1  # tiny budget -> only 1 MT attempt
+    assert stats == {"definitions": 0, "collocations": 1, "phrases": 0}
+
+
+def test_run_vi_budget_slices_never_starve_small_tables(vi_environment):
+    db_manager = vi_environment
+    args = argparse.Namespace(force_reset=False, vi_budget=3)
+
+    calls = []
+
+    class SharedBudgetTranslator:
+        @staticmethod
+        def translate_text(text):
+            calls.append(text)
+            return f"bản dịch của {text}"
+
+    main_module.Translator = SharedBudgetTranslator
+    stats = main_module.run_vietnamese_step(db_manager, args)
+
+    # budget 3 slices: 1 definition + 1 collocation + 1 phrase are all attempted
+    assert len(calls) == 3
+    assert stats["definitions"] == 1
+    assert stats["collocations"] == 1
+    assert stats["phrases"] == 1
+
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT definition_vi FROM phrases;")
+    assert cursor.fetchone()[0] == "bản dịch của To stop trying."
+
+
+def test_run_vi_budget_zero_skips_all_mt(vi_environment):
+    db_manager = vi_environment
+    args = argparse.Namespace(force_reset=False, vi_budget=0)
+
+    calls = []
+
+    class NoCallsTranslator:
+        @staticmethod
+        def translate_text(text):
+            calls.append(text)
+            return f"bản dịch của {text}"
+
+    main_module.Translator = NoCallsTranslator
+    stats = main_module.run_vietnamese_step(db_manager, args)
+
+    assert calls == []
+    assert stats == {"definitions": 0, "collocations": 0, "phrases": 0}
+
+
 def test_run_vietnamese_step_prioritizes_graded_words(vi_environment, monkeypatch):
     db_manager = vi_environment
-    args = argparse.Namespace(force_reset=False)
+    args = argparse.Namespace(force_reset=False, vi_budget=1000)
 
     calls = []
 

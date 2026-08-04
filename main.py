@@ -42,6 +42,7 @@ RELATION_CHECKPOINT = 50_000
 TOPIC_CHECKPOINT = 1_000
 VI_EMPTY_BACKFILL_CHECKPOINT = 0  # skip when no candidates remain
 VI_BATCH_SLEEP_SECONDS = 0.1  # gentle pacing between translation batches (rate-limit backoff)
+VI_TRANSLATION_BUDGET = 1000  # max MT attempts per run; re-running resumes the backfill
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +56,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="English Dataset System Engine Pipeline Runner")
     parser.add_argument("--force-reset", action="store_true", help="Force complete database reset and re-ingest everything from scratch.")
     parser.add_argument("--skip-dict", action="store_true", help="Skip Step 2 (Kaikki Dictionary Ingestion) if dictionary data is already ingested.")
+    parser.add_argument("--vi-budget", type=int, default=VI_TRANSLATION_BUDGET,
+                        help="Max MT translation attempts per run for Step 4I backfill (re-run resumes).")
     return parser.parse_args()
 
 
@@ -265,8 +268,9 @@ def run_vietnamese_step(db_manager, args) -> dict:
     Cleans English passthrough rows, then backfills missing Vietnamese
     translations (definitions, collocations, phrases) via Translator,
     priority-ordered (graded words first). Only translations that pass
-    Vietnamese validation are written. Checkpoint: skips when no
-    candidates remain NULL.
+    Vietnamese validation are written. MT calls are capped at args.vi_budget
+    per run (default VI_TRANSLATION_BUDGET); re-running resumes the backfill.
+    Checkpoint: skips when no candidates remain NULL.
     """
     conn = db_manager.get_connection()
     cursor = conn.cursor()
@@ -304,14 +308,35 @@ def run_vietnamese_step(db_manager, args) -> dict:
     translated_colls = 0
     translated_phrases = 0
 
-    def _backfill(rows, table, id_col, target_col):
-        """Translate each row and UPDATE the target column; returns translated count."""
+    budget = getattr(args, "vi_budget", VI_TRANSLATION_BUDGET)
+
+    # Reserve fixed slices for collocations and phrases so they are never
+    # starved by the ~1.4M definitions (all words are graded, so the plain
+    # graded-first order would never reach them). Remainder goes to definitions.
+    colloc_budget = 0
+    phrase_budget = 0
+    defs_budget = 0
+    if budget >= 3:
+        small_table_slice = max(1, budget // 10)
+        colloc_budget = min(len(priority_collocations), small_table_slice)
+        phrase_budget = min(len(priority_phrases), small_table_slice)
+        defs_budget = max(0, budget - colloc_budget - phrase_budget)
+    elif budget > 0:
+        colloc_budget = min(len(priority_collocations), budget)
+
+    def _backfill(rows, table, id_col, target_col, remaining_budget):
+        """Translate up to remaining_budget rows and UPDATE; returns (updated, budget_left)."""
         updated = 0
         batches_done = 0
         for batch_start in range(0, len(rows), 1000):
+            if remaining_budget <= 0:
+                break
             batch = rows[batch_start:batch_start + 1000]
             updates = []
             for row_id, text in batch:
+                if remaining_budget <= 0:
+                    break
+                remaining_budget -= 1
                 vi = translator.translate_text(text)
                 if vi and validator.is_vietnamese(vi):
                     updates.append((vi, row_id))
@@ -327,15 +352,15 @@ def run_vietnamese_step(db_manager, args) -> dict:
             if batches_done % 10 == 0:
                 logger.info("   -> Translated %s %s so far...", f"{updated:,}", table)
             time.sleep(VI_BATCH_SLEEP_SECONDS)
-        return updated
+        return updated, remaining_budget
 
-    translated_defs = _backfill(priority_definitions, "definitions", "id", "definition_vi")
+    translated_defs, _ = _backfill(priority_definitions, "definitions", "id", "definition_vi", defs_budget)
     if hasattr(translator, "save_cache"):
         translator.save_cache()
-    translated_colls = _backfill(priority_collocations, "collocations", "id", "meaning_vi")
+    translated_colls, _ = _backfill(priority_collocations, "collocations", "id", "meaning_vi", colloc_budget)
     if hasattr(translator, "save_cache"):
         translator.save_cache()
-    translated_phrases = _backfill(priority_phrases, "phrases", "id", "definition_vi")
+    translated_phrases, _ = _backfill(priority_phrases, "phrases", "id", "definition_vi", phrase_budget)
     if hasattr(translator, "save_cache"):
         translator.save_cache()
 
@@ -515,38 +540,43 @@ def run_pipeline():
     logger.info("[Step 4/5] Running NLP Enrichment across all 9 schema tables...")
 
     # 4A. Collocation Extraction & Translation
-    logger.info("   [4A] Extracting & Translating Verb+Noun & Phrasal Verb Collocations...")
-    chunk_extractor = ChunkExtractor()
-    translator = Translator()
     cursor.execute("SELECT id, text_en FROM sentences;")
     all_sentences = cursor.fetchall()
-
-    colloc_batch = []
-    seen_phrases = set()
-    for s_id, text_en in all_sentences:
-        chunks = chunk_extractor.extract_collocations(text_en)
-        for chunk in chunks:
-            phrase = chunk["phrase"]
-            if phrase not in seen_phrases:
-                seen_phrases.add(phrase)
-                c_level, _ = grader.grade_word(phrase.split()[0] if phrase else "the")
-                colloc_batch.append({
-                    "phrase": phrase,
-                    "meaning_vi": translator.translate_text(phrase),
-                    "pos_pattern": chunk["pos_pattern"],
-                    "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2") else "B1"
-                })
-
-            if len(colloc_batch) >= 1000:
-                db_manager.insert_collocations_batch(colloc_batch)
-                colloc_batch = []
-
-    if colloc_batch:
-        db_manager.insert_collocations_batch(colloc_batch)
-
     cursor.execute("SELECT count(*) FROM collocations;")
-    colloc_count = cursor.fetchone()[0]
-    logger.info("   [4A] Inserted %s collocations with Vietnamese translations.", f"{colloc_count:,}")
+    existing_collocs = cursor.fetchone()[0]
+    if existing_collocs > 500 and not args.force_reset:
+        logger.info("   [4A] CHECKPOINT DETECTED: %s collocations already exist. Skipping re-translation.", f"{existing_collocs:,}")
+    else:
+        logger.info("   [4A] Extracting & Translating Verb+Noun & Phrasal Verb Collocations...")
+        chunk_extractor = ChunkExtractor()
+        translator = Translator()
+
+        colloc_batch = []
+        seen_phrases = set()
+        for s_id, text_en in all_sentences:
+            chunks = chunk_extractor.extract_collocations(text_en)
+            for chunk in chunks:
+                phrase = chunk["phrase"]
+                if phrase not in seen_phrases:
+                    seen_phrases.add(phrase)
+                    c_level, _ = grader.grade_word(phrase.split()[0] if phrase else "the")
+                    colloc_batch.append({
+                        "phrase": phrase,
+                        "meaning_vi": translator.translate_text(phrase),
+                        "pos_pattern": chunk["pos_pattern"],
+                        "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2") else "B1"
+                    })
+
+                if len(colloc_batch) >= 1000:
+                    db_manager.insert_collocations_batch(colloc_batch)
+                    colloc_batch = []
+
+        if colloc_batch:
+            db_manager.insert_collocations_batch(colloc_batch)
+
+        cursor.execute("SELECT count(*) FROM collocations;")
+        colloc_count = cursor.fetchone()[0]
+        logger.info("   [4A] Inserted %s collocations with Vietnamese translations.", f"{colloc_count:,}")
 
     # 4B. Word-Sentence Mapping & Lemmatization
     logger.info("   [4B] Linking Word-Sentence Mappings across all sentences...")
