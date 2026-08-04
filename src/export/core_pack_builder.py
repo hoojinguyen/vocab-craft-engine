@@ -1,0 +1,167 @@
+"""
+Core 3000 Word Pack Builder.
+
+Reads the full pipeline database (data/output/english_dataset.db), selects the
+~3,000 most common English words (validated by NGSL overlap + Tatoeba corpus
+coverage), enriches each word with quality-gated fields, and exports an
+app-focused core_3000.db plus quality_report.md.
+"""
+
+import csv
+import logging
+import sqlite3
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from config.settings import NGSL_PATH
+
+logger = logging.getLogger(__name__)
+
+# Frequency-form -> lemma normalizations (SUBTL-form: lowercase, apostrophes removed)
+CONTRACTION_MAP = {
+    "dont": "do", "don": "do", "doesnt": "do", "didnt": "do", "doin": "do",
+    "cant": "can", "couldnt": "could", "wouldnt": "would", "shouldnt": "should",
+    "wont": "will", "isnt": "be", "arent": "be", "wasnt": "be", "werent": "be",
+    "im": "i", "ive": "i", "id": "i", "ill": "i", "id": "i",
+    "youre": "you", "youve": "you", "youd": "you", "youll": "you",
+    "theyre": "they", "theyve": "they", "theyd": "they", "theyll": "they",
+    "hes": "he", "shes": "she", "weve": "we", "well": "will",
+    "thats": "that", "theres": "there", "havent": "have", "hasnt": "have",
+}
+
+NOISE_POS = {"name", "prefix", "suffix", "symbol", "numeral", "punctuation", "particle", "number"}
+
+# Pack CEFR thresholds (spec section 4.1)
+CEFR_RANK_THRESHOLDS = [("A1", 500), ("A2", 1500), ("B1", 3500), ("B2", 7000), ("C1", 15000)]
+
+
+def normalize_freq_word(word: str) -> str:
+    """Lowercases, strips punctuation/quotes, expands contractions to lemmas."""
+    w = (word or "").strip().lower().strip("'\"`-")
+    w = w.replace("'", "")
+    return CONTRACTION_MAP.get(w, w)
+
+
+def rank_to_cefr(rank: int) -> str:
+    """Maps a frequency rank to a pack CEFR level (spec section 4.1)."""
+    for level, threshold in CEFR_RANK_THRESHOLDS:
+        if rank <= threshold:
+            return level
+    return "C2"
+
+
+def select_core_words(
+    conn: sqlite3.Connection,
+    freq_ranks: Dict[str, int],
+    target: int = 3000,
+    window: int = 3500,
+) -> List[Dict[str, Any]]:
+    """
+    Selects up to `target` words in frequency order from the words table.
+
+    Iterates the frequency file in rank order, normalizes each form,
+    joins against the words table, filters noise POS, dedupes by lemma,
+    and stops at `target` or when the rank window is exhausted.
+    """
+    selected: List[Dict[str, Any]] = []
+    seen_lemmas: Set[str] = set()
+
+    for raw_word, rank in sorted(freq_ranks.items(), key=lambda kv: kv[1]):
+        if rank > window:
+            break
+        lemma = normalize_freq_word(raw_word)
+        if not lemma or lemma in seen_lemmas:
+            continue
+        row = conn.execute(
+            "SELECT id, lemma, pos, ipa_uk, ipa_us, frequency_rank, cefr_level "
+            "FROM words WHERE lemma = ?",
+            (lemma,),
+        ).fetchone()
+        if row is None:
+            continue
+        if row[2] in NOISE_POS:
+            continue
+        seen_lemmas.add(lemma)
+        selected.append({
+            "id": row[0], "lemma": row[1], "pos": row[2],
+            "ipa_uk": row[3], "ipa_us": row[4],
+            "frequency_rank": row[5], "cefr_level": row[6],
+        })
+        if len(selected) >= target:
+            break
+
+    return selected
+
+
+def load_ngsl(path: Path) -> Set[str]:
+    """Loads NGSL headwords (first CSV column) into a set."""
+    if not Path(path).exists():
+        return set()
+    words: Set[str] = set()
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.strip().split(",")
+            if parts and parts[0].strip():
+                words.add(parts[0].strip().lower())
+    return words
+
+
+def ngsl_overlap(lemmas: List[str], ngsl_words: Set[str]) -> float:
+    """Fraction of the pack lemmas present in the NGSL list."""
+    if not lemmas:
+        return 0.0
+    return len(set(lemmas) & ngsl_words) / len(lemmas)
+
+
+def tatoeba_coverage(conn: sqlite3.Connection, lemmas: Set[str]) -> float:
+    """
+    Fraction of Tatoeba tokens whose normalized lemma is in the pack set.
+    Tokens are lowercased, punctuation-stripped, and contraction-normalized.
+    """
+    rows = conn.execute("SELECT text_en FROM sentences").fetchall()
+    total_tokens = 0
+    covered_tokens = 0
+    for (text_en,) in rows:
+        for token in text_en.split():
+            total_tokens += 1
+            normalized = normalize_freq_word(token.strip(".,!?;:\"'()[]"))
+            if normalized in lemmas:
+                covered_tokens += 1
+    return covered_tokens / total_tokens if total_tokens else 0.0
+
+
+def select_core_words_with_gates(
+    conn: sqlite3.Connection,
+    freq_dict: Dict[str, int],
+    ngsl_path: Path = NGSL_PATH,
+    target: int = 3000,
+    min_overlap: float = 0.85,
+    min_coverage: float = 0.90,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Selects core words, widening the rank window (3500 -> 5000) until the
+    NGSL overlap and Tatoeba coverage gates pass. Returns (selected, metrics).
+    """
+    ngsl_words = load_ngsl(ngsl_path)
+    best_selected: List[Dict[str, Any]] = []
+    best_metrics: Dict[str, Any] = {}
+
+    for window in (3500, 4000, 4500, 5000):
+        selected = select_core_words(conn, freq_dict, target=target, window=window)
+        lemmas = [w["lemma"] for w in selected]
+        overlap = ngsl_overlap(lemmas, ngsl_words)
+        coverage = tatoeba_coverage(conn, set(lemmas))
+        metrics = {
+            "window": window,
+            "selected": len(selected),
+            "ngsl_overlap": round(overlap, 4),
+            "tatoeba_coverage": round(coverage, 4),
+            "passed": overlap >= min_overlap and coverage >= min_coverage,
+        }
+        logger.info("Core selection window=%s -> overlap=%.1f%% coverage=%.1f%%",
+                    window, overlap * 100, coverage * 100)
+        best_selected, best_metrics = selected, metrics
+        if metrics["passed"]:
+            break
+
+    return best_selected, best_metrics
