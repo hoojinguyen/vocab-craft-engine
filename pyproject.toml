@@ -20,6 +20,7 @@ dependencies = [
     "pydantic>=2.5.0",
     "g2p-en>=2.1.0",
     "deep-translator>=1.11.0",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]

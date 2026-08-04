@@ -1,0 +1,483 @@
+# Curated learner-friendly theme taxonomy.
+# exact:    raw Kaikki topic key (lowercased) -> theme
+# keywords: theme -> list of substrings; the longest matching keyword wins.
+# Anything unmapped falls back to "General & Everyday".
+exact:
+  computing: Technology
+  software: Technology
+  internet: Technology
+  electronics: Technology
+  computer: Technology
+  programming: Technology
+  telecommunications: Technology
+  networking: Technology
+  artificial intelligence: Technology
+  medicine: Health & Medicine
+  medical: Health & Medicine
+  anatomy: Health & Medicine
+  pharmacology: Health & Medicine
+  pharmacy: Health & Medicine
+  nutrition: Health & Medicine
+  psychiatry: Health & Medicine
+  psychology: Health & Medicine
+  diseases: Health & Medicine
+  money: Business & Finance
+  finance: Business & Finance
+  business: Business & Finance
+  economics: Business & Finance
+  economy: Business & Finance
+  commerce: Business & Finance
+  accounting: Business & Finance
+  taxation: Business & Finance
+  marketing: Business & Finance
+  law: Law & Government
+  legal: Law & Government
+  government: Law & Government
+  politics: Law & Government
+  military: Law & Government
+  crime: Law & Government
+  police: Law & Government
+  travel: Travel & Transportation
+  tourism: Travel & Transportation
+  shipping: Travel & Transportation
+  aeronautics: Travel & Transportation
+  aviation: Travel & Transportation
+  rail transport: Travel & Transportation
+  automotive: Travel & Transportation
+  nautical: Travel & Transportation
+  food: Food & Drink
+  cooking: Food & Drink
+  cuisine: Food & Drink
+  culinary: Food & Drink
+  gastronomy: Food & Drink
+  beverages: Food & Drink
+  alcoholic beverages: Food & Drink
+  education: Education & Language
+  linguistics: Education & Language
+  grammar: Education & Language
+  phonetics: Education & Language
+  phonology: Education & Language
+  art: Arts & Entertainment
+  arts: Arts & Entertainment
+  music: Arts & Entertainment
+  film: Arts & Entertainment
+  fiction: Arts & Entertainment
+  literature: Arts & Entertainment
+  literary: Arts & Entertainment
+  theatre: Arts & Entertainment
+  dance: Arts & Entertainment
+  photography: Arts & Entertainment
+  painting: Arts & Entertainment
+  gaming: Arts & Entertainment
+  zoology: Nature & Animals
+  botany: Nature & Animals
+  ornithology: Nature & Animals
+  entomology: Nature & Animals
+  ichthyology: Nature & Animals
+  mammals: Nature & Animals
+  ecology: Nature & Animals
+  agriculture: Nature & Animals
+  mathematics: Science & Mathematics
+  math: Science & Mathematics
+  physics: Science & Mathematics
+  chemistry: Science & Mathematics
+  biology: Science & Mathematics
+  astronomy: Science & Mathematics
+  geology: Science & Mathematics
+  sports: Sports & Fitness
+  athletics: Sports & Fitness
+  boxing: Sports & Fitness
+  football: Sports & Fitness
+  soccer: Sports & Fitness
+  cricket: Sports & Fitness
+  tennis: Sports & Fitness
+  golf: Sports & Fitness
+  media: Communication & Media
+  journalism: Communication & Media
+  press: Communication & Media
+  publishing: Communication & Media
+  advertising: Communication & Media
+  religion: Religion & Culture
+  religious: Religion & Culture
+  christianity: Religion & Culture
+  islam: Religion & Culture
+  buddhism: Religion & Culture
+  hinduism: Religion & Culture
+  judaism: Religion & Culture
+  mythology: Religion & Culture
+  culture: Religion & Culture
+  history: Religion & Culture
+  archaeology: Religion & Culture
+  family: Home & Family
+  furniture: Home & Family
+  household: Home & Family
+  textiles: Home & Family
+  emotions: Emotions & Personality
+  personality: Emotions & Personality
+  clothing: Fashion & Clothing
+  fashion: Fashion & Clothing
+  geography: Geography & Environment
+  environment: Geography & Environment
+  weather: Weather & Climate
+  climate: Weather & Climate
+  meteorology: Weather & Climate
+
+keywords:
+  Technology:
+    - comput
+    - software
+    - internet
+    - electron
+    - program
+    - network
+    - telecommunic
+    - telephon
+    - broadcast
+    - digital
+    - cyber
+    - web
+    - data
+    - informat
+    - robot
+    - engineer
+    - coding
+    - information technology
+  "Health & Medicine":
+    - pharmac
+    - anatom
+    - medic
+    - medecine
+    - nutrition
+    - psychiatr
+    - psycholog
+    - disease
+    - health
+    - dental
+    - surg
+    - pathol
+    - cardiol
+    - neurol
+    - oncol
+    - immunol
+    - epidemiol
+    - physiol
+    - cytol
+    - dermat
+    - hematol
+    - opioid
+    - clinical
+    - obstetr
+    - veterinary
+    - physiotherapy
+    - speech therapy
+    - neuroscien
+  "Business & Finance":
+    - financ
+    - econom
+    - commerce
+    - account
+    - tax
+    - market
+    - bank
+    - stock
+    - invest
+    - trade
+    - currency
+    - budget
+    - retail
+    - insurance
+    - real estate
+    - crypt
+    - business
+    - trading
+    - management
+    - consumer
+    - employment
+  "Law & Government":
+    - law
+    - legal
+    - govern
+    - polit
+    - milit
+    - crime
+    - police
+    - court
+    - justice
+    - legislat
+    - parliament
+    - diplomat
+    - war
+    - navy
+    - firearm
+    - prison
+    - patent
+    - copyright
+    - election
+    - law enforcement
+  "Travel & Transportation":
+    - travel
+    - tourism
+    - ship
+    - aeronaut
+    - aviat
+    - rail
+    - automot
+    - nautic
+    - vehicl
+    - transport
+    - traffic
+    - airport
+    - hotel
+    - railway
+    - cycling
+    - marit
+    - road
+    - aerospace
+  "Food & Drink":
+    - food
+    - cook
+    - cuisin
+    - culin
+    - gastron
+    - beverage
+    - alcohol
+    - wine
+    - beer
+    - baking
+    - drink
+    - meat
+    - dairy
+    - fruit
+    - vegetable
+    - restaurant
+    - cuisine
+    - brewery
+  "Education & Language":
+    - educat
+    - linguist
+    - grammar
+    - phonet
+    - phonol
+    - school
+    - universit
+    - college
+    - language
+    - vocab
+    - lexicograph
+    - teach
+    - learn
+    - class
+    - study
+    - academ
+    - student
+    - dictionary
+    - orthograph
+    - spelling
+  "Arts & Entertainment":
+    - art
+    - music
+    - film
+    - fiction
+    - literat
+    - theatre
+    - theater
+    - dance
+    - photograph
+    - paint
+    - gaming
+    - game
+    - entert
+    - movie
+    - television
+    - stage
+    - poetry
+    - comic
+    - animation
+    - anime
+    - manga
+    - cinema
+    - visual arts
+    - performing arts
+    - acting
+    - drama
+    - comedy
+  "Nature & Animals":
+    - zoolog
+    - botan
+    - ornith
+    - entom
+    - ichthy
+    - mammal
+    - ecolog
+    - agricult
+    - animal
+    - plant
+    - bird
+    - fish
+    - insect
+    - tree
+    - flower
+    - forest
+    - crop
+    - livestock
+    - paleontol
+    - marine
+    - pet
+    - garden
+    - horse
+    - farm
+    - dog
+    - hunting
+  "Science & Mathematics":
+    - mathemat
+    - math
+    - physic
+    - chem
+    - biolog
+    - astron
+    - geolog
+    - science
+    - scientif
+    - calcul
+    - algebra
+    - geometry
+    - statist
+    - mineral
+    - crystal
+    - geograph
+    - oceanograph
+    - meteorit
+    - quantum
+    - astrophys
+    - thermodynam
+    - botan
+    - genetic
+    - microbiol
+    - biochem
+    - biotechnol
+    - biomed
+    - neuro
+  "Sports & Fitness":
+    - sport
+    - athlet
+    - box
+    - football
+    - soccer
+    - cricket
+    - tennis
+    - golf
+    - basketball
+    - baseball
+    - rugby
+    - swim
+    - ski
+    - gymnast
+    - martial art
+    - weightlift
+    - exercise
+    - fitness
+    - wrestling
+    - archery
+    - fencing
+    - volleyball
+    - hockey
+    - curling
+    - skating
+    - diving
+    - horseracing
+    - horse racing
+    - surfing
+    - snowboard
+  "Communication & Media":
+    - media
+    - journalism
+    - press
+    - publish
+    - advertis
+    - broadcast
+    - communication
+    - news
+    - magazine
+    - newspaper
+    - radio
+    - television
+    - printing
+    - typography
+  "Religion & Culture":
+    - religion
+    - religious
+    - christian
+    - islam
+    - buddh
+    - hind
+    - juda
+    - mytholog
+    - culture
+    - history
+    - archaeolog
+    - faith
+    - church
+    - god
+    - spirit
+    - occult
+    - mysticism
+    - theology
+    - catholic
+    - protestant
+    - shinto
+    - pagan
+    - sect
+    - astrology
+    - spirituality
+    - folklore
+  "Home & Family":
+    - family
+    - furniture
+    - household
+    - textile
+    - home
+    - kitchen
+    - house
+    - marriage
+    - wedding
+    - parenthood
+    - kinship
+  "Emotions & Personality":
+    - emotion
+    - personalit
+    - mood
+    - anxiety
+    - psycholog
+    - temperament
+  "Fashion & Clothing":
+    - cloth
+    - fashion
+    - apparel
+    - garment
+    - jewel
+    - fabric
+    - costume
+    - millinery
+  "Geography & Environment":
+    - geography
+    - environment
+    - earth
+    - ocean
+    - river
+    - mountain
+    - desert
+    - continent
+    - planet
+    - natural disaster
+    - ecology
+    - conservation
+    - urban
+    - cities
+    - country
+  "Weather & Climate":
+    - weather
+    - climate
+    - meteorolog
+    - season
+    - storm
+    - rainfall
