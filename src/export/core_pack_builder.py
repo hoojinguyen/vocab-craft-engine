@@ -165,3 +165,114 @@ def select_core_words_with_gates(
             break
 
     return best_selected, best_metrics
+
+
+LEVEL_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"]
+GATES = ("definition", "definition_vi", "example_en", "example_vi", "ipa", "topic", "audio", "cefr")
+
+
+class CorePackBuilder:
+    """
+    Selects, enriches, and exports the core word pack.
+
+    source_db_path: the full pipeline database (english_dataset.db).
+    output_dir: directory for the pack (core_3000.db + audio/ + quality_report.md).
+    """
+
+    def __init__(self, source_db_path: Path, output_dir: Path):
+        self.source_db_path = Path(source_db_path)
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_dir = self.output_dir / "audio"
+        self.db_path = self.output_dir / "core_3000.db"
+
+    # ---- topic lookup -------------------------------------------------
+
+    def _topics_by_word(self, conn: sqlite3.Connection) -> Dict[int, List[str]]:
+        """Maps word_id -> mapped themes (raw topics collapsed via TopicMapper)."""
+        from src.nlp.topic_mapper import TopicMapper
+        topics: Dict[int, List[str]] = {}
+        rows = conn.execute("SELECT word_id, raw_topic FROM word_topics").fetchall()
+        for word_id, raw_topic in rows:
+            theme = TopicMapper.map_topic(raw_topic)
+            if theme not in topics.setdefault(word_id, []):
+                topics[word_id].append(theme)
+        return topics
+
+    # ---- enrichment ---------------------------------------------------
+
+    def _enrich_word(
+        self,
+        conn: sqlite3.Connection,
+        word_row: Tuple[Any, ...],
+        translator: Any,
+        topics_by_word: Optional[Dict[int, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Enriches a single word row. On gate failure returns a result dict
+        with 'quarantine' set to the failing gate name.
+        """
+        word_id, lemma, pos, ipa_uk, ipa_us, freq_rank, _old_cefr = word_row[:7]
+        from src.nlp.vi_validator import VietnameseTextValidator
+        validator = VietnameseTextValidator()
+
+        # definition (first sense)
+        def_row = conn.execute(
+            "SELECT definition_en, definition_vi, example FROM definitions "
+            "WHERE word_id = ? ORDER BY id LIMIT 1",
+            (word_id,),
+        ).fetchone()
+        if def_row is None:
+            return {"word": None, "quarantine": "definition"}
+        definition_en, existing_vi, kaikki_example = def_row
+
+        # definition_vi
+        definition_vi = ""
+        if existing_vi and validator.is_vietnamese(existing_vi):
+            definition_vi = existing_vi
+        else:
+            definition_vi = translator.translate_text(definition_en)
+        if not validator.is_vietnamese(definition_vi):
+            return {"word": None, "quarantine": "definition_vi"}
+
+        # example (Tatoeba preferred, Kaikki fallback)
+        topics = (topics_by_word or {}).get(word_id, [])
+        cefr = rank_to_cefr(freq_rank)
+        max_level = LEVEL_ORDER[min(LEVEL_ORDER.index(cefr) + 1, len(LEVEL_ORDER) - 1)]
+        sent_row = conn.execute(
+            "SELECT s.text_en, s.text_vi FROM word_sentence_map wsm "
+            "JOIN sentences s ON s.id = wsm.sentence_id "
+            "WHERE wsm.word_id = ? AND s.cefr_level <= ? AND s.text_vi IS NOT NULL "
+            "ORDER BY s.difficulty_score LIMIT 1",
+            (word_id, max_level),
+        ).fetchone()
+        if sent_row is not None:
+            example_en, example_vi = sent_row
+        elif kaikki_example:
+            example_en = kaikki_example
+            example_vi = translator.translate_text(kaikki_example)
+        else:
+            return {"word": None, "quarantine": "example_en"}
+        if not example_en or not example_vi:
+            return {"word": None, "quarantine": "example_vi"}
+
+        # ipa
+        if not ipa_uk and not ipa_us:
+            return {"word": None, "quarantine": "ipa"}
+
+        # topic (General & Everyday fallback never gates)
+        topic = topics[0] if topics else "General & Everyday"
+
+        return {
+            "word": {"id": word_id, "lemma": lemma, "pos": pos},
+            "cefr_level": cefr,
+            "frequency_rank": freq_rank,
+            "ipa_uk": ipa_uk,
+            "ipa_us": ipa_us,
+            "definition_en": definition_en,
+            "definition_vi": definition_vi,
+            "example_en": example_en,
+            "example_vi": example_vi,
+            "topic": topic,
+            "quarantine": None,
+        }

@@ -159,3 +159,98 @@ def test_select_core_words_with_gates_retries_wider_window(tmp_path, small_db):
     assert len(selected) == 27  # selected grew vs the 26-word 3500 window
     assert metrics["selected"] == 27
     assert selected[-1]["lemma"] == "zebra"
+
+
+from src.export.core_pack_builder import CorePackBuilder
+from src.nlp.vi_validator import VietnameseTextValidator
+
+
+class StubTranslator:
+    """Fake Translator: returns validated Vietnamese for any input."""
+
+    def __init__(self):
+        self.calls = []
+
+    def translate_text(self, text):
+        self.calls.append(text)
+        return f"bản dịch của {text}"
+
+    def save_cache(self):
+        pass
+
+
+def _seed_pack_source(conn):
+    conn.executemany(
+        "INSERT INTO words (lemma, pos, ipa_uk, ipa_us, frequency_rank, cefr_level) "
+        "VALUES (?, ?, '/x/', '/x/', ?, 'C2')",
+        [("cat", "noun", 3), ("dog", "noun", 4), ("run", "verb", 5)],
+    )
+    cat_id, dog_id, run_id = [r[0] for r in conn.execute("SELECT id FROM words ORDER BY id")]
+    conn.executemany(
+        "INSERT INTO definitions (word_id, definition_en, definition_vi, example) "
+        "VALUES (?, ?, ?, ?)",
+        [
+            (cat_id, "A small pet animal.", None, "The cat sleeps all day."),
+            (dog_id, "A loyal animal.", None, "The dog runs fast."),
+            (run_id, "To move quickly.", None, "I run every morning."),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO sentences (text_en, text_vi, difficulty_score, cefr_level) "
+        "VALUES (?, ?, ?, ?)",
+        [
+            ("The cat sleeps all day.", "Con mèo ngủ cả ngày.", 1.5, "A1"),
+            ("The dog runs fast.", "Con chó chạy nhanh.", 1.8, "A2"),
+            ("I run every morning.", "Tôi chạy mỗi sáng.", 1.6, "A2"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO word_sentence_map (word_id, sentence_id) VALUES (?, ?)",
+        [(cat_id, 1), (dog_id, 2), (run_id, 3)],
+    )
+    conn.executemany(
+        "INSERT INTO word_topics (word_id, topic, raw_topic) VALUES (?, ?, ?)",
+        [(cat_id, "Nature & Animals", "zoology"), (dog_id, "Nature & Animals", "zoology")],
+    )
+    conn.commit()
+
+
+def test_enrich_word_all_gates_pass(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    small_db.close()
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    conn = sqlite3.connect(tmp_path / "source.db")
+
+    word_row = conn.execute("SELECT * FROM words WHERE lemma='cat'").fetchone()
+    result = builder._enrich_word(conn, word_row, StubTranslator(), builder._topics_by_word(conn))
+    assert result["word"]["lemma"] == "cat"
+    assert result["definition_vi"] == "bản dịch của A small pet animal."
+    assert result["example_en"] == "The cat sleeps all day."
+    assert result["example_vi"] == "Con mèo ngủ cả ngày."
+    assert result["topic"] == "Nature & Animals"
+    assert result["cefr_level"] == "A1"  # rank 3
+    conn.close()
+
+
+def test_enrich_word_quarantine_on_missing_definition(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    conn = sqlite3.connect(tmp_path / "source.db")
+    conn.execute("DELETE FROM definitions WHERE word_id = (SELECT id FROM words WHERE lemma='dog')")
+    conn.commit()
+
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    dog_row = conn.execute("SELECT * FROM words WHERE lemma='dog'").fetchone()
+    result = builder._enrich_word(conn, dog_row, StubTranslator())
+    assert result["quarantine"] is not None
+    assert result["quarantine"] == "definition"
+    conn.close()
+
+
+def test_enrich_word_general_topic_fallback(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    conn = sqlite3.connect(tmp_path / "source.db")
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    run_row = conn.execute("SELECT * FROM words WHERE lemma='run'").fetchone()
+    result = builder._enrich_word(conn, run_row, StubTranslator())
+    assert result["topic"] == "General & Everyday"  # no word_topics rows for "run"
+    conn.close()
