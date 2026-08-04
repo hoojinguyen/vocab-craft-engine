@@ -15,12 +15,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import (
-    RAW_DATA_DIR,
     KAIKKI_JSON_PATH,
-    TATOEBA_SENTENCES_PATH,
-    TATOEBA_LINKS_PATH,
+    NGSL_PATH,
+    RAW_DATA_DIR,
     SUBTLEX_FREQ_PATH,
-    NGSL_PATH
+    TATOEBA_LINKS_PATH,
+    TATOEBA_SENTENCES_PATH,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -99,7 +99,7 @@ def load_ngsl_words(path: Path) -> set:
     if not path.exists():
         return set()
     words = set()
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         for line in f:
             parts = line.strip().split(",")
             headword = parts[0].strip().lower() if parts else ""
@@ -110,10 +110,9 @@ def load_ngsl_words(path: Path) -> set:
 
 def download_ngsl():
     """Downloads the NGSL headword CSV if missing. NGSL is public domain."""
-    ngsl_path = RAW_DATA_DIR / "NGSL-1.01.csv"
-    if not ngsl_path.exists() or ngsl_path.stat().st_size == 0:
-        download_file(URL_NGSL, ngsl_path)
-    return ngsl_path
+    if not NGSL_PATH.exists() or NGSL_PATH.stat().st_size == 0:
+        download_file(URL_NGSL, NGSL_PATH)
+    return NGSL_PATH
 
 
 def download_all_raw_data():
