@@ -85,12 +85,13 @@ def _insert_words(conn, words):
 
 
 def test_select_core_words_filters_noise_and_ranks(tmp_path, small_db):
-    # rank-1 "the" not in words; rank-2 "name" noise POS; rank-3..7 present
+    # rank-1 "the" not in words; rank-2 "name" not in words;
+    # rank-6 "john" has noise POS "name" -> excluded by the POS filter
     _insert_words(small_db, [
         ("cat", "noun", 3),
         ("dog", "noun", 4),
         ("run", "verb", 5),
-        ("John", "name", 6),
+        ("john", "name", 6),
         ("happy", "adj", 7),
     ])
     freq = {"the": 1, "name": 2, "cat": 3, "dog": 4, "run": 5, "john": 6, "happy": 7}
@@ -131,3 +132,30 @@ def test_select_core_words_with_gates_returns_metrics(tmp_path, small_db):
     assert len(selected) == 5
     assert metrics["ngsl_overlap"] == 1.0
     assert metrics["tatoeba_coverage"] >= 0.5
+
+
+def test_select_core_words_with_gates_retries_wider_window(tmp_path, small_db):
+    # 22 of 26 base words in NGSL -> overlap 22/26 (0.846) < 0.85, gate fails at 3500.
+    # At window 4000, "zebra" (rank 4000, in NGSL) joins -> 23/27 (0.852), gate passes.
+    base = [f"w{i:02d}" for i in range(1, 27)]
+    _insert_words(small_db, [(w, "noun", i) for i, w in enumerate(base, start=1)])
+    _insert_words(small_db, [("zebra", "noun", 4000)])
+    small_db.execute(
+        "INSERT INTO sentences (text_en, text_vi, cefr_level) VALUES (?, ?, 'A1')",
+        (" ".join(base + ["zebra"]), "..."),
+    )
+    small_db.commit()
+    ngsl = tmp_path / "ngsl.csv"
+    ngsl.write_text("\n".join(base[:22] + ["zebra"]) + "\n", encoding="utf-8")
+    freq = {w: i for i, w in enumerate(base, start=1)}
+    freq["zebra"] = 4000
+
+    selected, metrics = select_core_words_with_gates(
+        small_db, freq_dict=freq, ngsl_path=ngsl, target=3000,
+    )
+    assert metrics["window"] == 4000  # widened past the failing 3500 attempt
+    assert metrics["passed"] is True
+    assert metrics["ngsl_overlap"] >= 0.85
+    assert len(selected) == 27  # selected grew vs the 26-word 3500 window
+    assert metrics["selected"] == 27
+    assert selected[-1]["lemma"] == "zebra"

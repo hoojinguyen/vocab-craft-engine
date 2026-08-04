@@ -29,7 +29,7 @@ CONTRACTION_MAP = {
     "thats": "that", "theres": "there", "havent": "have", "hasnt": "have",
 }
 
-NOISE_POS = {"name", "prefix", "suffix", "symbol", "numeral", "punctuation", "particle", "number"}
+NOISE_POS = {"name", "prefix", "suffix", "symbol", "particle", "num", "punct"}
 
 # Pack CEFR thresholds (spec section 4.1)
 CEFR_RANK_THRESHOLDS = [("A1", 500), ("A2", 1500), ("B1", 3500), ("B2", 7000), ("C1", 15000)]
