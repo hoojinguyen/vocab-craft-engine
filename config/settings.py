@@ -18,6 +18,7 @@ TATOEBA_SENTENCES_PATH = RAW_DATA_DIR / "sentences.csv"
 TATOEBA_LINKS_PATH = RAW_DATA_DIR / "links.csv"
 OPUS_SUBTITLES_PATH = RAW_DATA_DIR / "opensubtitles_en_vi.txt"
 SUBTLEX_FREQ_PATH = RAW_DATA_DIR / "SUBTLEX_US.csv"
+NGSL_PATH = RAW_DATA_DIR / "NGSL-1.01.csv"
 
 # Target Export Database Path
 EXPORT_SQLITE_PATH = OUTPUT_DIR / "english_dataset.db"

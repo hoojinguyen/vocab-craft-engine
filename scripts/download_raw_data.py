@@ -19,7 +19,8 @@ from config.settings import (
     KAIKKI_JSON_PATH,
     TATOEBA_SENTENCES_PATH,
     TATOEBA_LINKS_PATH,
-    SUBTLEX_FREQ_PATH
+    SUBTLEX_FREQ_PATH,
+    NGSL_PATH
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -29,6 +30,7 @@ URL_KAIKKI = "https://kaikki.org/dictionary/English/kaikki.org-dictionary-Englis
 URL_TATOEBA_SENTENCES = "https://downloads.tatoeba.org/exports/sentences.tar.bz2"
 URL_TATOEBA_LINKS = "https://downloads.tatoeba.org/exports/links.tar.bz2"
 URL_FREQ_WORDS = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt"
+URL_NGSL = "https://raw.githubusercontent.com/koba-ninkigumi/ngsl/master/NGSL-1.01.csv"
 
 
 def download_file(url: str, dest_path: Path):
@@ -88,6 +90,32 @@ def download_subtlex_frequency_data():
         logger.info("Successfully generated SUBTLEX frequency file with %d ranked words!", rank - 1)
 
 
+def load_ngsl_words(path: Path) -> set:
+    """
+    Parses an NGSL CSV file into the set of headword lemmas.
+    Format: first column is the headword, later columns are inflected forms.
+    Returns an empty set when the file is missing.
+    """
+    if not path.exists():
+        return set()
+    words = set()
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.strip().split(",")
+            headword = parts[0].strip().lower() if parts else ""
+            if headword:
+                words.add(headword)
+    return words
+
+
+def download_ngsl():
+    """Downloads the NGSL headword CSV if missing. NGSL is public domain."""
+    ngsl_path = RAW_DATA_DIR / "NGSL-1.01.csv"
+    if not ngsl_path.exists() or ngsl_path.stat().st_size == 0:
+        download_file(URL_NGSL, ngsl_path)
+    return ngsl_path
+
+
 def download_all_raw_data():
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -113,6 +141,9 @@ def download_all_raw_data():
 
     # 4. Download / Generate SUBTLEX frequency file
     download_subtlex_frequency_data()
+
+    # 5. Download NGSL validation word list
+    download_ngsl()
 
     logger.info("All raw data files are ready in %s!", RAW_DATA_DIR)
 
