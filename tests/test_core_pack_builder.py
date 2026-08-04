@@ -254,3 +254,37 @@ def test_enrich_word_general_topic_fallback(tmp_path, small_db):
     result = builder._enrich_word(conn, run_row, StubTranslator())
     assert result["topic"] == "General & Everyday"  # no word_topics rows for "run"
     conn.close()
+
+
+def test_enrich_word_batch_definitions_equivalent(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    small_db.close()
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    conn = sqlite3.connect(tmp_path / "source.db")
+
+    for lemma in ("cat", "dog", "run"):
+        word_row = conn.execute("SELECT * FROM words WHERE lemma=?", (lemma,)).fetchone()
+        per_word = builder._enrich_word(conn, word_row, StubTranslator(), builder._topics_by_word(conn))
+        batch = builder._enrich_word(
+            conn, word_row, StubTranslator(),
+            builder._topics_by_word(conn),
+            definitions_by_word=builder._definitions_by_word(conn),
+        )
+        assert batch == per_word
+    conn.close()
+
+
+def test_enrich_word_batch_definitions_missing_quarantines(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    conn = sqlite3.connect(tmp_path / "source.db")
+    conn.execute("DELETE FROM definitions WHERE word_id = (SELECT id FROM words WHERE lemma='dog')")
+    conn.commit()
+
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    dog_row = conn.execute("SELECT * FROM words WHERE lemma='dog'").fetchone()
+    result = builder._enrich_word(
+        conn, dog_row, StubTranslator(),
+        definitions_by_word=builder._definitions_by_word(conn),
+    )
+    assert result["quarantine"] == "definition"
+    conn.close()

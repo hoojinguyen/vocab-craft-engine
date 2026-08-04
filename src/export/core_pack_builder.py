@@ -14,8 +14,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config.settings import NGSL_PATH
+from src.nlp.vi_validator import VietnameseTextValidator
 
 logger = logging.getLogger(__name__)
+
+_VI_VALIDATOR = VietnameseTextValidator()
 
 # Frequency-form -> lemma normalizations (SUBTL-form: lowercase, apostrophes removed)
 CONTRACTION_MAP = {
@@ -192,12 +195,25 @@ class CorePackBuilder:
         """Maps word_id -> mapped themes (raw topics collapsed via TopicMapper)."""
         from src.nlp.topic_mapper import TopicMapper
         topics: Dict[int, List[str]] = {}
-        rows = conn.execute("SELECT word_id, raw_topic FROM word_topics").fetchall()
+        rows = conn.execute(
+            "SELECT word_id, raw_topic FROM word_topics ORDER BY word_id, topic"
+        ).fetchall()
         for word_id, raw_topic in rows:
             theme = TopicMapper.map_topic(raw_topic)
             if theme not in topics.setdefault(word_id, []):
                 topics[word_id].append(theme)
         return topics
+
+    def _definitions_by_word(self, conn: sqlite3.Connection) -> Dict[int, Tuple[Any, ...]]:
+        """Maps word_id -> first definition row (definition_en, definition_vi, example) in one pass."""
+        first: Dict[int, Tuple[Any, ...]] = {}
+        for word_id, def_en, def_vi, example in conn.execute(
+            "SELECT word_id, definition_en, definition_vi, example "
+            "FROM definitions ORDER BY word_id, id"
+        ):
+            if word_id not in first:
+                first[word_id] = (def_en, def_vi, example)
+        return first
 
     # ---- enrichment ---------------------------------------------------
 
@@ -207,21 +223,24 @@ class CorePackBuilder:
         word_row: Tuple[Any, ...],
         translator: Any,
         topics_by_word: Optional[Dict[int, List[str]]] = None,
+        definitions_by_word: Optional[Dict[int, Tuple[Any, ...]]] = None,
     ) -> Dict[str, Any]:
         """
         Enriches a single word row. On gate failure returns a result dict
         with 'quarantine' set to the failing gate name.
         """
         word_id, lemma, pos, ipa_uk, ipa_us, freq_rank, _old_cefr = word_row[:7]
-        from src.nlp.vi_validator import VietnameseTextValidator
-        validator = VietnameseTextValidator()
+        validator = _VI_VALIDATOR
 
         # definition (first sense)
-        def_row = conn.execute(
-            "SELECT definition_en, definition_vi, example FROM definitions "
-            "WHERE word_id = ? ORDER BY id LIMIT 1",
-            (word_id,),
-        ).fetchone()
+        if definitions_by_word is not None:
+            def_row = definitions_by_word.get(word_id)
+        else:
+            def_row = conn.execute(
+                "SELECT definition_en, definition_vi, example FROM definitions "
+                "WHERE word_id = ? ORDER BY id LIMIT 1",
+                (word_id,),
+            ).fetchone()
         if def_row is None:
             return {"word": None, "quarantine": "definition"}
         definition_en, existing_vi, kaikki_example = def_row
@@ -260,8 +279,8 @@ class CorePackBuilder:
         if not ipa_uk and not ipa_us:
             return {"word": None, "quarantine": "ipa"}
 
-        # topic (General & Everyday fallback never gates)
-        topic = topics[0] if topics else "General & Everyday"
+        # topic (General & Everyday fallback never gates; a real theme beats it)
+        topic = next((t for t in topics if t != "General & Everyday"), "General & Everyday")
 
         return {
             "word": {"id": word_id, "lemma": lemma, "pos": pos},
