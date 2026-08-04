@@ -121,6 +121,14 @@ exact:
   weather: Weather & Climate
   climate: Weather & Climate
   meteorology: Weather & Climate
+  taxonomy: Science & Mathematics
+  taxon: Science & Mathematics
+  syntax: Education & Language
+  taxi: Travel & Transportation
+  chemotherapy: Health & Medicine
+  alchemy: Religion & Culture
+  pressure: Science & Mathematics
+  compress: Science & Mathematics
 
 keywords:
   Technology:
