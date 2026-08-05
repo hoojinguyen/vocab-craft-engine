@@ -14,6 +14,7 @@ from pathlib import Path
 
 from config.settings import (
     EXPORT_SQLITE_PATH,
+    OUTPUT_DIR,
     KAIKKI_JSON_PATH,
     TATOEBA_SENTENCES_PATH,
     TATOEBA_LINKS_PATH,
@@ -58,6 +59,8 @@ def parse_arguments():
     parser.add_argument("--skip-dict", action="store_true", help="Skip Step 2 (Kaikki Dictionary Ingestion) if dictionary data is already ingested.")
     parser.add_argument("--vi-budget", type=int, default=VI_TRANSLATION_BUDGET,
                         help="Max MT translation attempts per run for Step 4I backfill (re-run resumes).")
+    parser.add_argument("--build-core-pack", action="store_true",
+                        help="Build the curated Core 3000 word pack (core_3000.db + report).")
     return parser.parse_args()
 
 
@@ -368,6 +371,32 @@ def run_vietnamese_step(db_manager, args) -> dict:
                 f"{translated_defs:,}", f"{translated_colls:,}", f"{translated_phrases:,}")
 
     return {"definitions": translated_defs, "collocations": translated_colls, "phrases": translated_phrases}
+
+
+def run_core_pack_step(db_manager, args) -> dict:
+    """
+    Step 6: Build the curated Core 3000 word pack.
+    Selects 3,000 most common words (NGSL + Tatoeba gated), enriches each
+    word with quality gates, and exports core_3000.db + quality_report.md
+    to data/output/core_pack/.
+    """
+    from config.settings import NGSL_PATH
+    from src.export.core_pack_builder import CorePackBuilder
+
+    conn = db_manager.get_connection()
+
+    # Load frequency ranks once (rank 1 = most common)
+    grader = CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH)
+    freq_dict = dict(grader.freq_dict)
+
+    pack_dir = OUTPUT_DIR / "core_pack"
+    builder = CorePackBuilder(source_db_path=EXPORT_SQLITE_PATH, output_dir=pack_dir)
+    report = builder.build(freq_dict=freq_dict, ngsl_path=NGSL_PATH, vi_budget=args.vi_budget)
+
+    logger.info("[Step 6/6] Core pack built: %s words, pass rate %.1f%%, %s quarantined, %s themes.",
+                f"{report['selected']:,}", report["pass_rate"] * 100,
+                report["quarantined"], report["themes_covered"])
+    return report
 
 
 def run_pipeline():
@@ -716,6 +745,12 @@ def run_pipeline():
 
     avg_speed = exporter.benchmark_reflex_query_speed(iterations=20)
     logger.info("   -> Reflex Query Benchmark Speed: %.2f ms", avg_speed)
+
+    if args.build_core_pack:
+        logger.info("[Step 6/6] Building Core 3000 Word Pack...")
+        pack_stats = run_core_pack_step(db_manager, args)
+        logger.info("[Step 6/6] Completed: %s words, %s quarantined.",
+                    f"{pack_stats['selected']:,}", pack_stats["quarantined"])
 
     db_manager.close()
     elapsed = round(time.time() - start_time, 2)

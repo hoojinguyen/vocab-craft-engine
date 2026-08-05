@@ -50,6 +50,13 @@ run-fresh:
 	@echo "==> Starting English Dataset ETL Pipeline (Force Re-ingest)..."
 	$(PYTHON) main.py --force-reset
 
+.PHONY: core-pack
+
+core-pack:
+	@echo "==> Building Core 3000 Word Pack..."
+	$(PYTHON) main.py --build-core-pack
+	@echo "==> Core pack written to data/output/core_pack/"
+
 test:
 	@echo "==> Running Pytest test suite..."
 	$(PYTEST) -v
