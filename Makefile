@@ -19,6 +19,7 @@ help:
 	@echo "========================================================================"
 	@echo "  make setup          : Set up Python virtualenv & install dependencies"
 	@echo "  make download-data  : Download raw datasets (Kaikki & Tatoeba)"
+	@echo "  make corpus-download: Download parallel corpora (OpenSubtitles + EnViCorpora)"
 	@echo "  make run            : Smart auto-resume run (skips completed ingest steps)"
 	@echo "  make run-fresh      : Force re-ingest everything from scratch"
 	@echo "  make test           : Run full automated pytest test suite"
