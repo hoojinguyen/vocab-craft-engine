@@ -19,6 +19,7 @@ from config.settings import (
     TATOEBA_SENTENCES_PATH,
     TATOEBA_LINKS_PATH,
     SUBTLEX_FREQ_PATH,
+    SENTENCE_LINK_CHECKPOINT,
     BATCH_SIZE
 )
 from src.db.staging_db import DatabaseManager
@@ -399,6 +400,66 @@ def run_core_pack_step(db_manager, args) -> dict:
     return report
 
 
+def run_sentence_coverage_step(db_manager, args) -> dict:
+    """Phase A: ingest OpenSubtitles + EnViCorpora parallel corpora into sentences.
+
+    Idempotent: skips corpora whose source is already present (checkpoint by
+    source count). Links new sentences to words incrementally via a checkpoint
+    file tracking the last linked sentence id.
+    """
+    from config.settings import (
+        ENVICORPORA_BASIC_EN, ENVICORPORA_BASIC_VI,
+        ENVICORPORA_TED_LIKE_EN, ENVICORPORA_TED_LIKE_VI,
+        OPENSUBTITLES_EN, OPENSUBTITLES_VI, SENTENCE_LINK_CHECKPOINT,
+    )
+    from src.ingestion.opus_parser import ParallelCorpusParser
+    from src.ingestion.sentence_filter import SentenceFilter
+
+    corpora = [
+        (OPENSUBTITLES_EN, OPENSUBTITLES_VI, "OpenSubtitles"),
+        (ENVICORPORA_TED_LIKE_EN, ENVICORPORA_TED_LIKE_VI, "TED-EnVi"),
+        (ENVICORPORA_BASIC_EN, ENVICORPORA_BASIC_VI, "Basic-EnVi"),
+    ]
+    sf = SentenceFilter()
+    grader = CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH)
+
+    inserted_total = 0
+    for en_path, vi_path, source in corpora:
+        if not en_path.exists() or not vi_path.exists():
+            logger.info("   [SentenceCoverage] %s corpus missing — skipping.", source)
+            continue
+        existing = db_manager.count_sentences_by_source(source)
+        if existing > 0 and not args.force_reset:
+            logger.info("   [SentenceCoverage] %s already ingested (%s rows) — skipping.", source, f"{existing:,}")
+            continue
+        logger.info("   [SentenceCoverage] Ingesting %s corpus...", source)
+        batch, inserted = [], 0
+        for pair in ParallelCorpusParser(en_path, vi_path, source=source).parse_pairs():
+            if not sf.is_clean_pair(pair["text_en"], pair["text_vi"]):
+                continue
+            graded = grader.grade_sentence(pair["text_en"])
+            batch.append({
+                "text_en": pair["text_en"],
+                "text_vi": pair["text_vi"],
+                "difficulty_score": graded["difficulty_score"],
+                "cefr_level": graded["cefr_level"],
+                "audio_path": None,
+                "source": source,
+            })
+            if len(batch) >= 5000:
+                db_manager.insert_sentences_batch(batch)
+                inserted += len(batch)
+                batch = []
+        if batch:
+            db_manager.insert_sentences_batch(batch)
+            inserted += len(batch)
+        inserted_total += inserted
+        logger.info("   [SentenceCoverage] %s: inserted %s rows.", source, f"{inserted:,}")
+
+    logger.info("[SentenceCoverage] Total new sentences: %s", f"{inserted_total:,}")
+    return {"inserted": inserted_total}
+
+
 def run_pipeline():
     args = parse_arguments()
     start_time = time.time()
@@ -565,6 +626,10 @@ def run_pipeline():
 
         logger.info("[Step 3/5] Completed sentence pairs ingestion: %s pairs stored.", f"{sent_count:,}")
 
+    # Step 3.5: Ingest parallel corpora (OpenSubtitles + EnViCorpora)
+    coverage_stats = run_sentence_coverage_step(db_manager, args)
+    logger.info("[Step 3.5] Sentence coverage: %s new sentences ingested.", f"{coverage_stats['inserted']:,}")
+
     # Step 4: NLP Enrichment & Reflex Drill Generation
     logger.info("[Step 4/5] Running NLP Enrichment across all 9 schema tables...")
 
@@ -607,27 +672,37 @@ def run_pipeline():
         colloc_count = cursor.fetchone()[0]
         logger.info("   [4A] Inserted %s collocations with Vietnamese translations.", f"{colloc_count:,}")
 
-    # 4B. Word-Sentence Mapping & Lemmatization
-    logger.info("   [4B] Linking Word-Sentence Mappings across all sentences...")
+    # 4B. Word-Sentence Mapping & Lemmatization (incremental since checkpoint)
+    logger.info("   [4B] Linking Word-Sentence Mappings (incremental)...")
+    checkpoint = SENTENCE_LINK_CHECKPOINT
+    last_linked = 0
+    if checkpoint.exists():
+        try:
+            last_linked = int(json.loads(checkpoint.read_text(encoding="utf-8"))["last_id"])
+        except Exception:
+            last_linked = 0
     lemmatizer = Lemmatizer()
     map_batch = []
-    for s_id, text_en in all_sentences:
+    new_max = last_linked
+    cursor.execute("SELECT id, text_en FROM sentences WHERE id > ? ORDER BY id;", (last_linked,))
+    for s_id, text_en in cursor.fetchall():
         lemmas = lemmatizer.lemmatize_text(text_en)
         for lem in lemmas:
             word_id = db_manager.get_word_id_by_lemma(lem["lemma"])
             if word_id:
                 map_batch.append({"word_id": word_id, "sentence_id": s_id})
-
-            if len(map_batch) >= 5000:
-                db_manager.insert_word_sentence_map_batch(map_batch)
-                map_batch = []
-
+        new_max = max(new_max, s_id)
+        if len(map_batch) >= 5000:
+            db_manager.insert_word_sentence_map_batch(map_batch)
+            map_batch = []
     if map_batch:
         db_manager.insert_word_sentence_map_batch(map_batch)
-
+    if new_max > last_linked:
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_text(json.dumps({"last_id": new_max}), encoding="utf-8")
     cursor.execute("SELECT count(*) FROM word_sentence_map;")
     map_count = cursor.fetchone()[0]
-    logger.info("   [4B] Inserted %s word-sentence links.", f"{map_count:,}")
+    logger.info("   [4B] Linked sentences to %s word links.", f"{map_count:,}")
 
     # 4C. Sentence Patterns Population
     logger.info("   [4C] Populating Sentence Patterns...")
