@@ -29,7 +29,7 @@ class TatoebaApiClient:
         self._last_call = time.monotonic()
 
         params = urllib.parse.urlencode({
-            "lang": "eng", "trans_lang": "vie", "q": word, "limit": limit,
+            "lang": "eng", "trans:lang": "vie", "q": word, "limit": limit, "sort": "relevance",
         })
         url = f"{API_BASE}?{params}"
         try:
@@ -40,18 +40,18 @@ class TatoebaApiClient:
             return []
 
         rows = []
-        for item in data.get("results", []):
+        for item in data.get("data", []):
             text_en = (item.get("text") or "").strip()
             if not text_en:
                 continue
+            translations = item.get("translations") or []
             text_vi = ""
-            for group in item.get("translations") or []:
-                for t in group:
-                    if t.get("text"):
-                        text_vi = t["text"].strip()
-                        break
-                if text_vi:
-                    break
+            preferred = next((t for t in translations if t.get("lang") == "vie" and t.get("text")), None)
+            fallback = next((t for t in translations if t.get("text")), None)
+            if preferred is not None:
+                text_vi = preferred["text"].strip()
+            elif fallback is not None:
+                text_vi = fallback["text"].strip()
             if text_en and text_vi:
                 rows.append({"text_en": text_en, "text_vi": text_vi, "source": "Tatoeba"})
         self.cache[word] = rows

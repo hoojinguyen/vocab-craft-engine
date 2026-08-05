@@ -6,10 +6,11 @@ from src.nlp.tatoeba_api import TatoebaApiClient
 
 def test_fetch_parses_results():
     payload = {
-        "results": [
-            {"text": "The cat sleeps.", "translations": [[{"text": "Con mèo ngủ."}]]},
-            {"text": "A dog barks.", "translations": [[]]},
-        ]
+        "data": [
+            {"text": "The cat sleeps.", "translations": [{"text": "Con mèo ngủ.", "lang": "vie"}]},
+            {"text": "A dog barks.", "translations": []},
+        ],
+        "paging": {"total": 2, "has_next": False, "next": None},
     }
 
     class FakeResp:
@@ -41,7 +42,7 @@ def test_rate_limited():
     def fake_open(request):
         calls.append(time.monotonic())
         class R:
-            def read(self): return json.dumps({"results": []}).encode()
+            def read(self): return json.dumps({"data": []}).encode()
             def close(self): pass
             def __enter__(self): return self
             def __exit__(self, *args): self.close()
@@ -55,7 +56,7 @@ def test_rate_limited():
 
 
 def test_cache_hit_skips_network():
-    payload = {"results": [{"text": "The cat sleeps.", "translations": [[{"text": "Con mèo ngủ."}]]}]}
+    payload = {"data": [{"text": "The cat sleeps.", "translations": [{"text": "Con mèo ngủ.", "lang": "vie"}]}]}
 
     class FakeResp:
         def read(self): return json.dumps(payload).encode()
