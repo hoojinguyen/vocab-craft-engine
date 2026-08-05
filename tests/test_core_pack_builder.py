@@ -470,7 +470,7 @@ def test_build_pack_from_full_pipeline_db(tmp_path, small_db, monkeypatch):
     assert report["phrases"] >= 1
 
 
-def test_example_prefers_cleaner_source(small_db, tmp_path, monkeypatch):
+def test_example_prefers_cleaner_source(small_db, tmp_path):
     from src.export.core_pack_builder import CorePackBuilder
 
     _seed_pack_source(small_db)
@@ -495,8 +495,6 @@ def test_example_prefers_cleaner_source(small_db, tmp_path, monkeypatch):
     class StubT:
         def translate_text(self, text): return f"vi: {text}"
         def save_cache(self): pass
-
-    monkeypatch.setattr("src.nlp.translator.Translator", StubT)
 
     # word_row mirrors the selection tuple: (id, lemma, pos, ipa_uk, ipa_us, freq_rank, cefr)
     word_row = (cat_id, "cat", "noun", "kæt", "kæt", 100, "A2")

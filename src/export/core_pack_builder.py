@@ -315,7 +315,7 @@ class CorePackBuilder:
         if not validator.is_vietnamese(definition_vi):
             return {"word": None, "quarantine": "definition_vi"}
 
-        # example (Tatoeba preferred, Kaikki fallback)
+        # example (TED-EnVi preferred source, Kaikki fallback)
         topics = (topics_by_word or {}).get(word_id, [])
         cefr = rank_to_cefr(freq_rank)
         max_level = LEVEL_ORDER[min(LEVEL_ORDER.index(cefr) + 1, len(LEVEL_ORDER) - 1)]
