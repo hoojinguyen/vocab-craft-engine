@@ -146,10 +146,23 @@ def download_resumable(url: str, dest_path: Path):
     logger.info("Downloaded %s (%.1f MB)", dest_path.name, dest_path.stat().st_size / 1e6)
 
 
-def extract_zip_member(zip_path: Path, out_dir: Path, member_name: str):
+def extract_zip_member(zip_path: Path, out_dir: Path, member_name: str, target_name: str = None):
+    """
+    Extracts a member from a zip archive.
+
+    With target_name set, the member is read and written to out_dir / target_name,
+    which lets callers remap archive member names that differ from the desired
+    output file name. With target_name None the member is extracted under its
+    own name.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+    if target_name is None:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extract(member_name, out_dir)
+        return
     with zipfile.ZipFile(zip_path) as zf:
-        zf.extract(member_name, out_dir)
+        data = zf.read(member_name)
+    (out_dir / target_name).write_bytes(data)
 
 
 def download_opensubtitles_envi():
@@ -158,9 +171,12 @@ def download_opensubtitles_envi():
     if OPENSUBTITLES_EN.exists() and OPENSUBTITLES_VI.exists():
         return
     if not OPENSUBTITLES_EN_VI_ZIP.exists() or OPENSUBTITLES_EN_VI_ZIP.stat().st_size < OPENSUBTITLES_ZIP_MIN_SIZE:
+        free_bytes = shutil.disk_usage(RAW_DATA_DIR).free
+        if free_bytes < 4_000_000_000:
+            logger.warning("Only %.1f GB free — OpenSubtitles corpus needs ~1GB; download may fail.", free_bytes / 1e9)
         download_resumable(URL_OPENS_ENVI, OPENSUBTITLES_EN_VI_ZIP)
-    extract_zip_member(OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN_VI_ZIP.parent, "en-vi.txt.en")
-    extract_zip_member(OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN_VI_ZIP.parent, "en-vi.txt.vi")
+    extract_zip_member(OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN_VI_ZIP.parent, "OpenSubtitles.en-vi.en", "en-vi.txt.en")
+    extract_zip_member(OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN_VI_ZIP.parent, "OpenSubtitles.en-vi.vi", "en-vi.txt.vi")
 
 
 def download_envicorpora():

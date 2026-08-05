@@ -66,3 +66,13 @@ def test_extract_zip_member(tmp_path):
     out = tmp_path / "out"
     extract_zip_member(zip_path, out, "en-vi.txt.en")
     assert (out / "en-vi.txt.en").read_bytes() == payload
+
+
+def test_extract_zip_member_with_target_name(tmp_path):
+    zip_path = tmp_path / "corpus.zip"
+    payload = "Hello there.\tXin chào.\n".encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("OpenSubtitles.en-vi.en", payload)
+    out = tmp_path / "out"
+    extract_zip_member(zip_path, out, "OpenSubtitles.en-vi.en", "en-vi.txt.en")
+    assert (out / "en-vi.txt.en").read_bytes() == payload
