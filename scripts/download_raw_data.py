@@ -6,6 +6,7 @@ Downloads and extracts raw dataset files into data/raw/ directory.
 import sys
 import os
 import tarfile
+import zipfile
 import urllib.request
 import csv
 import logging
@@ -31,6 +32,11 @@ URL_TATOEBA_SENTENCES = "https://downloads.tatoeba.org/exports/sentences.tar.bz2
 URL_TATOEBA_LINKS = "https://downloads.tatoeba.org/exports/links.tar.bz2"
 URL_FREQ_WORDS = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt"
 URL_NGSL = "https://raw.githubusercontent.com/koba-ninkigumi/ngsl/master/NGSL-1.01.csv"
+URL_OPENS_LENVI = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2024/moses/en-vi.txt.zip"
+URL_TED_LIKE_EN = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.en"
+URL_TED_LIKE_VI = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.vi"
+URL_BASIC_EN = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/basic/data.en"
+URL_BASIC_VI = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/basic/data.vi"
 
 
 def download_file(url: str, dest_path: Path):
@@ -115,6 +121,50 @@ def download_ngsl():
     return NGSL_PATH
 
 
+def download_resumable(url: str, dest_path: Path):
+    """Downloads with HTTP Range resume; skips if file exists with final size."""
+    import shutil
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = dest_path.stat().st_size if dest_path.exists() else 0
+    request = urllib.request.Request(url, headers={"Range": f"bytes={existing}-"})
+    with urllib.request.urlopen(request) as resp, open(dest_path, "ab") as f:
+        shutil.copyfileobj(resp, f)
+    logger.info("Downloaded %s (%.1f MB)", dest_path.name, dest_path.stat().st_size / 1e6)
+
+
+def extract_zip_member(zip_path: Path, out_dir: Path, member_name: str):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extract(member_name, out_dir)
+
+
+def download_opensubtitles_envi():
+    from config.settings import OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN, OPENSUBTITLES_VI
+
+    if OPENSUBTITLES_EN.exists() and OPENSUBTITLES_VI.exists():
+        return
+    if not OPENSUBTITLES_EN_VI_ZIP.exists() or OPENSUBTITLES_EN_VI_ZIP.stat().st_size < 900_000_000:
+        download_resumable(URL_OPENS_LENVI, OPENSUBTITLES_EN_VI_ZIP)
+    extract_zip_member(OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN_VI_ZIP.parent, "en-vi.txt.en")
+    extract_zip_member(OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN_VI_ZIP.parent, "en-vi.txt.vi")
+
+
+def download_envicorpora():
+    from config.settings import (
+        ENVICORPORA_BASIC_EN, ENVICORPORA_BASIC_VI, ENVICORPORA_TED_LIKE_EN, ENVICORPORA_TED_LIKE_VI,
+    )
+    pairs = [
+        (URL_TED_LIKE_EN, ENVICORPORA_TED_LIKE_EN),
+        (URL_TED_LIKE_VI, ENVICORPORA_TED_LIKE_VI),
+        (URL_BASIC_EN, ENVICORPORA_BASIC_EN),
+        (URL_BASIC_VI, ENVICORPORA_BASIC_VI),
+    ]
+    for url, dest in pairs:
+        if not dest.exists() or dest.stat().st_size == 0:
+            download_resumable(url, dest)
+
+
 def download_all_raw_data():
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -143,6 +193,12 @@ def download_all_raw_data():
 
     # 5. Download NGSL validation word list
     download_ngsl()
+
+    # 6. Download OpenSubtitles en-vi parallel corpus (951MB)
+    download_opensubtitles_envi()
+
+    # 7. Download EnViCorpora (ted-like + basic)
+    download_envicorpora()
 
     logger.info("All raw data files are ready in %s!", RAW_DATA_DIR)
 
