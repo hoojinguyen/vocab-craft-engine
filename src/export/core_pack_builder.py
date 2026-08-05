@@ -189,6 +189,8 @@ class CorePackBuilder:
     output_dir: directory for the pack (core_3000.db + audio/ + quality_report.md).
     """
 
+    _AUDIO_CHUNK = 20
+
     def __init__(self, source_db_path: Path, output_dir: Path):
         self.source_db_path = Path(source_db_path)
         self.output_dir = Path(output_dir)
@@ -436,6 +438,7 @@ class CorePackBuilder:
             source, freq_dict, ngsl_path=ngsl_path, target=target
         )
         topics_by_word = self._topics_by_word(source)
+        definitions_by_word = self._definitions_by_word(source)
 
         translator = Translator()
         pack_conn = self._init_pack_db()
@@ -444,32 +447,41 @@ class CorePackBuilder:
 
         enriched = []
         quarantined = []
+        pending = []
         for word in selected:
             if self._is_done(word["id"]):
                 continue
             result = self._enrich_word(source, (
                 word["id"], word["lemma"], word["pos"], word["ipa_uk"],
                 word["ipa_us"], word["frequency_rank"], word["cefr_level"],
-            ), translator, topics_by_word)
+            ), translator, topics_by_word, definitions_by_word)
             if result["quarantine"]:
                 quarantined.append({"word_id": word["id"], "lemma": word["lemma"],
                                     "failed_gate": result["quarantine"]})
                 continue
+            pending.append((word, result))
 
-            std_path, fast_path = asyncio.run(
-                self._generate_word_audio(word["id"], word["lemma"])
-            )
-            if std_path is None or fast_path is None:
-                quarantined.append({"word_id": word["id"], "lemma": word["lemma"],
-                                    "failed_gate": "audio"})
-                continue
-
-            result["audio_std"] = std_path
-            result["audio_fast"] = fast_path
-            enriched.append(result)
-            self._cp["done"][str(word["id"])] = True
-            if len(enriched) % 50 == 0:
+        # generate audio in parallel chunks
+        chunk = 0
+        while chunk < len(pending):
+            batch = pending[chunk:chunk + self._AUDIO_CHUNK]
+            async def _run_batch(batch_items):
+                coros = [self._generate_word_audio(word["id"], word["lemma"])
+                         for word, _ in batch_items]
+                return await asyncio.gather(*coros)
+            audio_results = asyncio.run(_run_batch(batch))
+            for (word, result), (std_path, fast_path) in zip(batch, audio_results):
+                if std_path is None or fast_path is None:
+                    quarantined.append({"word_id": word["id"], "lemma": word["lemma"],
+                                        "failed_gate": "audio"})
+                    continue
+                result["audio_std"] = std_path
+                result["audio_fast"] = fast_path
+                enriched.append(result)
+                self._cp["done"][str(word["id"])] = True
+            if enriched:
                 self._save_checkpoint(self._cp)
+            chunk += self._AUDIO_CHUNK
 
         # -- write words + definitions + topics --------------------------
         for r in enriched:
