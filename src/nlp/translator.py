@@ -5,6 +5,7 @@ Translates collocations and definition glosses into Vietnamese with local JSON c
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -22,10 +23,12 @@ class Translator:
 
     MAX_ATTEMPTS = 2  # one initial call + one retry
 
-    def __init__(self, cache_path: Path = CACHE_FILE, backoff_seconds: float = 0.5):
+    def __init__(self, cache_path: Path = CACHE_FILE, backoff_seconds: float = 0.5,
+                 request_timeout_seconds: float = 15.0):
         self.cache_path = Path(cache_path)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.backoff_seconds = backoff_seconds
+        self.request_timeout_seconds = request_timeout_seconds
         self.validator = VietnameseTextValidator()
         self.cache: Dict[str, str] = self._load_cache()
         self._translator = None
@@ -76,7 +79,7 @@ class Translator:
         if t:
             for attempt in range(self.MAX_ATTEMPTS):
                 try:
-                    translated = t.translate(clean_text)
+                    translated = self._translate_with_timeout(t, clean_text)
                     if translated and self.validator.is_vietnamese(translated) and not self._is_passthrough(clean_text, translated):
                         self.cache[clean_text] = translated
                         return translated
@@ -87,6 +90,33 @@ class Translator:
                     time.sleep(self.backoff_seconds)
 
         return ""
+
+    def _translate_with_timeout(self, translator, text: str) -> str:
+        """Runs the upstream translate call in a daemon thread with a hard
+        deadline. deep_translator issues requests.get() without any timeout,
+        so a stalled connection would otherwise block the pipeline forever.
+        Any exception inside the thread is re-raised in the caller so the
+        MAX_ATTEMPTS retry loop keeps working."""
+        if self.request_timeout_seconds <= 0:
+            return translator.translate(text)
+
+        box: Dict[str, Any] = {}
+        error: List[BaseException] = []
+
+        def run() -> None:
+            try:
+                box["result"] = translator.translate(text)
+            except BaseException as exc:  # noqa: BLE001 - propagate for retry
+                error.append(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(timeout=self.request_timeout_seconds)
+        if thread.is_alive():
+            raise TimeoutError(f"translate() stalled > {self.request_timeout_seconds}s")
+        if error:
+            raise error[0]
+        return box.get("result", "")
 
     @staticmethod
     def _is_passthrough(source: str, translated: str) -> bool:

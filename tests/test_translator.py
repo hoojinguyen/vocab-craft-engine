@@ -95,3 +95,43 @@ def test_translate_backoff_between_attempts(tmp_path: Path):
     elapsed = time.monotonic() - start
     assert result == "con chó"
     assert elapsed >= 0.04  # slept between attempts
+
+
+def test_translate_hanging_request_times_out(tmp_path: Path):
+    """A stalled upstream connection (requests.get has no timeout) must not
+    block the whole pipeline forever — the call is abandoned and returns ''."""
+    import time
+
+    def hang(text):
+        time.sleep(30)
+
+    tr = Translator(cache_path=tmp_path / "cache.json", backoff_seconds=0,
+                    request_timeout_seconds=0.2)
+    tr._translator = SimpleNamespace(translate=hang)
+
+    start = time.monotonic()
+    result = tr.translate_text("dog")
+    elapsed = time.monotonic() - start
+
+    assert result == ""
+    assert elapsed < 5
+
+
+def test_translate_thread_exception_is_propagated_for_retry(tmp_path: Path):
+    """Exceptions raised inside the timed-out thread must reach the caller so
+    the MAX_ATTEMPTS retry loop still fires (e.g. RequestError/TranslationNotFound
+    — a silent thread death would otherwise swallow valid retries)."""
+    calls = {"n": 0}
+
+    def flaky(text):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient upstream error")
+        return "con chó"
+
+    tr = Translator(cache_path=tmp_path / "cache.json", backoff_seconds=0,
+                    request_timeout_seconds=0.2)
+    tr._translator = SimpleNamespace(translate=flaky)
+
+    assert tr.translate_text("dog") == "con chó"
+    assert calls["n"] == 2
