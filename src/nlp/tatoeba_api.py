@@ -13,8 +13,8 @@ API_BASE = "https://api.tatoeba.org/unstable/sentences"
 
 
 class TatoebaApiClient:
-    def __init__(self, open: Optional[Callable] = None, min_delay: float = 1.0):
-        self._open = open or urllib.request.urlopen
+    def __init__(self, opener: Optional[Callable] = None, min_delay: float = 1.0):
+        self._open = opener or urllib.request.urlopen
         self.min_delay = min_delay
         self._last_call = 0.0
         self.cache: Dict[str, List[Dict[str, Any]]] = {}
