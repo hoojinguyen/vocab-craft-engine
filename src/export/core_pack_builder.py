@@ -180,6 +180,11 @@ class CorePackBuilder:
     """
     Selects, enriches, and exports the core word pack.
 
+    Selection enforces NGSL overlap + Tatoeba coverage gates; enrichment
+    quality-gates each word and quarantines failures; build() exports the
+    pack database (core_3000.db with indexes, quarantine, collocations and
+    phrases rooted in the pack) plus quality_report.md.
+
     source_db_path: the full pipeline database (english_dataset.db).
     output_dir: directory for the pack (core_3000.db + audio/ + quality_report.md).
     """
@@ -339,4 +344,284 @@ class CorePackBuilder:
             "example_vi": example_vi,
             "topic": topic,
             "quarantine": None,
+        }
+
+    # ---- export -------------------------------------------------------
+
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS words (
+        id INTEGER PRIMARY KEY,
+        lemma TEXT NOT NULL,
+        pos TEXT,
+        cefr_level TEXT,
+        frequency_rank INTEGER,
+        ipa_uk TEXT,
+        ipa_us TEXT,
+        audio_std TEXT,
+        audio_fast TEXT,
+        audio_status TEXT
+    );
+    CREATE TABLE IF NOT EXISTS word_topics (
+        word_id INTEGER,
+        topic TEXT
+    );
+    CREATE TABLE IF NOT EXISTS definitions (
+        id INTEGER PRIMARY KEY,
+        word_id INTEGER,
+        definition_en TEXT,
+        definition_vi TEXT,
+        example_en TEXT,
+        example_vi TEXT,
+        example_vi_source TEXT
+    );
+    CREATE TABLE IF NOT EXISTS sentences (
+        id INTEGER PRIMARY KEY,
+        text_en TEXT,
+        text_vi TEXT,
+        cefr_level TEXT,
+        audio_path TEXT,
+        source TEXT
+    );
+    CREATE TABLE IF NOT EXISTS word_sentences (
+        word_id INTEGER,
+        sentence_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS collocations (
+        id INTEGER PRIMARY KEY,
+        phrase TEXT,
+        meaning_vi TEXT,
+        pos_pattern TEXT,
+        cefr_level TEXT,
+        root_word_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS phrases (
+        id INTEGER PRIMARY KEY,
+        phrase TEXT,
+        definition_en TEXT,
+        definition_vi TEXT,
+        cefr_level TEXT,
+        audio_std TEXT,
+        audio_fast TEXT
+    );
+    CREATE TABLE IF NOT EXISTS quarantine (
+        word_id INTEGER,
+        lemma TEXT,
+        failed_gate TEXT
+    );
+    """
+
+    def _init_pack_db(self) -> sqlite3.Connection:
+        if self.db_path.exists():
+            self.db_path.unlink()
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(self.SCHEMA)
+        return conn
+
+    def build(
+        self,
+        freq_dict: Dict[str, int],
+        ngsl_path: Path = NGSL_PATH,
+        target: int = 3000,
+        vi_budget: int = 5000,
+    ) -> Dict[str, Any]:
+        """
+        Runs selection -> enrichment -> audio -> export for the pack.
+        Returns a metrics report dict.
+        """
+        import asyncio
+        from src.nlp.translator import Translator
+
+        source = sqlite3.connect(str(self.source_db_path))
+        selected, metrics = select_core_words_with_gates(
+            source, freq_dict, ngsl_path=ngsl_path, target=target
+        )
+        topics_by_word = self._topics_by_word(source)
+
+        translator = Translator()
+        pack_conn = self._init_pack_db()
+        sent_id_map: Dict[str, int] = {}
+        next_sent_id = 1
+
+        enriched = []
+        quarantined = []
+        for word in selected:
+            if self._is_done(word["id"]):
+                continue
+            result = self._enrich_word(source, (
+                word["id"], word["lemma"], word["pos"], word["ipa_uk"],
+                word["ipa_us"], word["frequency_rank"], word["cefr_level"],
+            ), translator, topics_by_word)
+            if result["quarantine"]:
+                quarantined.append({"word_id": word["id"], "lemma": word["lemma"],
+                                    "failed_gate": result["quarantine"]})
+                continue
+
+            std_path, fast_path = asyncio.run(
+                self._generate_word_audio(word["id"], word["lemma"])
+            )
+            if std_path is None or fast_path is None:
+                quarantined.append({"word_id": word["id"], "lemma": word["lemma"],
+                                    "failed_gate": "audio"})
+                continue
+
+            result["audio_std"] = std_path
+            result["audio_fast"] = fast_path
+            enriched.append(result)
+            self._cp["done"][str(word["id"])] = True
+            if len(enriched) % 50 == 0:
+                self._save_checkpoint(self._cp)
+
+        # -- write words + definitions + topics --------------------------
+        for r in enriched:
+            pack_conn.execute(
+                "INSERT INTO words (id, lemma, pos, cefr_level, frequency_rank, "
+                "ipa_uk, ipa_us, audio_std, audio_fast, audio_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')",
+                (r["word"]["id"], r["word"]["lemma"], r["word"]["pos"], r["cefr_level"],
+                 r["frequency_rank"], r["ipa_uk"], r["ipa_us"],
+                 r["audio_std"], r["audio_fast"]),
+            )
+            pack_conn.execute(
+                "INSERT INTO word_topics (word_id, topic) VALUES (?, ?)",
+                (r["word"]["id"], r["topic"]),
+            )
+            pack_conn.execute(
+                "INSERT INTO definitions (word_id, definition_en, definition_vi, "
+                "example_en, example_vi, example_vi_source) VALUES (?, ?, ?, ?, ?, 'validated')",
+                (r["word"]["id"], r["definition_en"], r["definition_vi"],
+                 r["example_en"], r["example_vi"]),
+            )
+            pack_conn.execute(
+                "INSERT INTO sentences (id, text_en, text_vi, cefr_level, source) "
+                "VALUES (?, ?, ?, ?, 'Tatoeba')",
+                (next_sent_id, r["example_en"], r["example_vi"], r["cefr_level"]),
+            )
+            pack_conn.execute(
+                "INSERT INTO word_sentences (word_id, sentence_id) VALUES (?, ?)",
+                (r["word"]["id"], next_sent_id),
+            )
+            sent_id_map[r["word"]["id"]] = next_sent_id
+            next_sent_id += 1
+
+        # -- collocations & phrases rooted in the pack --------------------
+        core_lemma_ids = {r["word"]["id"] for r in enriched}
+        first_words = {w["lemma"]: w["id"] for w in selected}
+        colloc_rows = source.execute(
+            "SELECT c.phrase, c.meaning_vi, c.pos_pattern, c.cefr_level, c.id "
+            "FROM collocations c"
+        ).fetchall()
+        pack_collocs = 0
+        for phrase, meaning_vi, pos_pattern, cefr_level, colloc_id in colloc_rows:
+            first = phrase.split()[0].strip().lower() if phrase else ""
+            root_id = first_words.get(first)
+            if root_id in core_lemma_ids:
+                pack_conn.execute(
+                    "INSERT INTO collocations (phrase, meaning_vi, pos_pattern, "
+                    "cefr_level, root_word_id) VALUES (?, ?, ?, ?, ?)",
+                    (phrase, meaning_vi, pos_pattern, cefr_level, root_id),
+                )
+                pack_collocs += 1
+
+        phrase_rows = source.execute(
+            "SELECT phrase, definition_en, definition_vi, cefr_level, audio_std, audio_fast "
+            "FROM phrases WHERE cefr_level IN ('A1','A2','B1','B2')"
+        ).fetchall()
+        pack_phrases = 0
+        for phrase, def_en, def_vi, cefr_level, audio_std, audio_fast in phrase_rows:
+            first = phrase.split()[0].strip().lower() if phrase else ""
+            if first in first_words:
+                pack_conn.execute(
+                    "INSERT INTO phrases (phrase, definition_en, definition_vi, "
+                    "cefr_level, audio_std, audio_fast) VALUES (?, ?, ?, ?, ?, ?)",
+                    (phrase, def_en, def_vi, cefr_level, audio_std, audio_fast),
+                )
+                pack_phrases += 1
+
+        for q in quarantined:
+            pack_conn.execute(
+                "INSERT INTO quarantine (word_id, lemma, failed_gate) VALUES (?, ?, ?)",
+                (q["word_id"], q["lemma"], q["failed_gate"]),
+            )
+
+        # -- indexes + WAL + vacuum ---------------------------------------
+        pack_conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_pack_defs_word ON definitions(word_id);
+            CREATE INDEX IF NOT EXISTS idx_pack_topics_word ON word_topics(word_id);
+            CREATE INDEX IF NOT EXISTS idx_pack_topics_topic ON word_topics(topic);
+            CREATE INDEX IF NOT EXISTS idx_pack_ws_word ON word_sentences(word_id);
+            CREATE INDEX IF NOT EXISTS idx_pack_ws_sent ON word_sentences(sentence_id);
+            CREATE INDEX IF NOT EXISTS idx_pack_colloc_root ON collocations(root_word_id);
+            CREATE INDEX IF NOT EXISTS idx_pack_phrases_cefr ON phrases(cefr_level);
+            """
+        )
+        pack_conn.execute("PRAGMA journal_mode = WAL;")
+        pack_conn.commit()
+        pack_conn.execute("VACUUM;")
+        pack_conn.close()
+
+        self._save_checkpoint(self._cp)
+        report = self._write_report(metrics, enriched, quarantined, pack_collocs, pack_phrases)
+        source.close()
+        return report
+
+    def _write_report(
+        self,
+        metrics: Dict[str, Any],
+        enriched: List[Dict[str, Any]],
+        quarantined: List[Dict[str, Any]],
+        colloc_count: int,
+        phrase_count: int,
+    ) -> Dict[str, Any]:
+        total = len(enriched) + len(quarantined)
+        pass_rate = len(enriched) / total if total else 0.0
+        theme_counts: Dict[str, int] = {}
+        cefr_counts: Dict[str, int] = {}
+        for r in enriched:
+            theme_counts[r["topic"]] = theme_counts.get(r["topic"], 0) + 1
+            cefr_counts[r["cefr_level"]] = cefr_counts.get(r["cefr_level"], 0) + 1
+
+        lines = [
+            "# Core 3000 Pack Quality Report",
+            "",
+            f"- Selected: {metrics.get('selected', 0)}",
+            f"- Window: {metrics.get('window')}",
+            f"- NGSL overlap: {metrics.get('ngsl_overlap', 0) * 100:.1f}% (gate >= 85%)",
+            f"- Tatoeba coverage: {metrics.get('tatoeba_coverage', 0) * 100:.1f}% (gate >= 90%)",
+            f"- Pass rate: {pass_rate * 100:.1f}% (gate >= 97%)",
+            f"- Quarantined: {len(quarantined)}",
+            f"- Themes covered: {len(theme_counts)}/18",
+            f"- Collocations linked: {colloc_count}",
+            f"- Idioms linked: {phrase_count}",
+            "",
+            "## CEFR distribution",
+            "",
+            "| Level | Words |",
+            "|-------|-------|",
+        ]
+        for level in LEVEL_ORDER:
+            lines.append(f"| {level} | {cefr_counts.get(level, 0)} |")
+        lines += ["", "## Theme distribution", "", "| Theme | Words |", "|-------|-------|"]
+        for theme, count in sorted(theme_counts.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {theme} | {count} |")
+        lines += ["", "## Quarantined words", ""]
+        if quarantined:
+            lines.append("| lemma | gate |")
+            lines.append("|-------|------|")
+            for q in quarantined:
+                lines.append(f"| {q['lemma']} | {q['failed_gate']} |")
+        else:
+            lines.append("None.")
+
+        (self.output_dir / "quality_report.md").write_text(
+            "\n".join(lines), encoding="utf-8"
+        )
+
+        return {
+            "selected": metrics.get("selected", 0),
+            "pass_rate": round(pass_rate, 4),
+            "quarantined": len(quarantined),
+            "themes_covered": len(theme_counts),
+            "collocations": colloc_count,
+            "phrases": phrase_count,
         }

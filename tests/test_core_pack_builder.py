@@ -338,3 +338,51 @@ def test_checkpoint_roundtrip_no_tmp_lingers(tmp_path, small_db):
     builder2 = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
     assert builder2._is_done(1) is True
     assert builder2._is_done(2) is False
+
+
+def test_build_pack_end_to_end(tmp_path, small_db, monkeypatch):
+    _seed_pack_source(small_db)
+    import src.export.core_pack_builder as cpb
+
+    class StubPackTranslator:
+        def translate_text(self, text):
+            return f"bản dịch của {text}"
+
+        def save_cache(self):
+            pass
+
+    monkeypatch.setattr("src.nlp.translator.Translator", StubPackTranslator)
+
+    async def fake_audio(self, word_id, lemma):
+        return f"audio/std/w_{word_id}_std.mp3", f"audio/fast/w_{word_id}_fast.mp3"
+
+    original = cpb.CorePackBuilder._generate_word_audio
+    cpb.CorePackBuilder._generate_word_audio = fake_audio
+    try:
+        builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+        ngsl = tmp_path / "ngsl.csv"
+        ngsl.write_text("cat,,,\ndog,,,\nrun,,,\n", encoding="utf-8")
+        freq = {"cat": 1, "dog": 2, "run": 3}
+        report = builder.build(freq_dict=freq, ngsl_path=ngsl, vi_budget=10)
+    finally:
+        cpb.CorePackBuilder._generate_word_audio = original
+
+    assert report["selected"] == 3
+    assert report["pass_rate"] == 1.0
+    assert report["quarantined"] == 0
+    assert report["themes_covered"] >= 1
+
+    pack_conn = sqlite3.connect(builder.db_path)
+    assert pack_conn.execute("SELECT count(*) FROM words").fetchone()[0] == 3
+    assert pack_conn.execute("SELECT count(*) FROM quarantine").fetchone()[0] == 0
+    topics = set(r[0] for r in pack_conn.execute("SELECT topic FROM word_topics"))
+    assert topics == {"Nature & Animals", "General & Everyday"}
+    audio = pack_conn.execute("SELECT audio_std FROM words WHERE lemma='cat'").fetchone()[0]
+    assert audio == "audio/std/w_1_std.mp3"
+    pack_conn.close()
+
+    report_file = tmp_path / "pack" / "quality_report.md"
+    assert report_file.exists()
+    content = report_file.read_text(encoding="utf-8")
+    assert "pass rate" in content.lower()
+    assert "ngsl" in content.lower()
