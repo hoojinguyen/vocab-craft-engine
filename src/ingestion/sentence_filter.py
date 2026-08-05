@@ -1,9 +1,15 @@
 """Noise filtering for parallel sentence corpora (spec §4.3)."""
 
 import re
-import string
+
+
+def _normalize(s: str) -> str:
+    return s.strip().strip(".").strip().lower()
+
 
 class SentenceFilter:
+    """Noise filtering for parallel sentence corpora (spec §4.3)."""
+
     MIN_WORDS = 2
     MAX_WORDS = 30
 
@@ -14,8 +20,7 @@ class SentenceFilter:
 
     @staticmethod
     def _is_passthrough(text_en: str, text_vi: str) -> bool:
-        norm = lambda s: s.strip().strip(".").strip().lower()
-        return bool(norm(text_en)) and norm(text_en) == norm(text_vi)
+        return bool(_normalize(text_en)) and _normalize(text_en) == _normalize(text_vi)
 
     def is_clean_pair(self, text_en: str, text_vi: str) -> bool:
         if not text_en or not text_vi:
@@ -30,6 +35,6 @@ class SentenceFilter:
         if self._NOISE_PATTERNS.search(text_en):
             return False
         digits = sum(c.isdigit() for c in text_en)
-        if len(text_en) > 0 and digits / len(text_en) > self._DIGIT_RATIO:
+        if digits / len(text_en) > self._DIGIT_RATIO:
             return False
         return True

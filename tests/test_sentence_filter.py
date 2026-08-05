@@ -9,6 +9,20 @@ def test_accepts_normal_pair():
     assert sf.is_clean_pair("Where are you going?", "Bạn đang đi đâu thế?")
 
 
+def test_rejects_empty_en():
+    assert not sf.is_clean_pair("", "Xin chào.")
+
+
+def test_accepts_boundary_word_counts():
+    assert sf.is_clean_pair("a b", "hai từ")                # 2 words (MIN)
+    long_en = " ".join(["word"] * 30)
+    assert sf.is_clean_pair(long_en, "tối đa ba mươi từ")   # 30 words (MAX)
+
+
+def test_accepts_quote_starting_sentence():
+    assert sf.is_clean_pair('"Hello there."', "Xin chào nhé.")
+
+
 def test_rejects_too_short_or_long():
     assert not sf.is_clean_pair("Hi", "Chào")            # 1 word
     long_en = " ".join(["word"] * 31)
