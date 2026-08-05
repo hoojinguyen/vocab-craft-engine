@@ -188,3 +188,15 @@ def test_insert_word_topics_batch_and_idempotency(temp_db: DatabaseManager):
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM word_topics;")
     assert cursor.fetchone()[0] == 1
+
+
+def test_get_max_sentence_id_and_count_by_source(temp_db):
+    temp_db.insert_sentences_batch([
+        {"text_en": "Hello world.", "text_vi": "Xin chào.", "difficulty_score": 1.0,
+         "cefr_level": "A1", "audio_path": None, "source": "Tatoeba"},
+        {"text_en": "Good morning.", "text_vi": "Chào buổi sáng.", "difficulty_score": 1.0,
+         "cefr_level": "A1", "audio_path": None, "source": "OpenSubtitles"},
+    ])
+    assert temp_db.get_max_sentence_id() >= 2
+    assert temp_db.count_sentences_by_source("OpenSubtitles") == 1
+    assert temp_db.count_sentences_by_source("Missing") == 0

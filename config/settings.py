@@ -20,6 +20,17 @@ OPUS_SUBTITLES_PATH = RAW_DATA_DIR / "opensubtitles_en_vi.txt"
 SUBTLEX_FREQ_PATH = RAW_DATA_DIR / "SUBTLEX_US.csv"
 NGSL_PATH = RAW_DATA_DIR / "NGSL-1.01.csv"
 
+# Parallel sentence corpora (Phase A — sentences coverage)
+OPENSUBTITLES_EN_VI_ZIP = RAW_DATA_DIR / "opensubtitles_envi" / "en-vi.txt.zip"
+OPENSUBTITLES_EN = RAW_DATA_DIR / "opensubtitles_envi" / "en-vi.txt.en"
+OPENSUBTITLES_VI = RAW_DATA_DIR / "opensubtitles_envi" / "en-vi.txt.vi"
+ENVICORPORA_DIR = RAW_DATA_DIR / "envicorpora"
+ENVICORPORA_TED_LIKE_EN = ENVICORPORA_DIR / "ted-like" / "data.en"
+ENVICORPORA_TED_LIKE_VI = ENVICORPORA_DIR / "ted-like" / "data.vi"
+ENVICORPORA_BASIC_EN = ENVICORPORA_DIR / "basic" / "data.en"
+ENVICORPORA_BASIC_VI = ENVICORPORA_DIR / "basic" / "data.vi"
+SENTENCE_LINK_CHECKPOINT = PROCESSED_DATA_DIR / "sentence_link_checkpoint.json"
+
 # Target Export Database Path
 EXPORT_SQLITE_PATH = OUTPUT_DIR / "english_dataset.db"
 STAGING_DUCKDB_PATH = PROCESSED_DATA_DIR / "staging.duckdb"

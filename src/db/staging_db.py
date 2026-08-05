@@ -322,6 +322,16 @@ class DatabaseManager:
         row = cursor.fetchone()
         return row[0] if row else None
 
+    def get_max_sentence_id(self) -> int:
+        conn = self.get_connection()
+        row = conn.execute("SELECT MAX(id) FROM sentences").fetchone()
+        return row[0] if row and row[0] else 0
+
+    def count_sentences_by_source(self, source: str) -> int:
+        conn = self.get_connection()
+        row = conn.execute("SELECT count(*) FROM sentences WHERE source = ?", (source,)).fetchone()
+        return row[0] if row else 0
+
     def insert_phrases_batch(self, phrases_data: List[Dict[str, Any]]) -> int:
         """Batch insert phrases into `phrases` table with IGNORE on duplicate phrase."""
         if not phrases_data:
