@@ -8,6 +8,7 @@ app-focused core_3000.db plus quality_report.md.
 """
 
 import csv
+import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -188,6 +189,41 @@ class CorePackBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.audio_dir = self.output_dir / "audio"
         self.db_path = self.output_dir / "core_3000.db"
+        self._cp = self._load_checkpoint()
+
+    # ---- checkpoint ----------------------------------------------------
+
+    @property
+    def checkpoint_path(self) -> Path:
+        return self.output_dir / "checkpoint.json"
+
+    def _load_checkpoint(self) -> Dict[str, Any]:
+        if self.checkpoint_path.exists():
+            try:
+                return json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
+            except Exception:
+                return {"done": {}}
+        return {"done": {}}
+
+    def _save_checkpoint(self, checkpoint: Dict[str, Any]):
+        self.checkpoint_path.write_text(
+            json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def _is_done(self, word_id: int) -> bool:
+        return str(word_id) in self._cp.get("done", {})
+
+    # ---- audio ---------------------------------------------------------
+
+    async def _generate_word_audio(self, word_id: int, lemma: str) -> Tuple[Optional[str], Optional[str]]:
+        from src.media.audio_generator import AudioGenerator
+        audio_gen = AudioGenerator(output_dir=self.audio_dir)
+        results = await audio_gen.generate_dual_speed_word(word_id, lemma)
+        std = results["standard_path"]
+        fast = results["fast_path"]
+        if std is None or fast is None:
+            return None, None
+        return f"audio/std/w_{word_id}_std.mp3", f"audio/fast/w_{word_id}_fast.mp3"
 
     # ---- topic lookup -------------------------------------------------
 

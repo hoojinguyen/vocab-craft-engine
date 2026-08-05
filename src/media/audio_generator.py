@@ -47,6 +47,7 @@ class AudioGenerator:
         Returns the output file Path on success, None on failure.
         """
         output_path = self.output_dir / output_filename
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_path.exists() and output_path.stat().st_size > 0:
             return output_path
 
@@ -105,6 +106,30 @@ class AudioGenerator:
         """
         fn_std = f"phrase_{phrase_id}_std.mp3"
         fn_fast = f"phrase_{phrase_id}_fast.mp3"
+
+        std_path, fast_path = await asyncio.gather(
+            self.generate_audio_file(text_en, fn_std, voice=voice, speed=TTS_SPEED_STANDARD),
+            self.generate_audio_file(text_en, fn_fast, voice=voice, speed=TTS_SPEED_FAST_REFLEX)
+        )
+
+        return {
+            "standard_path": std_path,
+            "fast_path": fast_path
+        }
+
+    async def generate_dual_speed_word(
+        self,
+        word_id: int,
+        text_en: str,
+        voice: str = TTS_VOICES["US_FEMALE"]
+    ) -> Dict[str, Optional[Path]]:
+        """
+        Generates standard (1.0x) and fast reflex (1.2x) audio for a single
+        word. Files land in std/ and fast/ subdirectories (w_{id}_*.mp3),
+        mirroring the pack's relative path layout.
+        """
+        fn_std = f"std/w_{word_id}_std.mp3"
+        fn_fast = f"fast/w_{word_id}_fast.mp3"
 
         std_path, fast_path = await asyncio.gather(
             self.generate_audio_file(text_en, fn_std, voice=voice, speed=TTS_SPEED_STANDARD),

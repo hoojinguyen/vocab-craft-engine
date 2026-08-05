@@ -288,3 +288,41 @@ def test_enrich_word_batch_definitions_missing_quarantines(tmp_path, small_db):
     )
     assert result["quarantine"] == "definition"
     conn.close()
+
+
+import asyncio
+import json
+from unittest.mock import AsyncMock, patch
+
+
+def test_generate_dual_speed_word_writes_subdirs(tmp_path):
+    from src.media.audio_generator import AudioGenerator
+
+    async def run():
+        gen = AudioGenerator(output_dir=tmp_path / "audio", retry_count=1)
+        with patch("edge_tts.Communicate.save", new_callable=AsyncMock) as mock_save:
+            async def mock_save_side_effect(target_path):
+                Path(target_path).write_bytes(b"MOCK_MP3_DATA")
+
+            mock_save.side_effect = mock_save_side_effect
+            return await gen.generate_dual_speed_word(42, "hello", voice="en-US-AriaNeural")
+
+    results = asyncio.run(run())
+    assert results["standard_path"] is not None
+    assert results["fast_path"] is not None
+    assert results["standard_path"].name == "w_42_std.mp3"
+    assert results["fast_path"].name == "w_42_fast.mp3"
+    assert results["standard_path"].parent.name == "std"
+
+
+def test_checkpoint_resume_skips_done_words(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    small_db.close()
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    # write the checkpoint file, then reload it into the builder
+    builder.checkpoint_path.write_text(
+        json.dumps({"done": {"1": True}}), encoding="utf-8"
+    )
+    builder._cp = builder._load_checkpoint()
+    assert builder._is_done(1) is True
+    assert builder._is_done(2) is False
