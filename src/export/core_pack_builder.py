@@ -34,7 +34,7 @@ CONTRACTION_MAP = {
     "thats": "that", "theres": "there", "havent": "have", "hasnt": "have",
 }
 
-NOISE_POS = {"name", "prefix", "suffix", "symbol", "particle", "num", "punct"}
+NOISE_POS = {"name", "prefix", "suffix", "symbol", "particle", "num", "punct", "character", "contraction"}
 
 # Pack CEFR thresholds (spec section 4.1)
 CEFR_RANK_THRESHOLDS = [("A1", 500), ("A2", 1500), ("B1", 3500), ("B2", 7000), ("C1", 15000)]
@@ -257,15 +257,17 @@ class CorePackBuilder:
         return topics
 
     def _definitions_by_word(self, conn: sqlite3.Connection) -> Dict[int, Tuple[Any, ...]]:
-        """Maps word_id -> first definition row (definition_en, definition_vi, example) in one pass."""
-        first: Dict[int, Tuple[Any, ...]] = {}
+        """Maps word_id -> (definition_en, definition_vi, first example from ANY sense)."""
+        first: Dict[int, List[Any]] = {}
         for word_id, def_en, def_vi, example in conn.execute(
             "SELECT word_id, definition_en, definition_vi, example "
             "FROM definitions ORDER BY word_id, id"
         ):
             if word_id not in first:
-                first[word_id] = (def_en, def_vi, example)
-        return first
+                first[word_id] = [def_en, def_vi, None]
+            if first[word_id][2] is None and example:
+                first[word_id][2] = example
+        return {word_id: tuple(row) for word_id, row in first.items()}
 
     # ---- enrichment ---------------------------------------------------
 
@@ -293,6 +295,13 @@ class CorePackBuilder:
                 "WHERE word_id = ? ORDER BY id LIMIT 1",
                 (word_id,),
             ).fetchone()
+            if def_row is not None and not def_row[2]:
+                ex_row = conn.execute(
+                    "SELECT example FROM definitions WHERE word_id = ? "
+                    "AND example IS NOT NULL AND example != '' ORDER BY id LIMIT 1",
+                    (word_id,),
+                ).fetchone()
+                def_row = (def_row[0], def_row[1], ex_row[0] if ex_row else None)
         if def_row is None:
             return {"word": None, "quarantine": "definition"}
         definition_en, existing_vi, kaikki_example = def_row

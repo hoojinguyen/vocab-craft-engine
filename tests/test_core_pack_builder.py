@@ -256,6 +256,35 @@ def test_enrich_word_general_topic_fallback(tmp_path, small_db):
     conn.close()
 
 
+def test_enrich_word_example_recovers_from_later_sense(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    conn = sqlite3.connect(tmp_path / "source.db")
+    conn.execute(
+        "INSERT INTO words (lemma, pos, ipa_uk, ipa_us, frequency_rank, cefr_level) "
+        "VALUES ('wolf', 'noun', '/x/', '/x/', 6, 'C2')",
+    )
+    wolf_id = conn.execute("SELECT id FROM words WHERE lemma='wolf'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO definitions (word_id, definition_en, definition_vi, example) "
+        "VALUES (?, ?, ?, ?)",
+        (wolf_id, "First sense.", None, None),
+    )
+    conn.execute(
+        "INSERT INTO definitions (word_id, definition_en, definition_vi, example) "
+        "VALUES (?, ?, ?, ?)",
+        (wolf_id, "Second sense.", None, "The wolf howls at the moon."),
+    )
+    conn.commit()
+
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    wolf_row = conn.execute("SELECT * FROM words WHERE lemma='wolf'").fetchone()
+    result = builder._enrich_word(conn, wolf_row, StubTranslator())
+    assert result["quarantine"] is None
+    assert result["example_en"] == "The wolf howls at the moon."
+    assert result["example_vi"] == "bản dịch của The wolf howls at the moon."
+    conn.close()
+
+
 def test_enrich_word_batch_definitions_equivalent(tmp_path, small_db):
     _seed_pack_source(small_db)
     small_db.close()
