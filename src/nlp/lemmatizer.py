@@ -4,7 +4,7 @@ Batch processes sentences using spaCy to extract lemmas and word-sentence relati
 """
 
 import logging
-from typing import List, Dict, Any, Tuple, Optional, Set
+from typing import List, Dict, Any, Tuple, Optional, Set, Iterator
 import spacy
 
 logger = logging.getLogger(__name__)

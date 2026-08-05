@@ -2,6 +2,7 @@
 # Makefile for VocabCraft Engine
 # ==============================================================================
 
+PYTHON_SYS ?= $(shell command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || command -v python3.13 2>/dev/null || (test -x ~/.local/bin/uv && ~/.local/bin/uv python find 3.12 2>/dev/null) || (command -v uv 2>/dev/null && uv python find 3.12 2>/dev/null) || command -v python3 2>/dev/null)
 VENV_DIR = .venv
 PYTHON = $(VENV_DIR)/bin/python
 PIP = $(VENV_DIR)/bin/pip
@@ -28,8 +29,9 @@ help:
 	@echo "========================================================================"
 
 setup:
-	@echo "==> Creating virtual environment in $(VENV_DIR)..."
-	python3 -m venv $(VENV_DIR)
+	@echo "==> Creating virtual environment in $(VENV_DIR) using $(PYTHON_SYS)..."
+	@$(PYTHON_SYS) -c 'import sys; exit(0 if sys.version_info >= (3, 11) else 1)' || (echo "ERROR: Python >= 3.11 is required. Current version is $$($(PYTHON_SYS) --version)"; exit 1)
+	$(PYTHON_SYS) -m venv $(VENV_DIR)
 	@echo "==> Upgrading pip & installing dependencies..."
 	$(PIP) install --upgrade pip
 	$(PIP) install -e ".[dev]"
