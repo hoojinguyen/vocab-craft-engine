@@ -323,7 +323,10 @@ class CorePackBuilder:
             "SELECT s.text_en, s.text_vi FROM word_sentence_map wsm "
             "JOIN sentences s ON s.id = wsm.sentence_id "
             "WHERE wsm.word_id = ? AND s.cefr_level <= ? AND s.text_vi IS NOT NULL "
-            "ORDER BY s.difficulty_score LIMIT 1",
+            "ORDER BY CASE s.source "
+            "    WHEN 'TED-EnVi' THEN 0 WHEN 'Basic-EnVi' THEN 1 "
+            "    WHEN 'Tatoeba' THEN 2 WHEN 'OpenSubtitles' THEN 3 ELSE 4 END, "
+            "s.difficulty_score LIMIT 1",
             (word_id, max_level),
         ).fetchone()
         if sent_row is not None:
