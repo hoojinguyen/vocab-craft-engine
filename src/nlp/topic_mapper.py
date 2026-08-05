@@ -51,3 +51,41 @@ class TopicMapper:
             if keyword in key:
                 return theme
         return GENERAL_THEME
+
+
+def retheme_word_topics(conn) -> int:
+    """
+    One-time cleanup: rewrites word_topics so every row's `topic` column is
+    the curated theme for its raw_topic (via map_topic). Rows whose raw and
+    mapped themes are identical are kept untouched; duplicates (same word,
+    same mapped theme) are collapsed. Returns the number of rows updated.
+    """
+    conn.execute("CREATE TABLE IF NOT EXISTS word_topics_new "
+                 "(word_id INTEGER, topic TEXT, raw_topic TEXT, "
+                 "UNIQUE (word_id, topic))")
+    conn.execute("DELETE FROM word_topics_new")
+    cursor = conn.execute("SELECT word_id, topic, raw_topic FROM word_topics")
+    batch = cursor.fetchall()
+    changed = 0
+    for word_id, topic, raw_topic in batch:
+        mapped = TopicMapper.map_topic(raw_topic)
+        if mapped == topic:
+            conn.execute(
+                "INSERT OR IGNORE INTO word_topics_new (word_id, topic, raw_topic) "
+                "VALUES (?, ?, ?)",
+                (word_id, topic, raw_topic),
+            )
+        else:
+            changed += 1
+            conn.execute(
+                "INSERT OR IGNORE INTO word_topics_new (word_id, topic, raw_topic) "
+                "VALUES (?, ?, ?)",
+                (word_id, mapped, raw_topic),
+            )
+    conn.execute("DROP TABLE word_topics")
+    conn.execute("ALTER TABLE word_topics_new RENAME TO word_topics")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique "
+                 "ON word_topics(word_id, topic)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic)")
+    conn.commit()
+    return changed

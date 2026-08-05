@@ -41,3 +41,37 @@ def test_map_topic_fallback_is_general():
     from src.nlp.topic_mapper import TopicMapper
     assert TopicMapper.map_topic("rubik's cube") == "General & Everyday"
     assert TopicMapper.map_topic("") == "General & Everyday"
+
+
+def test_retheme_word_topics_collapses_raw_topics(tmp_path):
+    import sqlite3
+    from src.nlp.topic_mapper import retheme_word_topics
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.executescript(
+        """
+        CREATE TABLE word_topics (
+            word_id INTEGER, topic TEXT, raw_topic TEXT,
+            UNIQUE (word_id, topic)
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO word_topics (word_id, topic, raw_topic) VALUES (?, ?, ?)",
+        [
+            (1, "Organic Chemistry", "Organic Chemistry"),
+            (1, "Chemistry", "Chemistry"),          # collapses to same theme -> dedup
+            (2, "Pathology", "Pathology"),
+        ],
+    )
+    conn.commit()
+
+    retheme_word_topics(conn)
+
+    rows = conn.execute(
+        "SELECT word_id, topic, raw_topic FROM word_topics ORDER BY word_id, topic"
+    ).fetchall()
+    assert rows == [
+        (1, "Science & Mathematics", "Organic Chemistry"),
+        (2, "Health & Medicine", "Pathology"),
+    ]
