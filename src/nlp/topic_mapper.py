@@ -61,8 +61,12 @@ def retheme_word_topics(conn) -> int:
     same mapped theme) are collapsed. Returns the number of rows updated.
     """
     conn.execute("CREATE TABLE IF NOT EXISTS word_topics_new "
-                 "(word_id INTEGER, topic TEXT, raw_topic TEXT, "
-                 "UNIQUE (word_id, topic))")
+                 "(word_id INTEGER NOT NULL, topic TEXT NOT NULL, raw_topic TEXT, "
+                 "FOREIGN KEY (word_id) REFERENCES words (id) ON DELETE CASCADE)")
+    conn.execute("DROP INDEX IF EXISTS idx_word_topics_unique")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique "
+                 "ON word_topics_new(word_id, topic)")
+    conn.execute("BEGIN")
     conn.execute("DELETE FROM word_topics_new")
     cursor = conn.execute("SELECT word_id, topic, raw_topic FROM word_topics")
     batch = cursor.fetchall()
@@ -84,8 +88,6 @@ def retheme_word_topics(conn) -> int:
             )
     conn.execute("DROP TABLE word_topics")
     conn.execute("ALTER TABLE word_topics_new RENAME TO word_topics")
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique "
-                 "ON word_topics(word_id, topic)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic)")
     conn.commit()
     return changed
