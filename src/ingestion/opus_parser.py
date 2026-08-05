@@ -25,6 +25,10 @@ class ParallelCorpusParser:
         if self.tsv_path:
             yield from self._parse_tsv()
             return
+        if self.en_path is not None and self.vi_path is None:
+            raise ValueError(
+                "ParallelCorpusParser requires vi_path when en_path is given (or use tsv_path)"
+            )
         if not self.en_path or not self.en_path.exists() or not self.vi_path or not self.vi_path.exists():
             return
         seen: set = set()
@@ -58,5 +62,6 @@ class ParallelCorpusParser:
                 yield {"text_en": text_en, "text_vi": text_vi, "source": self.source}
 
 
-# Backward-compat alias for the old narrow reader (removed filter semantics).
+# Thin alias: legacy callers MUST pass tsv_path=... — a positional file arg
+# binds to en_path and raises ValueError (no silent empty corpus).
 OpusParser = ParallelCorpusParser
