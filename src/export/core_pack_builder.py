@@ -10,6 +10,7 @@ app-focused core_3000.db plus quality_report.md.
 import csv
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -189,6 +190,7 @@ class CorePackBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.audio_dir = self.output_dir / "audio"
         self.db_path = self.output_dir / "core_3000.db"
+        self._audio_gen_instance = None
         self._cp = self._load_checkpoint()
 
     # ---- checkpoint ----------------------------------------------------
@@ -202,22 +204,29 @@ class CorePackBuilder:
             try:
                 return json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
             except Exception:
+                logger.warning("Failed to parse checkpoint %s; starting fresh", self.checkpoint_path)
                 return {"done": {}}
         return {"done": {}}
 
     def _save_checkpoint(self, checkpoint: Dict[str, Any]):
-        self.checkpoint_path.write_text(
-            json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = self.checkpoint_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, self.checkpoint_path)
 
     def _is_done(self, word_id: int) -> bool:
         return str(word_id) in self._cp.get("done", {})
 
     # ---- audio ---------------------------------------------------------
 
-    async def _generate_word_audio(self, word_id: int, lemma: str) -> Tuple[Optional[str], Optional[str]]:
+    @property
+    def _audio_gen(self):
         from src.media.audio_generator import AudioGenerator
-        audio_gen = AudioGenerator(output_dir=self.audio_dir)
+        if self._audio_gen_instance is None:
+            self._audio_gen_instance = AudioGenerator(output_dir=self.audio_dir)
+        return self._audio_gen_instance
+
+    async def _generate_word_audio(self, word_id: int, lemma: str) -> Tuple[Optional[str], Optional[str]]:
+        audio_gen = self._audio_gen
         results = await audio_gen.generate_dual_speed_word(word_id, lemma)
         std = results["standard_path"]
         fast = results["fast_path"]

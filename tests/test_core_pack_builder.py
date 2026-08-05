@@ -326,3 +326,15 @@ def test_checkpoint_resume_skips_done_words(tmp_path, small_db):
     builder._cp = builder._load_checkpoint()
     assert builder._is_done(1) is True
     assert builder._is_done(2) is False
+
+
+def test_checkpoint_roundtrip_no_tmp_lingers(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    small_db.close()
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    builder._save_checkpoint({"done": {"1": True}})
+    assert builder.checkpoint_path.exists()
+    assert not builder.checkpoint_path.with_suffix(".json.tmp").exists()
+    builder2 = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    assert builder2._is_done(1) is True
+    assert builder2._is_done(2) is False
