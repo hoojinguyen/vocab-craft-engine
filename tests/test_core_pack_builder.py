@@ -437,3 +437,5 @@ def test_build_pack_from_full_pipeline_db(tmp_path, small_db, monkeypatch):
 
     violations = build_report_invariants(builder.db_path, report)
     assert violations == []
+    assert report["collocations"] >= 1
+    assert report["phrases"] >= 1
