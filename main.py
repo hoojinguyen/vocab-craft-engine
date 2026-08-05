@@ -404,13 +404,13 @@ def run_sentence_coverage_step(db_manager, args) -> dict:
     """Phase A: ingest OpenSubtitles + EnViCorpora parallel corpora into sentences.
 
     Idempotent: skips corpora whose source is already present (checkpoint by
-    source count). Links new sentences to words incrementally via a checkpoint
-    file tracking the last linked sentence id.
+    source count). Incremental word-sentence linking happens later in 4B, using
+    a checkpoint file tracking the last linked sentence id.
     """
     from config.settings import (
         ENVICORPORA_BASIC_EN, ENVICORPORA_BASIC_VI,
         ENVICORPORA_TED_LIKE_EN, ENVICORPORA_TED_LIKE_VI,
-        OPENSUBTITLES_EN, OPENSUBTITLES_VI, SENTENCE_LINK_CHECKPOINT,
+        OPENSUBTITLES_EN, OPENSUBTITLES_VI,
     )
     from src.ingestion.opus_parser import ParallelCorpusParser
     from src.ingestion.sentence_filter import SentenceFilter
@@ -460,6 +460,51 @@ def run_sentence_coverage_step(db_manager, args) -> dict:
     return {"inserted": inserted_total}
 
 
+def _read_sentence_link_checkpoint(path: Path) -> int:
+    """Returns last linked sentence id, or 0 if absent/corrupt."""
+    if not path.exists():
+        return 0
+    try:
+        return int(json.loads(path.read_text(encoding="utf-8"))["last_id"])
+    except Exception:
+        return 0
+
+
+def _write_sentence_link_checkpoint(path: Path, last_id: int) -> None:
+    """Persists the last linked sentence id for incremental resume."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"last_id": last_id}), encoding="utf-8")
+
+
+def _clear_sentence_link_checkpoint() -> None:
+    """Drops the link checkpoint so a rebuilt pipeline re-links from id 0."""
+    SENTENCE_LINK_CHECKPOINT.unlink(missing_ok=True)
+
+
+def _link_sentences_incrementally(db_manager, checkpoint: Path) -> None:
+    """Links sentences with id > last_linked to words, then writes back the checkpoint."""
+    last_linked = _read_sentence_link_checkpoint(checkpoint)
+    lemmatizer = Lemmatizer()
+    map_batch = []
+    new_max = last_linked
+    cursor = db_manager.get_connection().cursor()
+    cursor.execute("SELECT id, text_en FROM sentences WHERE id > ? ORDER BY id;", (last_linked,))
+    for s_id, text_en in cursor.fetchall():
+        lemmas = lemmatizer.lemmatize_text(text_en)
+        for lem in lemmas:
+            word_id = db_manager.get_word_id_by_lemma(lem["lemma"])
+            if word_id:
+                map_batch.append({"word_id": word_id, "sentence_id": s_id})
+        new_max = max(new_max, s_id)
+        if len(map_batch) >= 5000:
+            db_manager.insert_word_sentence_map_batch(map_batch)
+            map_batch = []
+    if map_batch:
+        db_manager.insert_word_sentence_map_batch(map_batch)
+    if new_max > last_linked:
+        _write_sentence_link_checkpoint(checkpoint, new_max)
+
+
 def run_pipeline():
     args = parse_arguments()
     start_time = time.time()
@@ -491,6 +536,8 @@ def run_pipeline():
             cursor.execute(f"DROP TABLE IF EXISTS {tbl};")
         conn.commit()
         conn.execute("PRAGMA foreign_keys = ON;")
+        _clear_sentence_link_checkpoint()
+        logger.info("   -> Cleared stale sentence-link checkpoint for fresh re-link.")
 
     db_manager.init_schema()
     logger.info("[Step 1/5] Schema initialized successfully.")
@@ -674,32 +721,7 @@ def run_pipeline():
 
     # 4B. Word-Sentence Mapping & Lemmatization (incremental since checkpoint)
     logger.info("   [4B] Linking Word-Sentence Mappings (incremental)...")
-    checkpoint = SENTENCE_LINK_CHECKPOINT
-    last_linked = 0
-    if checkpoint.exists():
-        try:
-            last_linked = int(json.loads(checkpoint.read_text(encoding="utf-8"))["last_id"])
-        except Exception:
-            last_linked = 0
-    lemmatizer = Lemmatizer()
-    map_batch = []
-    new_max = last_linked
-    cursor.execute("SELECT id, text_en FROM sentences WHERE id > ? ORDER BY id;", (last_linked,))
-    for s_id, text_en in cursor.fetchall():
-        lemmas = lemmatizer.lemmatize_text(text_en)
-        for lem in lemmas:
-            word_id = db_manager.get_word_id_by_lemma(lem["lemma"])
-            if word_id:
-                map_batch.append({"word_id": word_id, "sentence_id": s_id})
-        new_max = max(new_max, s_id)
-        if len(map_batch) >= 5000:
-            db_manager.insert_word_sentence_map_batch(map_batch)
-            map_batch = []
-    if map_batch:
-        db_manager.insert_word_sentence_map_batch(map_batch)
-    if new_max > last_linked:
-        checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint.write_text(json.dumps({"last_id": new_max}), encoding="utf-8")
+    _link_sentences_incrementally(db_manager, SENTENCE_LINK_CHECKPOINT)
     cursor.execute("SELECT count(*) FROM word_sentence_map;")
     map_count = cursor.fetchone()[0]
     logger.info("   [4B] Linked sentences to %s word links.", f"{map_count:,}")
