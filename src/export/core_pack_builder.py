@@ -637,3 +637,32 @@ class CorePackBuilder:
             "collocations": colloc_count,
             "phrases": phrase_count,
         }
+
+
+def build_report_invariants(pack_db_path: Path, report: Dict[str, Any]) -> List[str]:
+    """Validates pack invariants; returns a list of violation strings (empty = healthy)."""
+    violations: List[str] = []
+    conn = sqlite3.connect(str(pack_db_path))
+    word_count = conn.execute("SELECT count(*) FROM words").fetchone()[0]
+    if word_count != report["selected"] - report["quarantined"]:
+        violations.append(f"word count {word_count} != selected - quarantined")
+    no_topic = conn.execute(
+        "SELECT count(*) FROM words w WHERE NOT EXISTS "
+        "(SELECT 1 FROM word_topics t WHERE t.word_id = w.id)"
+    ).fetchone()[0]
+    if no_topic:
+        violations.append(f"{no_topic} words without a topic")
+    relative = conn.execute(
+        "SELECT count(*) FROM words WHERE audio_std IS NOT NULL AND "
+        "(audio_std LIKE '/%' OR audio_fast LIKE '/%')"
+    ).fetchone()[0]
+    if relative:
+        violations.append("absolute audio paths found")
+    missing_vi = conn.execute(
+        "SELECT count(*) FROM definitions WHERE definition_vi IS NULL OR "
+        "example_vi IS NULL"
+    ).fetchone()[0]
+    if missing_vi:
+        violations.append(f"{missing_vi} definitions missing Vietnamese")
+    conn.close()
+    return violations

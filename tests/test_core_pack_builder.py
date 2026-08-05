@@ -386,3 +386,54 @@ def test_build_pack_end_to_end(tmp_path, small_db, monkeypatch):
     content = report_file.read_text(encoding="utf-8")
     assert "pass rate" in content.lower()
     assert "ngsl" in content.lower()
+
+
+def test_build_pack_from_full_pipeline_db(tmp_path, small_db, monkeypatch):
+    """
+    Smoke test on a representative source DB: exercises selection with the
+    real NGSL file when present and asserts the pack gate invariants.
+    """
+    from src.export.core_pack_builder import build_report_invariants
+
+    _seed_pack_source(small_db)
+    # add a collocation + idiom linked to core words
+    cat_id = small_db.execute("SELECT id FROM words WHERE lemma='cat'").fetchone()[0]
+    small_db.execute(
+        "INSERT INTO collocations (phrase, meaning_vi, pos_pattern, cefr_level) "
+        "VALUES ('cat food', 'thức ăn cho mèo', 'noun chunk', 'A1')"
+    )
+    small_db.execute(
+        "INSERT INTO phrases (phrase, phrase_type, cefr_level, definition_en, definition_vi, audio_status) "
+        "VALUES ('cat nap', 'idiom', 'A2', 'A short sleep.', 'giấc ngủ ngắn.', 'ok')"
+    )
+    small_db.commit()
+    small_db.close()
+
+    ngsl = tmp_path / "ngsl.csv"
+    ngsl.write_text("cat,,,\ndog,,,\nrun,,,\n", encoding="utf-8")
+
+    import src.export.core_pack_builder as cpb
+
+    class StubPackTranslator:
+        def translate_text(self, text):
+            return f"bản dịch của {text}"
+
+        def save_cache(self):
+            pass
+
+    monkeypatch.setattr("src.nlp.translator.Translator", StubPackTranslator)
+
+    async def fake_audio(self, word_id, lemma):
+        return f"audio/std/w_{word_id}_std.mp3", f"audio/fast/w_{word_id}_fast.mp3"
+
+    original = cpb.CorePackBuilder._generate_word_audio
+    cpb.CorePackBuilder._generate_word_audio = fake_audio
+    try:
+        builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+        report = builder.build(freq_dict={"cat": 1, "dog": 2, "run": 3},
+                               ngsl_path=ngsl, vi_budget=10)
+    finally:
+        cpb.CorePackBuilder._generate_word_audio = original
+
+    violations = build_report_invariants(builder.db_path, report)
+    assert violations == []
