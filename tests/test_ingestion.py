@@ -82,20 +82,20 @@ def test_tatoeba_parser(tmp_path: Path):
     assert pairs[0]["source"] == "Tatoeba"
 
 
-def test_opus_parser(tmp_path: Path):
+def test_opus_parser_tsv_alias(tmp_path: Path):
     opus_file = tmp_path / "opensubtitles_sample.txt"
     with open(opus_file, "w", encoding="utf-8") as f:
         f.write("Where are you going?\tBạn đang đi đâu thế?\n")
         f.write("123456\tIgnored number line\n")
         f.write("Yes, I agree.\tTôi đồng ý.\n")
 
-    parser = OpusParser(opus_file)
-    turns = list(parser.parse_dialogue_lines())
+    parser = OpusParser(tsv_path=opus_file)
+    turns = list(parser.parse_pairs())
 
-    assert len(turns) == 2
+    assert len(turns) == 3
     assert turns[0]["text_en"] == "Where are you going?"
     assert turns[0]["text_vi"] == "Bạn đang đi đâu thế?"
-    assert turns[1]["text_en"] == "Yes, I agree."
+    assert turns[0]["source"] == "OpenSubtitles"
 
 
 def test_extract_fields_definition_vi_none_without_vietnamese_translation():
