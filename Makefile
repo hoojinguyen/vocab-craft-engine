@@ -11,7 +11,7 @@ PYTEST = $(VENV_DIR)/bin/pytest
 # Since .venv lives inside the repo, everything is blocked (false positive).
 export NLTK_DISABLE_IMPORT_SECURITY := 1
 
-.PHONY: help setup download-data run run-fresh test clean clean-db
+.PHONY: help setup download-data corpus-download run run-fresh test clean clean-db
 
 help:
 	@echo "========================================================================"
@@ -41,6 +41,11 @@ setup:
 download-data:
 	@echo "==> Downloading raw datasets (Kaikki Wiktionary & Tatoeba sentences)..."
 	$(PYTHON) scripts/download_raw_data.py
+
+corpus-download:
+	@echo "==> Downloading parallel corpora (OpenSubtitles + EnViCorpora)..."
+	$(PYTHON) -c "from scripts.download_raw_data import download_opensubtitles_envi, download_envicorpora; download_opensubtitles_envi(); download_envicorpora()"
+	@echo "==> Corpora downloaded to data/raw/opensubtitles_envi/ and data/raw/envicorpora/"
 
 run:
 	@echo "==> Starting English Dataset ETL Pipeline (Smart Auto-Resume)..."
