@@ -19,6 +19,13 @@ from config.settings import (
     TATOEBA_SENTENCES_PATH,
     TATOEBA_LINKS_PATH,
     SUBTLEX_FREQ_PATH,
+    NGSL_PATH,
+    OPENSUBTITLES_EN,
+    OPENSUBTITLES_VI,
+    ENVICORPORA_TED_LIKE_EN,
+    ENVICORPORA_TED_LIKE_VI,
+    ENVICORPORA_BASIC_EN,
+    ENVICORPORA_BASIC_VI,
     SENTENCE_LINK_CHECKPOINT,
     BATCH_SIZE
 )
@@ -45,6 +52,28 @@ TOPIC_CHECKPOINT = 1_000
 VI_EMPTY_BACKFILL_CHECKPOINT = 0  # skip when no candidates remain
 VI_BATCH_SLEEP_SECONDS = 0.1  # gentle pacing between translation batches (rate-limit backoff)
 VI_TRANSLATION_BUDGET = 1000  # max MT attempts per run; re-running resumes the backfill
+
+# Every raw file `make run` needs. A fresh box must download ALL of these
+# before the pipeline starts — a partial set would silently skip whole steps
+# (e.g. sentence coverage) and only be discovered hours into the run.
+REQUIRED_RAW_FILES = [
+    KAIKKI_JSON_PATH,
+    TATOEBA_SENTENCES_PATH,
+    TATOEBA_LINKS_PATH,
+    SUBTLEX_FREQ_PATH,
+    NGSL_PATH,
+    OPENSUBTITLES_EN,
+    OPENSUBTITLES_VI,
+    ENVICORPORA_TED_LIKE_EN,
+    ENVICORPORA_TED_LIKE_VI,
+    ENVICORPORA_BASIC_EN,
+    ENVICORPORA_BASIC_VI,
+]
+
+
+def get_missing_raw_files(paths) -> list:
+    """Returns the subset of raw files that are missing or empty (0 bytes)."""
+    return [p for p in paths if not p.exists() or p.stat().st_size == 0]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -518,7 +547,9 @@ def run_pipeline():
     logger.info("==========================================================")
 
     # Check raw data files
-    if not KAIKKI_JSON_PATH.exists() or not TATOEBA_SENTENCES_PATH.exists() or not SUBTLEX_FREQ_PATH.exists():
+    missing_raw = get_missing_raw_files(REQUIRED_RAW_FILES)
+    if missing_raw:
+        logger.info("Raw data files missing: %s", [str(p) for p in missing_raw])
         logger.info("Raw data files check/download in progress...")
         from scripts.download_raw_data import download_all_raw_data
         download_all_raw_data()

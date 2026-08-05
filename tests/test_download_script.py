@@ -76,3 +76,30 @@ def test_extract_zip_member_with_target_name(tmp_path):
     out = tmp_path / "out"
     extract_zip_member(zip_path, out, "OpenSubtitles.en-vi.en", "en-vi.txt.en")
     assert (out / "en-vi.txt.en").read_bytes() == payload
+
+
+def test_download_opensubtitles_envi_refills_empty_file(tmp_path, monkeypatch):
+    """A 0-byte .en file must be treated as missing (the pipeline gate checks
+    st_size == 0) — otherwise a truncated download silently skips the corpus."""
+    import config.settings as settings
+    import scripts.download_raw_data as module
+
+    empty_en = tmp_path / "en-vi.txt.en"
+    empty_en.write_bytes(b"")
+    vi = tmp_path / "en-vi.txt.vi"
+    vi.write_text("Xin chào.\n", encoding="utf-8")
+
+    zip_path = tmp_path / "corpus.zip"
+    payload = "Hello there.\n".encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("OpenSubtitles.en-vi.en", payload)
+        zf.writestr("OpenSubtitles.en-vi.vi", "Xin chào.\n".encode("utf-8"))
+
+    monkeypatch.setattr(settings, "OPENSUBTITLES_EN", empty_en)
+    monkeypatch.setattr(settings, "OPENSUBTITLES_VI", vi)
+    monkeypatch.setattr(settings, "OPENSUBTITLES_EN_VI_ZIP", zip_path)
+    monkeypatch.setattr(module, "download_resumable", lambda *a, **k: None)
+
+    module.download_opensubtitles_envi()
+
+    assert empty_en.read_bytes() == payload

@@ -168,7 +168,8 @@ def extract_zip_member(zip_path: Path, out_dir: Path, member_name: str, target_n
 def download_opensubtitles_envi():
     from config.settings import OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN, OPENSUBTITLES_VI
 
-    if OPENSUBTITLES_EN.exists() and OPENSUBTITLES_VI.exists():
+    if OPENSUBTITLES_EN.exists() and OPENSUBTITLES_EN.stat().st_size > 0 \
+            and OPENSUBTITLES_VI.exists() and OPENSUBTITLES_VI.stat().st_size > 0:
         return
     if not OPENSUBTITLES_EN_VI_ZIP.exists() or OPENSUBTITLES_EN_VI_ZIP.stat().st_size < OPENSUBTITLES_ZIP_MIN_SIZE:
         free_bytes = shutil.disk_usage(RAW_DATA_DIR).free

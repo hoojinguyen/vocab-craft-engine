@@ -176,6 +176,37 @@ def test_incremental_linking_resumes_and_recovers_after_reset(tmp_path, monkeypa
     db_manager.close()
 
 
+def test_required_raw_files_includes_corpus_files():
+    """The raw-data completeness gate used by `make run` must require the
+    parallel corpora too — otherwise a fresh box that has kaikki/tatoeba but
+    not OpenSubtitles/EnViCorpora would silently skip sentence coverage."""
+    import main as main_module
+    import config.settings as settings
+
+    required = set(main_module.REQUIRED_RAW_FILES)
+    for path in (
+        settings.OPENSUBTITLES_EN,
+        settings.OPENSUBTITLES_VI,
+        settings.ENVICORPORA_TED_LIKE_EN,
+        settings.ENVICORPORA_TED_LIKE_VI,
+        settings.ENVICORPORA_BASIC_EN,
+        settings.ENVICORPORA_BASIC_VI,
+    ):
+        assert path in required
+
+
+def test_get_missing_raw_files_reports_only_absent(tmp_path):
+    """Helper returns only files that are missing or empty in the given set."""
+    import main as main_module
+
+    present = tmp_path / "present.dat"
+    present.write_text("x", encoding="utf-8")
+    absent = tmp_path / "absent.dat"
+
+    missing = main_module.get_missing_raw_files([present, absent])
+    assert missing == [absent]
+
+
 def test_corpus_ingest_respects_max_sentences_cap(tmp_path, monkeypatch):
     """Per-corpus cap: a giant corpus must stop at MAX_SENTENCES_PER_CORPUS
     instead of ingesting everything (guards disk space on 37M-line corpora)."""
