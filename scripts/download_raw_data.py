@@ -5,6 +5,7 @@ Downloads and extracts raw dataset files into data/raw/ directory.
 
 import sys
 import os
+import shutil
 import tarfile
 import zipfile
 import urllib.request
@@ -32,11 +33,12 @@ URL_TATOEBA_SENTENCES = "https://downloads.tatoeba.org/exports/sentences.tar.bz2
 URL_TATOEBA_LINKS = "https://downloads.tatoeba.org/exports/links.tar.bz2"
 URL_FREQ_WORDS = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt"
 URL_NGSL = "https://raw.githubusercontent.com/koba-ninkigumi/ngsl/master/NGSL-1.01.csv"
-URL_OPENS_LENVI = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2024/moses/en-vi.txt.zip"
+URL_OPENS_ENVI = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2024/moses/en-vi.txt.zip"
 URL_TED_LIKE_EN = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.en"
 URL_TED_LIKE_VI = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.vi"
 URL_BASIC_EN = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/basic/data.en"
 URL_BASIC_VI = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/basic/data.vi"
+OPENSUBTITLES_ZIP_MIN_SIZE = 900_000_000
 
 
 def download_file(url: str, dest_path: Path):
@@ -122,14 +124,25 @@ def download_ngsl():
 
 
 def download_resumable(url: str, dest_path: Path):
-    """Downloads with HTTP Range resume; skips if file exists with final size."""
-    import shutil
+    """
+    Resumes a download with HTTP Range; callers decide when to skip.
 
+    If the server ignores the Range header and returns a 200 full body while a
+    partial file already exists, the partial file is truncated and rewritten from
+    scratch so it cannot be silently corrupted. A 416 (range start == full size)
+    raises HTTPError, so callers must ensure only a smaller partial file exists.
+    """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     existing = dest_path.stat().st_size if dest_path.exists() else 0
     request = urllib.request.Request(url, headers={"Range": f"bytes={existing}-"})
-    with urllib.request.urlopen(request) as resp, open(dest_path, "ab") as f:
-        shutil.copyfileobj(resp, f)
+    with urllib.request.urlopen(request) as resp:
+        if resp.status == 200 and existing > 0:
+            logger.warning("Server ignored Range request for %s; restarting from scratch", dest_path.name)
+            with open(dest_path, "wb") as f:
+                shutil.copyfileobj(resp, f)
+        else:
+            with open(dest_path, "ab") as f:
+                shutil.copyfileobj(resp, f)
     logger.info("Downloaded %s (%.1f MB)", dest_path.name, dest_path.stat().st_size / 1e6)
 
 
@@ -144,8 +157,8 @@ def download_opensubtitles_envi():
 
     if OPENSUBTITLES_EN.exists() and OPENSUBTITLES_VI.exists():
         return
-    if not OPENSUBTITLES_EN_VI_ZIP.exists() or OPENSUBTITLES_EN_VI_ZIP.stat().st_size < 900_000_000:
-        download_resumable(URL_OPENS_LENVI, OPENSUBTITLES_EN_VI_ZIP)
+    if not OPENSUBTITLES_EN_VI_ZIP.exists() or OPENSUBTITLES_EN_VI_ZIP.stat().st_size < OPENSUBTITLES_ZIP_MIN_SIZE:
+        download_resumable(URL_OPENS_ENVI, OPENSUBTITLES_EN_VI_ZIP)
     extract_zip_member(OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN_VI_ZIP.parent, "en-vi.txt.en")
     extract_zip_member(OPENSUBTITLES_EN_VI_ZIP, OPENSUBTITLES_EN_VI_ZIP.parent, "en-vi.txt.vi")
 
