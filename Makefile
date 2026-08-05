@@ -70,6 +70,7 @@ test:
 clean-db:
 	@echo "==> Deleting old output SQLite database file..."
 	rm -f data/output/english_dataset.db data/output/english_dataset.db-wal data/output/english_dataset.db-shm
+	rm -f data/processed/sentence_link_checkpoint.json
 	@echo "==> Old SQLite database successfully deleted."
 
 clean:
