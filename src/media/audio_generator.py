@@ -32,8 +32,26 @@ class AudioGenerator:
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.max_concurrent = max_concurrent
         self.retry_count = retry_count
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    @property
+    def semaphore(self) -> asyncio.Semaphore:
+        """
+        Dynamically acquires or recreates the asyncio.Semaphore bound to the
+        currently running event loop. Ensures safety across multiple asyncio.run() calls.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if self._semaphore is None or self._semaphore_loop != loop or loop is None or loop.is_closed():
+            self._semaphore = asyncio.Semaphore(self.max_concurrent)
+            self._semaphore_loop = loop
+        return self._semaphore
 
     async def generate_audio_file(
         self,

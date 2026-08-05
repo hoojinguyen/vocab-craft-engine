@@ -52,15 +52,16 @@ class SQLiteExporter:
 
         # 3. Analyze query planner statistics
         cursor.execute("ANALYZE;")
+        conn.commit()
 
-        # 4. Set production WAL PRAGMAs
+        # 4. Vacuum to minimize size
+        cursor.execute("VACUUM;")
+
+        # 5. Set production WAL PRAGMAs
         cursor.execute("PRAGMA journal_mode = WAL;")
         cursor.execute("PRAGMA synchronous = NORMAL;")
 
         conn.commit()
-
-        # 5. Vacuum to minimize size
-        cursor.execute("VACUUM;")
         conn.close()
 
         size_bytes = self.db_path.stat().st_size

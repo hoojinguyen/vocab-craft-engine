@@ -473,27 +473,33 @@ class CorePackBuilder:
                 continue
             pending.append((word, result))
 
-        # generate audio in parallel chunks
-        chunk = 0
-        while chunk < len(pending):
-            batch = pending[chunk:chunk + self._AUDIO_CHUNK]
-            async def _run_batch(batch_items):
+        # generate audio in parallel chunks within a single event loop
+        async def _run_all_audio_batches(pending_items):
+            all_batch_results = []
+            chunk = 0
+            while chunk < len(pending_items):
+                batch = pending_items[chunk:chunk + self._AUDIO_CHUNK]
                 coros = [self._generate_word_audio(word["id"], word["lemma"])
-                         for word, _ in batch_items]
-                return await asyncio.gather(*coros)
-            audio_results = asyncio.run(_run_batch(batch))
-            for (word, result), (std_path, fast_path) in zip(batch, audio_results):
-                if std_path is None or fast_path is None:
-                    quarantined.append({"word_id": word["id"], "lemma": word["lemma"],
-                                        "failed_gate": "audio"})
-                    continue
-                result["audio_std"] = std_path
-                result["audio_fast"] = fast_path
-                enriched.append(result)
-                self._cp["done"][str(word["id"])] = True
-            if enriched:
-                self._save_checkpoint(self._cp)
-            chunk += self._AUDIO_CHUNK
+                         for word, _ in batch]
+                batch_results = await asyncio.gather(*coros)
+                all_batch_results.append((batch, batch_results))
+                chunk += self._AUDIO_CHUNK
+            return all_batch_results
+
+        if pending:
+            audio_batches = asyncio.run(_run_all_audio_batches(pending))
+            for batch, audio_results in audio_batches:
+                for (word, result), (std_path, fast_path) in zip(batch, audio_results):
+                    if std_path is None or fast_path is None:
+                        quarantined.append({"word_id": word["id"], "lemma": word["lemma"],
+                                            "failed_gate": "audio"})
+                        continue
+                    result["audio_std"] = std_path
+                    result["audio_fast"] = fast_path
+                    enriched.append(result)
+                    self._cp["done"][str(word["id"])] = True
+                if enriched:
+                    self._save_checkpoint(self._cp)
 
         # -- write words + definitions + topics --------------------------
         for r in enriched:
@@ -567,7 +573,7 @@ class CorePackBuilder:
                 (q["word_id"], q["lemma"], q["failed_gate"]),
             )
 
-        # -- indexes + WAL + vacuum ---------------------------------------
+        # -- indexes + vacuum + WAL ---------------------------------------
         pack_conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_pack_defs_word ON definitions(word_id);
@@ -579,9 +585,11 @@ class CorePackBuilder:
             CREATE INDEX IF NOT EXISTS idx_pack_phrases_cefr ON phrases(cefr_level);
             """
         )
-        pack_conn.execute("PRAGMA journal_mode = WAL;")
         pack_conn.commit()
         pack_conn.execute("VACUUM;")
+        pack_conn.execute("PRAGMA journal_mode = WAL;")
+        pack_conn.execute("PRAGMA synchronous = NORMAL;")
+        pack_conn.commit()
         pack_conn.close()
 
         self._save_checkpoint(self._cp)

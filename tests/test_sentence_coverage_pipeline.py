@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _make_corpus(tmp_path: Path, source: str) -> Path:
@@ -172,4 +173,36 @@ def test_incremental_linking_resumes_and_recovers_after_reset(tmp_path, monkeypa
     main_module._link_sentences_incrementally(db_manager, cp)
     assert conn.execute("SELECT count(*) FROM word_sentence_map").fetchone()[0] >= 1
 
+    db_manager.close()
+
+
+def test_corpus_ingest_respects_max_sentences_cap(tmp_path, monkeypatch):
+    """Per-corpus cap: a giant corpus must stop at MAX_SENTENCES_PER_CORPUS
+    instead of ingesting everything (guards disk space on 37M-line corpora)."""
+    import main as main_module
+    import config.settings as settings
+    from src.db.staging_db import DatabaseManager
+
+    en = tmp_path / "cap.en"
+    vi = tmp_path / "cap.vi"
+    en.write_text("\n".join(f"This is sample sentence number {i}." for i in range(12)), encoding="utf-8")
+    vi.write_text("\n".join(f"Đây là câu mẫu số {i}." for i in range(12)), encoding="utf-8")
+
+    monkeypatch.setattr(settings, "OPENSUBTITLES_EN", en)
+    monkeypatch.setattr(settings, "OPENSUBTITLES_VI", vi)
+    monkeypatch.setattr(settings, "ENVICORPORA_TED_LIKE_EN", tmp_path / "missing.en")
+    monkeypatch.setattr(settings, "ENVICORPORA_TED_LIKE_VI", tmp_path / "missing.vi")
+    monkeypatch.setattr(settings, "ENVICORPORA_BASIC_EN", tmp_path / "missing.en")
+    monkeypatch.setattr(settings, "ENVICORPORA_BASIC_VI", tmp_path / "missing.vi")
+    monkeypatch.setattr(settings, "MAX_SENTENCES_PER_CORPUS", 5)
+
+    db_manager = DatabaseManager(db_path=tmp_path / "capped.db")
+    db_manager.init_schema()
+    args = SimpleNamespace(force_reset=False)
+
+    stats = main_module.run_sentence_coverage_step(db_manager, args)
+
+    assert stats["inserted"] == 5
+    conn = db_manager.get_connection()
+    assert conn.execute("SELECT count(*) FROM sentences").fetchone()[0] == 5
     db_manager.close()

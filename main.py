@@ -410,6 +410,7 @@ def run_sentence_coverage_step(db_manager, args) -> dict:
     from config.settings import (
         ENVICORPORA_BASIC_EN, ENVICORPORA_BASIC_VI,
         ENVICORPORA_TED_LIKE_EN, ENVICORPORA_TED_LIKE_VI,
+        MAX_SENTENCES_PER_CORPUS,
         OPENSUBTITLES_EN, OPENSUBTITLES_VI,
     )
     from src.ingestion.opus_parser import ParallelCorpusParser
@@ -435,6 +436,10 @@ def run_sentence_coverage_step(db_manager, args) -> dict:
         logger.info("   [SentenceCoverage] Ingesting %s corpus...", source)
         batch, inserted = [], 0
         for pair in ParallelCorpusParser(en_path, vi_path, source=source).parse_pairs():
+            if inserted + len(batch) >= MAX_SENTENCES_PER_CORPUS:
+                logger.info("   [SentenceCoverage] %s cap reached (%s rows) — stopping.",
+                            source, f"{MAX_SENTENCES_PER_CORPUS:,}")
+                break
             if not sf.is_clean_pair(pair["text_en"], pair["text_vi"]):
                 continue
             graded = grader.grade_sentence(pair["text_en"])
