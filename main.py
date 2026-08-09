@@ -810,14 +810,20 @@ def run_pipeline():
 
     # 4E. Speed Reflex Drill Cards Generation
     logger.info("   [4E] Generating Speed Reflex Drill Cards...")
+    cursor.execute("SELECT id, text_en, text_vi, cefr_level FROM sentences;")
+    stored_sentences = cursor.fetchall()
+    total_sentences = len(stored_sentences)
+
     cursor.execute("SELECT count(*) FROM reflex_drills;")
     existing_drills = cursor.fetchone()[0]
 
-    if existing_drills > 1000 and not args.force_reset:
-        logger.info("   [4E] %s reflex drill cards already exist. Skipping drill generation.", f"{existing_drills:,}")
+    if existing_drills >= total_sentences and total_sentences > 0 and not args.force_reset:
+        logger.info("   [4E] %s reflex drill cards already exist (complete). Skipping drill generation.", f"{existing_drills:,}")
     else:
-        cursor.execute("SELECT id, text_en, text_vi, cefr_level FROM sentences;")
-        stored_sentences = cursor.fetchall()
+        if existing_drills > 0:
+            logger.info("   [4E] Cleaning up partial/incomplete reflex_drills (%s rows) to generate clean set...", f"{existing_drills:,}")
+            cursor.execute("DELETE FROM reflex_drills;")
+            conn.commit()
 
         # Fetch sentence pool for distractors
         sentence_pool = [{"id": r[0], "text_en": r[1], "text_vi": r[2], "cefr_level": r[3]} for r in stored_sentences]

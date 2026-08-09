@@ -16,9 +16,14 @@ class ReflexBuilder:
 
     def __init__(self, sentence_pool: Optional[List[Dict[str, Any]]] = None):
         self.sentence_pool = sentence_pool or []
+        self._rebuild_vi_pool()
 
     def set_sentence_pool(self, sentence_pool: List[Dict[str, Any]]):
         self.sentence_pool = sentence_pool
+        self._rebuild_vi_pool()
+
+    def _rebuild_vi_pool(self):
+        self.vi_pool = [s["text_vi"] for s in self.sentence_pool if s.get("text_vi")]
 
     def build_drill(self, target_sentence: Dict[str, Any], drill_type: str = "speed_translation") -> Dict[str, Any]:
         """
@@ -59,16 +64,20 @@ class ReflexBuilder:
 
     def _generate_distractors(self, target_sentence: Dict[str, Any], cefr_level: str, count: int = 3) -> List[str]:
         """
-        Picks count random distractor sentences from the pool with matching or close CEFR level.
+        Picks count random distractor sentences from the pre-computed pool.
         """
         target_vi = target_sentence.get("text_vi", "")
-        candidates = [
-            s.get("text_vi") for s in self.sentence_pool
-            if s.get("text_vi") and s.get("text_vi") != target_vi
-        ]
 
+        # Fast O(1) random sampling from pre-computed pool for large pools
+        if len(self.vi_pool) > count + 10:
+            samples = random.sample(self.vi_pool, min(count + 5, len(self.vi_pool)))
+            selected = [s for s in samples if s != target_vi][:count]
+            if len(selected) == count:
+                return selected
+
+        # Fallback for small pools or edge cases
+        candidates = [s for s in self.vi_pool if s != target_vi]
         if len(candidates) < count:
-            # Fallback placeholder distractors if pool is small
             fallback_options = [
                 "Tôi hiểu rồi.",
                 "Cảm ơn bạn rất nhiều.",
@@ -80,3 +89,4 @@ class ReflexBuilder:
 
         selected = random.sample(candidates, min(count, len(candidates)))
         return selected
+
