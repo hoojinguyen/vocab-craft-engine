@@ -138,7 +138,7 @@ class Translator:
 
         def _worker(item_id: int, text: str) -> Optional[Tuple[str, int]]:
             vi = self.translate_text(text)
-            if vi and self.validator.is_vietnamese(vi):
+            if vi:
                 return (vi, item_id)
             return None
 
@@ -151,6 +151,9 @@ class Translator:
                 res = future.result()
                 if res:
                     results.append(res)
+
+        if results:
+            self.save_cache()
 
         return results
 

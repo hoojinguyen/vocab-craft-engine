@@ -2,8 +2,8 @@ import pytest
 from src.nlp.translator import Translator
 
 
-def test_async_batch_translation(monkeypatch):
-    translator = Translator()
+def test_async_batch_translation(monkeypatch, tmp_path):
+    translator = Translator(cache_path=tmp_path / "cache.json")
 
     # Mock _translate_with_timeout to return dummy Vietnamese string
     monkeypatch.setattr(translator, "_translate_with_timeout", lambda t, text: f"dịch {text}")
@@ -17,14 +17,14 @@ def test_async_batch_translation(monkeypatch):
     assert ("dịch orange", 3) in results
 
 
-def test_async_batch_translation_empty():
-    translator = Translator()
+def test_async_batch_translation_empty(tmp_path):
+    translator = Translator(cache_path=tmp_path / "cache.json")
     results = translator.translate_batch_async([], max_workers=2)
     assert results == []
 
 
-def test_async_batch_translation_filters_invalid(monkeypatch):
-    translator = Translator()
+def test_async_batch_translation_filters_invalid(monkeypatch, tmp_path):
+    translator = Translator(cache_path=tmp_path / "cache.json")
 
     def mock_translate(t, text):
         if text == "apple":

@@ -255,8 +255,16 @@ class PhraseExampleMatcher:
         return results
 
     def match_phrases_sql(self, conn, phrases: List[Dict[str, Any]], max_candidates: int = 50) -> List[Dict[str, Any]]:
-        """Fast SQL-based candidate lookup for phrase-sentence matching."""
-        cursor = conn.cursor()
+        """Fast inverted-index candidate lookup for phrase-sentence matching."""
+        if not self._word_index and conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, text_en, cefr_level FROM sentences;")
+            self.sentences = [
+                {"id": r[0], "text_en": r[1], "cefr_level": r[2]}
+                for r in cursor.fetchall()
+            ]
+            self._build_index()
+
         results: List[Dict[str, Any]] = []
 
         for item in phrases:
@@ -271,15 +279,15 @@ class PhraseExampleMatcher:
             if not variants:
                 continue
 
-            where_clauses = ["text_en LIKE ?" for _ in variants]
-            params = [f"%{v}%" for v in variants] + [max_candidates]
-            query = f"""
-                SELECT id, text_en, cefr_level FROM sentences 
-                WHERE {' OR '.join(where_clauses)}
-                LIMIT ?;
-            """
-            cursor.execute(query, params)
-            candidates = [{"id": r[0], "text_en": r[1], "cefr_level": r[2]} for r in cursor.fetchall()]
+            candidate_ids = set()
+            candidates = []
+            for v in variants:
+                stem = _stem(v)
+                for sent in self._word_index.get(stem, []):
+                    s_id = sent["id"]
+                    if s_id not in candidate_ids:
+                        candidate_ids.add(s_id)
+                        candidates.append(sent)
 
             matches = [
                 sent for sent in candidates

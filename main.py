@@ -343,26 +343,31 @@ def run_vietnamese_step(db_manager, args) -> dict:
     translator = Translator()
     budget = getattr(args, "vi_budget", VI_TRANSLATION_BUDGET)
 
-    # Process in batches using translate_batch_async (max 20 workers)
+    # Process in batches using translate_batch_async (max 20 workers, chunked by 100)
     def _backfill_async(rows, table, id_col, target_col, current_budget):
         if current_budget <= 0 or not rows:
             return 0, current_budget
         to_process = rows[:current_budget]
-        if hasattr(translator, "translate_batch_async"):
-            updated_tuples = translator.translate_batch_async(to_process, max_workers=20)
-        else:
-            validator = VietnameseTextValidator()
-            updated_tuples = []
-            for row_id, text in to_process:
-                vi = translator.translate_text(text)
-                if vi and validator.is_vietnamese(vi):
-                    updated_tuples.append((vi, row_id))
-        if updated_tuples:
-            cursor.executemany(f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;", updated_tuples)
-            conn.commit()
-            if hasattr(translator, "save_cache"):
-                translator.save_cache()
-        return len(updated_tuples), current_budget - len(to_process)
+        total_updated = 0
+        chunk_size = 100
+        for i in range(0, len(to_process), chunk_size):
+            chunk = to_process[i:i + chunk_size]
+            if hasattr(translator, "translate_batch_async"):
+                updated_tuples = translator.translate_batch_async(chunk, max_workers=20)
+            else:
+                validator = VietnameseTextValidator()
+                updated_tuples = []
+                for row_id, text in chunk:
+                    vi = translator.translate_text(text)
+                    if vi and validator.is_vietnamese(vi):
+                        updated_tuples.append((vi, row_id))
+            if updated_tuples:
+                cursor.executemany(f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;", updated_tuples)
+                conn.commit()
+                if hasattr(translator, "save_cache"):
+                    translator.save_cache()
+                total_updated += len(updated_tuples)
+        return total_updated, current_budget - len(to_process)
 
     def_updated, budget_left = _backfill_async(priority_definitions, "definitions", "id", "definition_vi", budget)
     col_updated, budget_left = _backfill_async(priority_collocations, "collocations", "id", "meaning_vi", budget_left)
