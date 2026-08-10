@@ -45,6 +45,7 @@ from src.export.sqlite_exporter import SQLiteExporter
 from src.ingestion.phrase_parser import PhraseParser
 from src.nlp.phrase_grader import PhraseGrader
 from src.nlp.phrase_example_matcher import PhraseExampleMatcher
+from src.nlp.offline_gloss_extractor import OfflineGlossExtractor
 from src.ingestion.relation_parser import RelationParser
 
 RELATION_CHECKPOINT = 50_000
@@ -115,12 +116,13 @@ def run_phrase_step(db_manager, args) -> dict:
     logger.info("   [4G] Ingesting Multi-Word Expressions (Idioms, Phrasal Verbs, Proverbs)...")
     phrase_parser = PhraseParser(KAIKKI_JSON_PATH)
     grader = PhraseGrader(CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH))
-    translator = Translator()
+    offline_extractor = OfflineGlossExtractor(KAIKKI_JSON_PATH)
 
     phrases_batch = []
     phrase_count = 0
     for item in phrase_parser.parse_phrases():
         graded = grader.grade_phrase(item["phrase"])
+        vi_gloss = item.get("definition_vi") or offline_extractor.get_translation(item["phrase"])
         phrases_batch.append({
             "phrase": item["phrase"],
             "phrase_type": item["phrase_type"],
@@ -128,7 +130,7 @@ def run_phrase_step(db_manager, args) -> dict:
             "cefr_level": graded["cefr_level"],
             "difficulty_score": graded["difficulty_score"],
             "definition_en": item["definition_en"],
-            "definition_vi": item.get("definition_vi") or translator.translate_text(item["phrase"]),
+            "definition_vi": vi_gloss,
             "ipa": item.get("ipa"),
             "audio_std": None,
             "audio_fast": None,
@@ -146,20 +148,15 @@ def run_phrase_step(db_manager, args) -> dict:
         phrase_count += len(phrases_batch)
     logger.info("   [4G] Stored %s multi-word expressions.", f"{phrase_count:,}")
 
-    # Link example sentences from Tatoeba
-    cursor.execute("SELECT id, text_en, cefr_level FROM sentences;")
-    sentence_pool = [
-        {"id": r[0], "text_en": r[1], "cefr_level": r[2]}
-        for r in cursor.fetchall()
-    ]
-    matcher = PhraseExampleMatcher(sentence_pool)
-
+    # Fast SQL-indexed example sentence matching
     cursor.execute("SELECT id, phrase FROM phrases;")
     stored_phrases = [{"id": r[0], "phrase": r[1]} for r in cursor.fetchall()]
-    link_batch = matcher.match_phrases(stored_phrases)
+    matcher = PhraseExampleMatcher(sentences=[])
+    link_batch = matcher.match_phrases_sql(conn, stored_phrases)
+
     for i in range(0, len(link_batch), 5000):
         db_manager.insert_phrase_sentences_batch(link_batch[i:i + 5000])
-    logger.info("   [4G] Linked %s example sentences to phrases.", f"{len(link_batch):,}")
+    logger.info("   [4G] Linked %s example sentences to phrases via SQL matching.", f"{len(link_batch):,}")
 
     # Generate TTS audio for all phrases (batched, one commit per chunk)
     async def generate_phrase_audio():
