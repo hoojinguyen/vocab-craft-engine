@@ -159,8 +159,10 @@ class SQLiteExporter:
         # 3. Build or verify indexes safely
         indexes = [
             ("words", "CREATE UNIQUE INDEX IF NOT EXISTS idx_words_lemma ON words(lemma);"),
+            ("words", "CREATE UNIQUE INDEX IF NOT EXISTS idx_words_lemma_cov ON words(lemma, id, pos, cefr_level, frequency_rank, ipa_uk, ipa_us);"),
             ("sentences", "CREATE UNIQUE INDEX IF NOT EXISTS idx_sentences_text_en ON sentences(text_en);"),
             ("reflex_drills", "CREATE INDEX IF NOT EXISTS idx_reflex_cefr_type ON reflex_drills(drill_type, sentence_id);"),
+            ("reflex_drills", "CREATE INDEX IF NOT EXISTS idx_reflex_cov ON reflex_drills(drill_type, id, sentence_id, prompt_text);"),
             ("dialogue_nodes", "CREATE INDEX IF NOT EXISTS idx_nodes_tree_parent ON dialogue_nodes(tree_id, parent_node_id);"),
             ("phrases", "CREATE INDEX IF NOT EXISTS idx_phrases_cefr ON phrases(cefr_level);"),
             ("phrases", "CREATE INDEX IF NOT EXISTS idx_phrases_type ON phrases(phrase_type);"),
@@ -175,6 +177,20 @@ class SQLiteExporter:
         for tbl, sql in indexes:
             if self._table_exists(conn, tbl):
                 cursor.execute(sql)
+
+        # Build FTS5 external content table for words
+        if self._table_exists(conn, "words"):
+            cursor.execute("DROP TABLE IF EXISTS words_fts;")
+            cursor.execute("""
+                CREATE VIRTUAL TABLE words_fts USING fts5(
+                    lemma,
+                    content='words',
+                    content_rowid='id',
+                    tokenize='porter ascii'
+                );
+            """)
+            cursor.execute("INSERT INTO words_fts(rowid, lemma) SELECT id, lemma FROM words;")
+
 
         # 4. Analyze query planner statistics
         cursor.execute("ANALYZE;")

@@ -104,3 +104,21 @@ def test_optimize_and_package_enum_migration(dummy_db):
     assert view_row[0] == 'noun'
     assert view_row[1] == 'A1'
     conn.close()
+
+def test_fts5_external_content_and_covering_indexes(dummy_db):
+    exporter = SQLiteExporter(db_path=dummy_db)
+    exporter.optimize_and_package()
+
+    conn = sqlite3.connect(str(dummy_db))
+    cursor = conn.cursor()
+
+    # Verify words_fts virtual table exists
+    fts_row = cursor.execute("SELECT rowid, lemma FROM words_fts WHERE words_fts MATCH 'appl*'").fetchone()
+    assert fts_row is not None
+    assert fts_row[1] == 'apple'
+
+    # Verify covering index exists
+    idx_list = [row[1] for row in cursor.execute("PRAGMA index_list('words');").fetchall()]
+    assert 'idx_words_lemma_cov' in idx_list
+    conn.close()
+
