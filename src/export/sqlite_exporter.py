@@ -196,7 +196,8 @@ class SQLiteExporter:
         cursor.execute("ANALYZE;")
         conn.commit()
 
-        # 5. Vacuum to minimize size
+        # 5. Set page_size and Vacuum to minimize size
+        cursor.execute("PRAGMA page_size = 4096;")
         cursor.execute("VACUUM;")
 
         # 6. Set production WAL PRAGMAs
@@ -228,6 +229,58 @@ class SQLiteExporter:
         conn.close()
         return violations
 
+    def benchmark_all_queries(self, iterations: int = 100) -> Dict[str, float]:
+        """
+        Runs automated SLA performance benchmarks for core query workloads.
+        Target: < 5.0 ms per query type.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        results = {}
+
+        # 1. Exact Lemma Lookup
+        q_lemma = "SELECT id, lemma, pos, cefr_level, ipa_uk FROM words WHERE lemma = 'apple';"
+        durations = []
+        for _ in range(iterations):
+            t0 = time.perf_counter()
+            cursor.execute(q_lemma)
+            cursor.fetchone()
+            durations.append((time.perf_counter() - t0) * 1000.0)
+        results["lemma_lookup_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+
+        # 2. FTS5 Search
+        q_fts = "SELECT w.id, w.lemma, w.pos FROM words_fts f JOIN words w ON f.rowid = w.id WHERE words_fts MATCH 'appl*' LIMIT 20;"
+        durations = []
+        for _ in range(iterations):
+            t0 = time.perf_counter()
+            cursor.execute(q_fts)
+            cursor.fetchall()
+            durations.append((time.perf_counter() - t0) * 1000.0)
+        results["fts_search_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+
+        # 3. Indexed Fast Random Sampling for Reflex Drills
+        q_reflex = """
+            SELECT r.id, r.prompt_text, r.correct_answer, r.distractors_json, s.cefr_level
+            FROM reflex_drills r
+            JOIN sentences s ON r.sentence_id = s.id
+            WHERE r.drill_type = 1
+              AND r.id >= (
+                SELECT ABS(RANDOM()) % (MAX(id) - MIN(id) + 1) + MIN(id)
+                FROM reflex_drills WHERE drill_type = 1
+              )
+            LIMIT 1;
+        """
+        durations = []
+        for _ in range(iterations):
+            t0 = time.perf_counter()
+            cursor.execute(q_reflex)
+            cursor.fetchone()
+            durations.append((time.perf_counter() - t0) * 1000.0)
+        results["reflex_sampling_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+
+        conn.close()
+        return results
+
     def benchmark_reflex_query_speed(self, iterations: int = 50) -> float:
         """
         Benchmarks average query speed in milliseconds for random distractor drills.
@@ -256,4 +309,5 @@ class SQLiteExporter:
         avg_ms = round(sum(durations) / len(durations), 3) if durations else 0.0
         logger.info("Average reflex query execution time: %s ms over %d runs", avg_ms, iterations)
         return avg_ms
+
 

@@ -122,3 +122,18 @@ def test_fts5_external_content_and_covering_indexes(dummy_db):
     assert 'idx_words_lemma_cov' in idx_list
     conn.close()
 
+
+def test_benchmark_all_queries_sla(dummy_db):
+    exporter = SQLiteExporter(db_path=dummy_db)
+    exporter.optimize_and_package()
+
+    benchmarks = exporter.benchmark_all_queries(iterations=20)
+    assert "lemma_lookup_ms" in benchmarks
+    assert "fts_search_ms" in benchmarks
+    assert "reflex_sampling_ms" in benchmarks
+
+    # Assert all query benchmarks are under 5.0 ms SLA
+    for key, val in benchmarks.items():
+        assert val < 5.0, f"Query benchmark {key} exceeded SLA: {val} ms"
+
+
