@@ -176,7 +176,10 @@ class SQLiteExporter:
         ]
         for tbl, sql in indexes:
             if self._table_exists(conn, tbl):
-                cursor.execute(sql)
+                try:
+                    cursor.execute(sql)
+                except sqlite3.OperationalError as e:
+                    logger.warning("Skipping index creation for %s (%s): %s", tbl, sql, e)
 
         # Build FTS5 external content table for words
         if self._table_exists(conn, "words"):
@@ -249,34 +252,36 @@ class SQLiteExporter:
         results["lemma_lookup_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
 
         # 2. FTS5 Search
-        q_fts = "SELECT w.id, w.lemma, w.pos FROM words_fts f JOIN words w ON f.rowid = w.id WHERE words_fts MATCH 'appl*' LIMIT 20;"
-        durations = []
-        for _ in range(iterations):
-            t0 = time.perf_counter()
-            cursor.execute(q_fts)
-            cursor.fetchall()
-            durations.append((time.perf_counter() - t0) * 1000.0)
-        results["fts_search_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+        if self._table_exists(conn, "words_fts"):
+            q_fts = "SELECT w.id, w.lemma, w.pos FROM words_fts f JOIN words w ON f.rowid = w.id WHERE words_fts MATCH 'appl*' LIMIT 20;"
+            durations = []
+            for _ in range(iterations):
+                t0 = time.perf_counter()
+                cursor.execute(q_fts)
+                cursor.fetchall()
+                durations.append((time.perf_counter() - t0) * 1000.0)
+            results["fts_search_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
 
         # 3. Indexed Fast Random Sampling for Reflex Drills
-        q_reflex = """
-            SELECT r.id, r.prompt_text, r.correct_answer, r.distractors_json, s.cefr_level
-            FROM reflex_drills r
-            JOIN sentences s ON r.sentence_id = s.id
-            WHERE r.drill_type = 1
-              AND r.id >= (
-                SELECT ABS(RANDOM()) % (MAX(id) - MIN(id) + 1) + MIN(id)
-                FROM reflex_drills WHERE drill_type = 1
-              )
-            LIMIT 1;
-        """
-        durations = []
-        for _ in range(iterations):
-            t0 = time.perf_counter()
-            cursor.execute(q_reflex)
-            cursor.fetchone()
-            durations.append((time.perf_counter() - t0) * 1000.0)
-        results["reflex_sampling_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+        if self._table_exists(conn, "reflex_drills"):
+            q_reflex = """
+                SELECT r.id, r.prompt_text, r.correct_answer, r.distractors_json, s.cefr_level
+                FROM reflex_drills r
+                JOIN sentences s ON r.sentence_id = s.id
+                WHERE r.drill_type = 1
+                  AND r.id >= (
+                    SELECT ABS(RANDOM()) % (MAX(id) - MIN(id) + 1) + MIN(id)
+                    FROM reflex_drills WHERE drill_type = 1
+                  )
+                LIMIT 1;
+            """
+            durations = []
+            for _ in range(iterations):
+                t0 = time.perf_counter()
+                cursor.execute(q_reflex)
+                cursor.fetchone()
+                durations.append((time.perf_counter() - t0) * 1000.0)
+            results["reflex_sampling_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
 
         conn.close()
         return results

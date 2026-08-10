@@ -586,11 +586,14 @@ class CorePackBuilder:
             """
         )
         pack_conn.commit()
-        pack_conn.execute("VACUUM;")
-        pack_conn.execute("PRAGMA journal_mode = WAL;")
-        pack_conn.execute("PRAGMA synchronous = NORMAL;")
-        pack_conn.commit()
         pack_conn.close()
+
+        # Trigger SQLiteExporter optimization (enum migration, FTS5, covering indexes, page size tuning) and SLA verification
+        from src.export.sqlite_exporter import SQLiteExporter
+        exporter = SQLiteExporter(db_path=self.db_path)
+        exporter.optimize_and_package()
+        benchmarks = exporter.benchmark_all_queries()
+        logger.info("Core Pack database optimized and SLA verified: %s", benchmarks)
 
         self._save_checkpoint(self._cp)
         report = self._write_report(metrics, enriched, quarantined, pack_collocs, pack_phrases)
