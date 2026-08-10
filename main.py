@@ -295,11 +295,12 @@ def run_relations_step(db_manager, args) -> dict:
 def run_vietnamese_step(db_manager, args) -> dict:
     """
     Step 4I: Vietnamese translation quality & backfill.
-    Cleans English passthrough rows, then backfills missing Vietnamese
-    translations (definitions, collocations, phrases) via Translator,
-    priority-ordered (graded words first). Only translations that pass
-    Vietnamese validation are written. MT calls are capped at args.vi_budget
-    per run (default VI_TRANSLATION_BUDGET); re-running resumes the backfill.
+    Runs a 2-phase hybrid translation engine:
+    Phase 1: Local Offline Gloss Extraction (0ms Instant Backfill from Kaikki/Tatoeba dumps).
+    Phase 2: Tiered Async Translation Pool for candidates missing Vietnamese,
+             priority-ordered (graded words / Core 3000 & Top 10k first).
+    Only translations that pass Vietnamese validation are written. MT calls are capped
+    at args.vi_budget per run (default VI_TRANSLATION_BUDGET); re-running resumes the backfill.
     Checkpoint: skips when no candidates remain NULL.
     """
     conn = db_manager.get_connection()
@@ -311,12 +312,19 @@ def run_vietnamese_step(db_manager, args) -> dict:
     cursor.execute("UPDATE collocations SET meaning_vi = NULL WHERE meaning_vi = phrase;")
     conn.commit()
 
-    # Candidates: missing Vietnamese, graded words first
+    # Phase 1: Local Offline Gloss Extraction (0ms Instant Backfill)
+    logger.info("   [4I Phase 1] Running Offline Gloss Extractor from Kaikki/Tatoeba dumps...")
+    offline_extractor = OfflineGlossExtractor(KAIKKI_JSON_PATH)
+    offline_stats = offline_extractor.backfill_db_glosses(db_manager)
+    logger.info("   [4I Phase 1] Instant Offline Backfill: %d definitions, %d collocations, %d phrases.",
+                offline_stats["definitions"], offline_stats["collocations"], offline_stats["phrases"])
+
+    # Phase 2: Candidates missing Vietnamese, graded words (Core 3000 & Top 10k) first
     cursor.execute("""
         SELECT d.id, d.definition_en FROM definitions d
         JOIN words w ON w.id = d.word_id
         WHERE d.definition_vi IS NULL OR d.definition_vi = ''
-        ORDER BY (w.cefr_level IS NULL), d.id;
+        ORDER BY (w.cefr_level IS NULL), w.frequency_rank ASC, d.id;
     """)
     priority_definitions = cursor.fetchall()
     cursor.execute("SELECT id, phrase FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '';")
@@ -325,79 +333,49 @@ def run_vietnamese_step(db_manager, args) -> dict:
     priority_phrases = cursor.fetchall()
 
     remaining = len(priority_definitions) + len(priority_collocations) + len(priority_phrases)
-    if remaining == VI_EMPTY_BACKFILL_CHECKPOINT and not args.force_reset:
-        logger.info("[4I] CHECKPOINT DETECTED: no missing Vietnamese translations remain. Skipping.")
-        return {"definitions": 0, "collocations": 0, "phrases": 0}
+    if remaining == VI_EMPTY_BACKFILL_CHECKPOINT and not getattr(args, "force_reset", False):
+        logger.info("[4I Phase 2] CHECKPOINT DETECTED: no missing Vietnamese translations remain. Skipping.")
+        return offline_stats
 
-    logger.info("   [4I] Backfilling Vietnamese translations (%s definitions, %s collocations, %s phrases)...",
+    logger.info("   [4I Phase 2] Backfilling Vietnamese translations via Tiered Async Pool (%s definitions, %s collocations, %s phrases)...",
                 f"{len(priority_definitions):,}", f"{len(priority_collocations):,}", f"{len(priority_phrases):,}")
 
     translator = Translator()
-    validator = VietnameseTextValidator()
-    translated_defs = 0
-    translated_colls = 0
-    translated_phrases = 0
-
     budget = getattr(args, "vi_budget", VI_TRANSLATION_BUDGET)
 
-    # Reserve fixed slices for collocations and phrases so they are never
-    # starved by the ~1.4M definitions (all words are graded, so the plain
-    # graded-first order would never reach them). Remainder goes to definitions.
-    colloc_budget = 0
-    phrase_budget = 0
-    defs_budget = 0
-    if budget >= 3:
-        small_table_slice = max(1, budget // 10)
-        colloc_budget = min(len(priority_collocations), small_table_slice)
-        phrase_budget = min(len(priority_phrases), small_table_slice)
-        defs_budget = max(0, budget - colloc_budget - phrase_budget)
-    elif budget > 0:
-        colloc_budget = min(len(priority_collocations), budget)
-
-    def _backfill(rows, table, id_col, target_col, remaining_budget):
-        """Translate up to remaining_budget rows and UPDATE; returns (updated, budget_left)."""
-        updated = 0
-        batches_done = 0
-        for batch_start in range(0, len(rows), 1000):
-            if remaining_budget <= 0:
-                break
-            batch = rows[batch_start:batch_start + 1000]
-            updates = []
-            for row_id, text in batch:
-                if remaining_budget <= 0:
-                    break
-                remaining_budget -= 1
+    # Process in batches using translate_batch_async (max 20 workers)
+    def _backfill_async(rows, table, id_col, target_col, current_budget):
+        if current_budget <= 0 or not rows:
+            return 0, current_budget
+        to_process = rows[:current_budget]
+        if hasattr(translator, "translate_batch_async"):
+            updated_tuples = translator.translate_batch_async(to_process, max_workers=20)
+        else:
+            validator = VietnameseTextValidator()
+            updated_tuples = []
+            for row_id, text in to_process:
                 vi = translator.translate_text(text)
                 if vi and validator.is_vietnamese(vi):
-                    updates.append((vi, row_id))
-            if updates:
-                # table/id_col/target_col are hardcoded literals at call sites; values are parameterized
-                cursor.executemany(
-                    f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;",
-                    updates
-                )
-                conn.commit()
-                updated += len(updates)
-            batches_done += 1
-            if batches_done % 10 == 0:
-                logger.info("   -> Translated %s %s so far...", f"{updated:,}", table)
-            time.sleep(VI_BATCH_SLEEP_SECONDS)
-        return updated, remaining_budget
+                    updated_tuples.append((vi, row_id))
+        if updated_tuples:
+            cursor.executemany(f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;", updated_tuples)
+            conn.commit()
+            if hasattr(translator, "save_cache"):
+                translator.save_cache()
+        return len(updated_tuples), current_budget - len(to_process)
 
-    translated_defs, _ = _backfill(priority_definitions, "definitions", "id", "definition_vi", defs_budget)
-    if hasattr(translator, "save_cache"):
-        translator.save_cache()
-    translated_colls, _ = _backfill(priority_collocations, "collocations", "id", "meaning_vi", colloc_budget)
-    if hasattr(translator, "save_cache"):
-        translator.save_cache()
-    translated_phrases, _ = _backfill(priority_phrases, "phrases", "id", "definition_vi", phrase_budget)
-    if hasattr(translator, "save_cache"):
-        translator.save_cache()
+    def_updated, budget_left = _backfill_async(priority_definitions, "definitions", "id", "definition_vi", budget)
+    col_updated, budget_left = _backfill_async(priority_collocations, "collocations", "id", "meaning_vi", budget_left)
+    phr_updated, _ = _backfill_async(priority_phrases, "phrases", "id", "definition_vi", budget_left)
 
-    logger.info("   [4I] Translated: %s definitions, %s collocations, %s phrases (rest kept NULL).",
-                f"{translated_defs:,}", f"{translated_colls:,}", f"{translated_phrases:,}")
+    total_defs = offline_stats["definitions"] + def_updated
+    total_colls = offline_stats["collocations"] + col_updated
+    total_phrs = offline_stats["phrases"] + phr_updated
 
-    return {"definitions": translated_defs, "collocations": translated_colls, "phrases": translated_phrases}
+    logger.info("   [4I] Completed: %s definitions, %s collocations, %s phrases translated.",
+                f"{total_defs:,}", f"{total_colls:,}", f"{total_phrs:,}")
+
+    return {"definitions": total_defs, "collocations": total_colls, "phrases": total_phrs}
 
 
 def run_core_pack_step(db_manager, args) -> dict:

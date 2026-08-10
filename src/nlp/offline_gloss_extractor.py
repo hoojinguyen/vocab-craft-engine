@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 class OfflineGlossExtractor:
     """Extracts Vietnamese translations from Kaikki raw JSON dumps into a fast in-memory map."""
 
+    _CACHE: Dict[Path, Dict[str, str]] = {}
+
     def __init__(self, kaikki_path: Path):
         self.kaikki_path = Path(kaikki_path)
         self.validator = VietnameseTextValidator()
@@ -18,6 +20,10 @@ class OfflineGlossExtractor:
         self._load_glosses()
 
     def _load_glosses(self) -> None:
+        if self.kaikki_path in self._CACHE:
+            self.gloss_map = self._CACHE[self.kaikki_path]
+            return
+
         if not self.kaikki_path.exists():
             logger.warning(
                 "Kaikki path %s does not exist for offline gloss extraction.",
@@ -54,6 +60,7 @@ class OfflineGlossExtractor:
             logger.info(
                 "Loaded %d offline Vietnamese glosses from Kaikki dump.", count
             )
+            self._CACHE[self.kaikki_path] = self.gloss_map
         except Exception as e:
             logger.warning("Error reading Kaikki dump for offline glosses: %s", e)
 
