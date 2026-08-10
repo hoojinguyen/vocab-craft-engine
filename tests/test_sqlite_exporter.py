@@ -54,10 +54,26 @@ def dummy_db(tmp_path) -> Path:
             PRIMARY KEY (word_id, relation_type, target_text)
         );
     """)
+    cursor.execute("""
+        CREATE TABLE word_topics (
+            word_id INTEGER NOT NULL,
+            topic TEXT NOT NULL,
+            PRIMARY KEY (word_id, topic)
+        );
+    """)
+    cursor.execute("""
+        CREATE TABLE phrase_sentences (
+            phrase_id INTEGER NOT NULL,
+            sentence_id INTEGER NOT NULL,
+            PRIMARY KEY (phrase_id, sentence_id)
+        );
+    """)
     cursor.execute("INSERT INTO words (lemma, pos, cefr_level) VALUES ('apple', 'noun', 'A1');")
     cursor.execute("INSERT INTO sentences (text_en, cefr_level) VALUES ('An apple a day.', 'A1');")
     cursor.execute("INSERT INTO reflex_drills (sentence_id, drill_type, prompt_text, correct_answer) VALUES (1, 'speed_translation', 'quả táo', 'apple');")
     cursor.execute("INSERT INTO word_relations (word_id, relation_type, target_text) VALUES (1, 'synonym', 'fruit');")
+    cursor.execute("INSERT INTO word_topics (word_id, topic) VALUES (1, 'food');")
+    cursor.execute("INSERT INTO phrase_sentences (phrase_id, sentence_id) VALUES (1, 1);")
     conn.commit()
     conn.close()
     return db_path
@@ -83,6 +99,19 @@ def test_optimize_and_package_enum_migration(dummy_db):
     assert row[0] == 1
     assert isinstance(row[1], int)  # 1 for A1
     assert row[1] == 1
+
+    # Check words table schema contains UNIQUE constraint
+    words_sql = cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='words'").fetchone()[0]
+    assert "UNIQUE" in words_sql
+
+    # Check duplicate insert into words raises IntegrityError
+    with pytest.raises(sqlite3.IntegrityError):
+        cursor.execute("INSERT INTO words (lemma, pos, cefr_level) VALUES ('apple', 1, 1);")
+
+    # Check WITHOUT ROWID link tables
+    for tbl in ["word_topics", "word_relations", "phrase_sentences"]:
+        tbl_sql = cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{tbl}'").fetchone()[0]
+        assert "WITHOUT ROWID" in tbl_sql.upper()
 
     # Check reflex_drills table drill_type
     drill_row = cursor.execute("SELECT drill_type FROM reflex_drills WHERE id = 1").fetchone()
@@ -131,9 +160,52 @@ def test_benchmark_all_queries_sla(dummy_db):
     assert "lemma_lookup_ms" in benchmarks
     assert "fts_search_ms" in benchmarks
     assert "reflex_sampling_ms" in benchmarks
+    assert "topic_relation_join_ms" in benchmarks
 
     # Assert all query benchmarks are under 5.0 ms SLA
     for key, val in benchmarks.items():
         assert val < 5.0, f"Query benchmark {key} exceeded SLA: {val} ms"
+
+
+def test_words_dynamic_columns_preservation(tmp_path):
+    db_path = tmp_path / "extra_cols.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE words (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lemma TEXT NOT NULL UNIQUE,
+            pos TEXT,
+            cefr_level TEXT,
+            audio_std TEXT,
+            audio_fast TEXT,
+            audio_status TEXT,
+            custom_extra TEXT
+        );
+    """)
+    conn.execute(
+        "INSERT INTO words (lemma, pos, cefr_level, audio_std, audio_fast, audio_status, custom_extra) "
+        "VALUES ('banana', 'noun', 'A2', 'std.mp3', 'fast.mp3', 'ok', 'extra_val');"
+    )
+    conn.commit()
+    conn.close()
+
+    exporter = SQLiteExporter(db_path=db_path)
+    exporter.optimize_and_package()
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(words);")
+    col_names = [col[1] for col in cursor.fetchall()]
+
+    for expected_col in ["id", "lemma", "pos", "cefr_level", "audio_std", "audio_fast", "audio_status", "custom_extra"]:
+        assert expected_col in col_names, f"Column {expected_col} was lost during migration!"
+
+    row = cursor.execute(
+        "SELECT lemma, pos, cefr_level, audio_std, audio_fast, audio_status, custom_extra FROM words WHERE lemma = 'banana'"
+    ).fetchone()
+    assert row == ('banana', 1, 2, 'std.mp3', 'fast.mp3', 'ok', 'extra_val')
+    conn.close()
+
+
 
 

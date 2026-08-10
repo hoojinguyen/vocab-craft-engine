@@ -40,24 +40,32 @@ class SQLiteExporter:
         self,
         conn: sqlite3.Connection,
         table_name: str,
-        enum_cols: Dict[str, Dict[str, int]]
+        enum_cols: Dict[str, Dict[str, int]] = None,
+        without_rowid: bool = False,
     ):
         """
         Recreates table with TINYINT column affinity for enum columns and maps text values to ints.
+        Dynamically retrieves all columns from PRAGMA table_info(table_name) to avoid column truncation.
+        Preserves original column names, types, constraints, and optionally applies WITHOUT ROWID.
         """
         if not self._table_exists(conn, table_name):
             return
 
         cursor = conn.cursor()
+        enum_cols = enum_cols or {}
+
         cursor.execute(f"PRAGMA table_info('{table_name}');")
         cols = cursor.fetchall()
+        if not cols:
+            return
 
-        needs_migration = False
-        for col in cols:
-            name, ctype = col[1], col[2]
-            if name in enum_cols and "TINYINT" not in ctype.upper() and "INT" not in ctype.upper():
-                needs_migration = True
-                break
+        needs_migration = without_rowid
+        if not needs_migration:
+            for col in cols:
+                name, ctype = col[1], col[2]
+                if name in enum_cols and "TINYINT" not in ctype.upper() and "INT" not in ctype.upper():
+                    needs_migration = True
+                    break
 
         if not needs_migration:
             for col_name, mapping in enum_cols.items():
@@ -73,6 +81,21 @@ class SQLiteExporter:
         pk_cols.sort(key=lambda c: c[5])
         is_composite_pk = len(pk_cols) > 1
 
+        default_junction_pks = {
+            "word_topics": ["word_id", "topic"],
+            "word_relations": ["word_id", "relation_type", "target_text"],
+            "phrase_sentences": ["phrase_id", "sentence_id"],
+        }
+        col_by_name = {c[1]: c for c in cols}
+
+        composite_pk_names = []
+        if is_composite_pk:
+            composite_pk_names = [c[1] for c in pk_cols]
+        elif (len(pk_cols) == 0 or without_rowid) and table_name in default_junction_pks:
+            needed = default_junction_pks[table_name]
+            if all(k in col_by_name for k in needed):
+                composite_pk_names = needed
+
         col_defs = []
         col_names = []
         select_exprs = []
@@ -82,62 +105,93 @@ class SQLiteExporter:
             notnull_sql = " NOT NULL" if notnull else ""
             dflt_sql = f" DEFAULT {dflt_val}" if dflt_val is not None else ""
             pk_sql = ""
-            if pk and not is_composite_pk:
-                pk_sql = " PRIMARY KEY AUTOINCREMENT" if "AUTOINCREMENT" in ctype.upper() else " PRIMARY KEY"
+            if pk and not is_composite_pk and not composite_pk_names:
+                if without_rowid:
+                    pk_sql = " PRIMARY KEY"
+                else:
+                    pk_sql = " PRIMARY KEY AUTOINCREMENT" if "AUTOINCREMENT" in ctype.upper() or (pk and name.lower() == "id" and "INT" in ctype.upper()) else " PRIMARY KEY"
+
+            unique_sql = ""
+            if name.lower() == "lemma":
+                unique_sql = " UNIQUE"
 
             if name in enum_cols:
                 mapping = enum_cols[name]
                 cases = " ".join(f"WHEN '{k}' THEN {v}" for k, v in mapping.items())
                 int_cases = " ".join(f"WHEN {v} THEN {v}" for v in mapping.values())
-                col_defs.append(f"{name} TINYINT{notnull_sql}{dflt_sql}{pk_sql}")
+                col_defs.append(f"{name} TINYINT{notnull_sql}{unique_sql}{dflt_sql}{pk_sql}")
                 select_exprs.append(f"CASE {name} {cases} {int_cases} ELSE 0 END")
             else:
-                col_defs.append(f"{name} {ctype}{notnull_sql}{dflt_sql}{pk_sql}")
+                col_defs.append(f"{name} {ctype}{notnull_sql}{unique_sql}{dflt_sql}{pk_sql}")
                 select_exprs.append(name)
 
-        if is_composite_pk:
-            pk_names = [c[1] for c in pk_cols]
-            col_defs.append(f"PRIMARY KEY ({', '.join(pk_names)})")
+        if composite_pk_names:
+            col_defs.append(f"PRIMARY KEY ({', '.join(composite_pk_names)})")
 
-        cursor.execute("PRAGMA foreign_keys = OFF;")
-        cursor.execute(f"CREATE TABLE {table_name}_new ({', '.join(col_defs)});")
-        cursor.execute(f"INSERT INTO {table_name}_new ({', '.join(col_names)}) SELECT {', '.join(select_exprs)} FROM {table_name};")
+        has_pk = (len(pk_cols) > 0) or bool(composite_pk_names)
+        without_rowid_sql = " WITHOUT ROWID" if (without_rowid and has_pk) else ""
+        cursor.execute(f"CREATE TABLE {table_name}_new ({', '.join(col_defs)}){without_rowid_sql};")
+        cursor.execute(f"INSERT OR IGNORE INTO {table_name}_new ({', '.join(col_names)}) SELECT {', '.join(select_exprs)} FROM {table_name};")
         cursor.execute(f"DROP TABLE {table_name};")
         cursor.execute(f"ALTER TABLE {table_name}_new RENAME TO {table_name};")
-        cursor.execute("PRAGMA foreign_keys = ON;")
+
+        if "lemma" in col_names:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_words_lemma ON words(lemma);")
 
     def _migrate_schema_and_enums(self, conn: sqlite3.Connection):
         """
         Migrates text columns for enums (pos, cefr_level, drill_type, relation_type)
-        to TINYINT integer codes, and creates SQL views for backward compatibility.
+        to TINYINT integer codes, recreates tables with explicit schema constraints and
+        WITHOUT ROWID link tables, and creates SQL views for backward compatibility.
+        Wrapped in a transaction for database consistency.
         """
-        self._migrate_table_enums(conn, "words", {"pos": POS_MAP, "cefr_level": CEFR_MAP})
-        self._migrate_table_enums(conn, "reflex_drills", {"drill_type": DRILL_MAP})
-        self._migrate_table_enums(conn, "word_relations", {"relation_type": RELATION_MAP})
-        self._migrate_table_enums(conn, "sentences", {"cefr_level": CEFR_MAP})
-
         cursor = conn.cursor()
-        if self._table_exists(conn, "words"):
-            cursor.execute("PRAGMA table_info(words);")
-            columns = [row[1] for row in cursor.fetchall()]
-            select_parts = []
-            for col in columns:
-                if col == "pos":
-                    select_parts.append("""CASE pos 
-                        WHEN 1 THEN 'noun' WHEN 2 THEN 'verb' WHEN 3 THEN 'adj' WHEN 4 THEN 'adv'
-                        WHEN 5 THEN 'pronoun' WHEN 6 THEN 'prep' WHEN 7 THEN 'conj' WHEN 8 THEN 'interj'
-                        WHEN 9 THEN 'phrase' ELSE 'other' END AS pos""")
-                elif col == "cefr_level":
-                    select_parts.append("""CASE cefr_level 
-                        WHEN 1 THEN 'A1' WHEN 2 THEN 'A2' WHEN 3 THEN 'B1'
-                        WHEN 4 THEN 'B2' WHEN 5 THEN 'C1' WHEN 6 THEN 'C2' ELSE 'Unknown' END AS cefr_level""")
-                else:
-                    select_parts.append(col)
-            select_clause = ", ".join(select_parts)
-            cursor.execute("DROP VIEW IF EXISTS v_words;")
-            cursor.execute(f"CREATE VIEW v_words AS SELECT {select_clause} FROM words;")
-
+        cursor.execute("PRAGMA foreign_keys = OFF;")
         conn.commit()
+
+        try:
+            conn.execute("BEGIN TRANSACTION;")
+
+            # 1. Recreate words table dynamically with TINYINT enums & UNIQUE lemma
+            self._migrate_table_enums(conn, "words", {"pos": POS_MAP, "cefr_level": CEFR_MAP})
+
+            # 2. Recreate junction link tables as WITHOUT ROWID
+            self._migrate_table_enums(conn, "word_topics", without_rowid=True)
+            self._migrate_table_enums(conn, "word_relations", {"relation_type": RELATION_MAP}, without_rowid=True)
+            self._migrate_table_enums(conn, "phrase_sentences", without_rowid=True)
+
+            # 3. Other enum tables migration
+            self._migrate_table_enums(conn, "reflex_drills", {"drill_type": DRILL_MAP})
+            self._migrate_table_enums(conn, "sentences", {"cefr_level": CEFR_MAP})
+
+            # 4. Create backward compatibility view for words
+            if self._table_exists(conn, "words"):
+                cursor.execute("PRAGMA table_info(words);")
+                columns = [row[1] for row in cursor.fetchall()]
+                select_parts = []
+                for col in columns:
+                    if col == "pos":
+                        select_parts.append("""CASE pos 
+                            WHEN 1 THEN 'noun' WHEN 2 THEN 'verb' WHEN 3 THEN 'adj' WHEN 4 THEN 'adv'
+                            WHEN 5 THEN 'pronoun' WHEN 6 THEN 'prep' WHEN 7 THEN 'conj' WHEN 8 THEN 'interj'
+                            WHEN 9 THEN 'phrase' ELSE 'other' END AS pos""")
+                    elif col == "cefr_level":
+                        select_parts.append("""CASE cefr_level 
+                            WHEN 1 THEN 'A1' WHEN 2 THEN 'A2' WHEN 3 THEN 'B1'
+                            WHEN 4 THEN 'B2' WHEN 5 THEN 'C1' WHEN 6 THEN 'C2' ELSE 'Unknown' END AS cefr_level""")
+                    else:
+                        select_parts.append(col)
+                select_clause = ", ".join(select_parts)
+                cursor.execute("DROP VIEW IF EXISTS v_words;")
+                cursor.execute(f"CREATE VIEW v_words AS SELECT {select_clause} FROM words;")
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.execute("PRAGMA foreign_keys = ON;")
+            conn.commit()
 
     def optimize_and_package(self) -> Dict[str, Any]:
         """
@@ -192,7 +246,7 @@ class SQLiteExporter:
                     tokenize='porter ascii'
                 );
             """)
-            cursor.execute("INSERT INTO words_fts(rowid, lemma) SELECT id, lemma FROM words;")
+            cursor.execute("INSERT INTO words_fts(words_fts) VALUES('rebuild');")
 
 
         # 4. Analyze query planner statistics
@@ -282,6 +336,17 @@ class SQLiteExporter:
                 cursor.fetchone()
                 durations.append((time.perf_counter() - t0) * 1000.0)
             results["reflex_sampling_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+
+        # 4. Topic & Word Relations JOIN
+        if self._table_exists(conn, "words") and self._table_exists(conn, "word_topics") and self._table_exists(conn, "word_relations"):
+            q_join = "SELECT w.id, w.lemma, wt.topic, wr.target_text FROM words w JOIN word_topics wt ON w.id = wt.word_id JOIN word_relations wr ON w.id = wr.word_id WHERE w.id = 1;"
+            durations = []
+            for _ in range(iterations):
+                t0 = time.perf_counter()
+                cursor.execute(q_join)
+                cursor.fetchall()
+                durations.append((time.perf_counter() - t0) * 1000.0)
+            results["topic_relation_join_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
 
         conn.close()
         return results
