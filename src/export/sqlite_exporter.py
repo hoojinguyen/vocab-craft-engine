@@ -23,6 +23,10 @@ CEFR_REV_MAP = {v: k for k, v in CEFR_MAP.items()}
 DRILL_MAP = {"speed_translation": 1, "cloze_reflex": 2, "listening_speed": 3}
 RELATION_MAP = {"synonym": 1, "antonym": 2, "hypernym": 3, "hyponym": 4}
 
+QUESTION_TYPE_MAP = {"word_mcq": 1, "sentence_cloze": 2, "pattern_cloze": 3, "word_ordering": 4}
+TARGET_TYPE_MAP = {"word": 1, "phrase": 2, "pattern": 3, "sentence": 4}
+
+
 
 class SQLiteExporter:
     """Exports and optimizes the SQLite database for mobile offline consumption."""
@@ -166,6 +170,8 @@ class SQLiteExporter:
             # 3. Other enum tables migration
             self._migrate_table_enums(conn, "reflex_drills", {"drill_type": DRILL_MAP})
             self._migrate_table_enums(conn, "sentences", {"cefr_level": CEFR_MAP})
+            self._migrate_table_enums(conn, "quiz_questions", {"question_type": QUESTION_TYPE_MAP, "target_type": TARGET_TYPE_MAP, "cefr_level": CEFR_MAP})
+
 
             # 4. Create backward compatibility view for words
             if self._table_exists(conn, "words"):
@@ -218,6 +224,33 @@ class SQLiteExporter:
                     LEFT JOIN sentences s ON dn.sentence_id = s.id;
                 """)
 
+            # 6. Create SQL view for quiz_questions
+            if self._table_exists(conn, "quiz_questions"):
+                s_cols = set()
+                if self._table_exists(conn, "sentences"):
+                    cursor.execute("PRAGMA table_info(sentences);")
+                    s_cols = {row[1] for row in cursor.fetchall()}
+
+                audio_path_sql = "s.audio_path" if "audio_path" in s_cols else "NULL AS audio_path"
+
+                cursor.execute("DROP VIEW IF EXISTS v_quiz_questions;")
+                cursor.execute(f"""
+                    CREATE VIEW v_quiz_questions AS
+                    SELECT 
+                        q.id AS quiz_id,
+                        q.question_type,
+                        q.target_type,
+                        q.target_id,
+                        q.prompt_text,
+                        q.correct_answer,
+                        q.options_json,
+                        q.cefr_level,
+                        {audio_path_sql}
+                    FROM quiz_questions q
+                    LEFT JOIN sentences s ON (q.target_type = 4 OR q.target_type = 'sentence') AND q.target_id = s.id;
+                """)
+
+
             conn.commit()
         except Exception:
             conn.rollback()
@@ -261,6 +294,9 @@ class SQLiteExporter:
             ("word_topics", "CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);"),
             ("word_topics", "CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic);"),
             ("definitions", "CREATE INDEX IF NOT EXISTS idx_definitions_word_id ON definitions(word_id);"),
+            ("quiz_questions", "CREATE INDEX IF NOT EXISTS idx_quiz_type_cefr ON quiz_questions(question_type, cefr_level);"),
+            ("quiz_questions", "CREATE INDEX IF NOT EXISTS idx_quiz_target ON quiz_questions(target_type, target_id);"),
+            ("quiz_questions", "CREATE INDEX IF NOT EXISTS idx_quiz_cov ON quiz_questions(question_type, cefr_level, id, prompt_text);"),
         ]
         for tbl, sql in indexes:
             if self._table_exists(conn, tbl):
@@ -406,6 +442,18 @@ class SQLiteExporter:
                 cursor.fetchall()
                 durations.append((time.perf_counter() - t0) * 1000.0)
             results["scenario_traversal_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+
+        # 7. Quiz Questions Fetch Benchmark
+        if self._table_exists(conn, "v_quiz_questions"):
+            q_quiz = "SELECT quiz_id, prompt_text, correct_answer, options_json FROM v_quiz_questions WHERE question_type = 1 LIMIT 10;"
+            durations = []
+            for _ in range(iterations):
+                t0 = time.perf_counter()
+                cursor.execute(q_quiz)
+                cursor.fetchall()
+                durations.append((time.perf_counter() - t0) * 1000.0)
+            results["quiz_fetch_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+
 
         conn.close()
         return results

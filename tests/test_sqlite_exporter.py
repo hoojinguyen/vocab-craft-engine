@@ -9,6 +9,8 @@ from src.export.sqlite_exporter import (
     CEFR_REV_MAP,
     DRILL_MAP,
     RELATION_MAP,
+    QUESTION_TYPE_MAP,
+    TARGET_TYPE_MAP,
 )
 
 @pytest.fixture
@@ -105,6 +107,9 @@ def test_constants():
     assert CEFR_REV_MAP[1] == "A1"
     assert DRILL_MAP["speed_translation"] == 1
     assert RELATION_MAP["synonym"] == 1
+    assert QUESTION_TYPE_MAP["word_mcq"] == 1
+    assert TARGET_TYPE_MAP["word"] == 1
+
 
 def test_optimize_and_package_enum_migration(dummy_db):
     exporter = SQLiteExporter(db_path=dummy_db)
@@ -275,6 +280,36 @@ def test_v_dialogue_nodes_view_and_sla(dummy_db):
     benchmarks = exporter.benchmark_all_queries(iterations=20)
     assert "scenario_traversal_ms" in benchmarks
     assert benchmarks["scenario_traversal_ms"] < 0.5
+
+
+def test_v_quiz_questions_view_and_sla(dummy_db):
+    conn = sqlite3.connect(str(dummy_db))
+    conn.execute("CREATE TABLE IF NOT EXISTS quiz_questions (id INTEGER PRIMARY KEY, question_type TEXT, target_type TEXT, target_id INTEGER, prompt_text TEXT, correct_answer TEXT, options_json TEXT, cefr_level TEXT);")
+    conn.execute("INSERT INTO quiz_questions VALUES (1, 'word_mcq', 'word', 1, 'abandon', 'rời bỏ', '[\"rời bỏ\", \"đạt được\"]', 'B2');")
+    conn.commit()
+    conn.close()
+
+    exporter = SQLiteExporter(db_path=dummy_db)
+    exporter.optimize_and_package()
+
+    conn = sqlite3.connect(str(dummy_db))
+    # Verify Integer Enum Migration (word_mcq -> 1, word -> 1, B2 -> integer code)
+    row = conn.execute("SELECT question_type, target_type FROM quiz_questions WHERE id = 1;").fetchone()
+    assert isinstance(row[0], int)
+    assert row[0] == 1
+    assert isinstance(row[1], int)
+    assert row[1] == 1
+
+    # Verify v_quiz_questions View
+    v_row = conn.execute("SELECT quiz_id, prompt_text FROM v_quiz_questions WHERE quiz_id = 1;").fetchone()
+    assert v_row is not None
+    assert v_row[1] == 'abandon'
+    conn.close()
+
+    benchmarks = exporter.benchmark_all_queries(iterations=20)
+    assert "quiz_fetch_ms" in benchmarks
+    assert benchmarks["quiz_fetch_ms"] < 1.0
+
 
 
 
