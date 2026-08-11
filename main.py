@@ -49,6 +49,7 @@ from src.nlp.phrase_example_matcher import PhraseExampleMatcher
 from src.nlp.offline_gloss_extractor import OfflineGlossExtractor
 from src.ingestion.relation_parser import RelationParser
 from src.nlp.pattern_extractor import GrammarPatternExtractor
+from src.nlp.quiz_builder import QuizBuilder
 
 RELATION_CHECKPOINT = 50_000
 TOPIC_CHECKPOINT = 1_000
@@ -220,6 +221,51 @@ def run_scenario_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
     logger.info("   [4D] Completed: %s dialogue trees, %s dialogue nodes stored.",
                 f"{trees_count:,}", f"{nodes_count:,}")
     return (trees_count, nodes_count)
+
+
+def run_quiz_step(db_mgr: DatabaseManager, args=None) -> int:
+    """
+    Step 4E: Generate interactive quiz questions (word_mcq, sentence_cloze, pattern_cloze, word_ordering)
+    with POS & CEFR-matched distractors.
+    """
+    conn = db_mgr.get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT w.id, w.lemma, w.pos, w.cefr_level, d.definition_vi
+        FROM words w
+        LEFT JOIN definitions d ON d.word_id = w.id AND d.definition_vi IS NOT NULL
+        GROUP BY w.id;
+    """)
+    words = [
+        {
+            "id": r[0],
+            "lemma": r[1],
+            "pos": r[2],
+            "cefr_level": r[3],
+            "text_vi": r[4] if r[4] else r[1]
+        }
+        for r in cursor.fetchall()
+    ]
+
+    cursor.execute("SELECT id, text_en, text_vi, cefr_level FROM sentences;")
+    sentences = [
+        {"id": r[0], "text_en": r[1], "text_vi": r[2], "cefr_level": r[3]}
+        for r in cursor.fetchall()
+    ]
+
+    cursor.execute("SELECT id, pattern_name, example_en, example_vi, cefr_level FROM sentence_patterns;")
+    patterns = [
+        {"id": r[0], "pattern_name": r[1], "example_en": r[2], "example_vi": r[3], "cefr_level": r[4]}
+        for r in cursor.fetchall()
+    ]
+
+    builder = QuizBuilder(words=words)
+    quizzes = builder.build_all_quizzes(words=words, sentences=sentences, patterns=patterns)
+
+    inserted_count = db_mgr.insert_quiz_questions_batch(quizzes)
+    logger.info("   [4E Quiz] Inserted %s quiz questions into database.", f"{inserted_count:,}")
+    return inserted_count
 
 
 def run_phrase_step(db_manager, args) -> dict:
@@ -671,9 +717,9 @@ def run_pipeline():
         cursor = conn.cursor()
         conn.execute("PRAGMA foreign_keys = OFF;")
         tables_to_drop = [
-            "word_relations", "word_topics", "word_sentence_map", "reflex_drills", "dialogue_nodes",
+            "quiz_questions", "word_relations", "word_topics", "word_sentence_map", "reflex_drills", "dialogue_nodes",
             "dialogue_trees", "sentences", "sentence_patterns",
-            "collocations", "definitions", "words"
+            "collocations", "definitions", "words", "phrases", "phrase_sentences"
         ]
         for tbl in tables_to_drop:
             cursor.execute(f"DROP TABLE IF EXISTS {tbl};")
@@ -914,6 +960,16 @@ def run_pipeline():
 
         conn.commit()
         logger.info("   [4E] Completed %s reflex drill cards.", f"{reflex_count:,}")
+
+    # Generate Quiz Questions
+    cursor.execute("SELECT count(*) FROM quiz_questions;")
+    existing_quizzes = cursor.fetchone()[0]
+    if existing_quizzes > 0 and not getattr(args, "force_reset", False):
+        logger.info("   [4E Quiz] CHECKPOINT DETECTED: %s quiz questions already exist. Skipping.", f"{existing_quizzes:,}")
+    else:
+        logger.info("   [4E Quiz] Generating Interactive Quiz Questions...")
+        q_count = run_quiz_step(db_manager, args)
+        logger.info("   [4E Quiz] Completed %s interactive quiz questions.", f"{q_count:,}")
 
     # 4F. Physical MP3 Audio Generation via Edge-TTS
     logger.info("   [4F] Generating Physical MP3 Audio Files via Edge-TTS...")
