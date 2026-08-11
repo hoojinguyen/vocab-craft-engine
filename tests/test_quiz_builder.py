@@ -113,15 +113,52 @@ def test_generate_word_ordering():
     assert set(tokens) == set(["She", "decided", "to", "abandon", "her", "old", "car."])
 
 
-def test_fallback_distractors_when_pool_is_small():
+def test_tier_by_tier_distractor_sampling():
+    target = {"id": 1, "lemma": "abandon", "pos": "verb", "cefr_level": "B2", "text_vi": "rời bỏ"}
     words = [
-        {"id": 1, "lemma": "abandon", "pos": "verb", "cefr_level": "B2", "text_vi": "rời bỏ"}
+        target,
+        {"id": 2, "lemma": "obtain", "pos": "verb", "cefr_level": "B2", "text_vi": "đạt được"},
+        {"id": 3, "lemma": "replace", "pos": "verb", "cefr_level": "B2", "text_vi": "thay thế"},
+        {"id": 4, "lemma": "neglect", "pos": "verb", "cefr_level": "B2", "text_vi": "bỏ mặc"},
+        # Tier 2 words (same POS, different CEFR)
+        {"id": 5, "lemma": "run", "pos": "verb", "cefr_level": "A1", "text_vi": "chạy"},
+        {"id": 6, "lemma": "walk", "pos": "verb", "cefr_level": "A1", "text_vi": "đi bộ"}
     ]
     builder = QuizBuilder(words=words)
-    quiz = builder.generate_word_mcq(words[0])
+    distractors = builder._get_distractors(target, field="text_vi", count=3)
+    
+    # Tier 1 has 3 valid candidates (obtain, replace, neglect). Distractors MUST be strictly from Tier 1.
+    tier1_glosses = {"đạt được", "thay thế", "bỏ mặc"}
+    assert len(distractors) == 3
+    assert set(distractors) == tier1_glosses
+    assert "chạy" not in distractors
+    assert "đi bộ" not in distractors
+
+
+def test_pos_aware_fallback_distractors():
+    noun_word = {"id": 1, "lemma": "cat", "pos": "noun", "cefr_level": "A1", "text_vi": "con mèo"}
+    words = [noun_word]
+    
+    builder = QuizBuilder(words=words)
+    quiz = builder.generate_word_mcq(noun_word)
     
     options = json.loads(quiz["options_json"])
     assert len(options) == 4
-    assert quiz["correct_answer"] in options
-    # Must have 4 unique options
-    assert len(set(options)) == 4
+    assert "con mèo" in options
+    # Check that distractors are noun fallbacks, not verb fallbacks like "thay đổi"
+    assert "thay đổi" not in options
+    assert "đạt được" not in options
+
+
+def test_duplicate_lemma_prevention():
+    target = {"id": 1, "lemma": "abandon", "pos": "verb", "cefr_level": "B2", "text_vi": "rời bỏ"}
+    words = [
+        target,
+        {"id": 2, "lemma": "obtain", "pos": "verb", "cefr_level": "B2", "text_vi": "đạt được"},
+        {"id": 3, "lemma": "obtain", "pos": "verb", "cefr_level": "B2", "text_vi": "giành được"}  # same lemma, diff gloss
+    ]
+    builder = QuizBuilder(words=words)
+    distractors = builder._get_distractors(target, field="lemma", count=2)
+    # Verify obtain is only included once in distractors
+    assert distractors.count("obtain") == 1
+    assert len(distractors) == 2

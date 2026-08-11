@@ -17,16 +17,20 @@ from typing import List, Dict, Any, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
-# Default fallback distractors when pool has insufficient matching candidates
-FALLBACK_VI_GLOSSES = [
-    "thay đổi", "đạt được", "phát triển", "thực hiện",
-    "bắt đầu", "kết thúc", "chuẩn bị", "quyết định"
-]
+# POS-aware fallback distractors when pool has insufficient matching candidates
+FALLBACK_EN_LEMMAS_BY_POS = {
+    "verb": ["obtain", "replace", "require", "develop", "provide", "create", "support", "decide"],
+    "noun": ["option", "result", "system", "method", "process", "detail", "element", "feature"],
+    "adj": ["important", "difficult", "possible", "similar", "general", "certain", "current", "available"],
+    "adv": ["quickly", "clearly", "easily", "finally", "usually", "directly", "recently", "simply"],
+}
 
-FALLBACK_EN_LEMMAS = [
-    "obtain", "replace", "require", "develop",
-    "provide", "create", "support", "decide"
-]
+FALLBACK_VI_GLOSSES_BY_POS = {
+    "verb": ["thay đổi", "đạt được", "phát triển", "thực hiện", "bắt đầu", "kết thúc", "chuẩn bị", "quyết định"],
+    "noun": ["lựa chọn", "kết quả", "hệ thống", "phương pháp", "quá trình", "chi tiết", "yếu tố", "tính năng"],
+    "adj": ["quan trọng", "khó khăn", "có thể", "tương tự", "chung", "nhất định", "hiện tại", "sẵn có"],
+    "adv": ["nhanh chóng", "rõ ràng", "dễ dàng", "cuối cùng", "thường", "trực tiếp", "gần đây", "đơn giản"],
+}
 
 
 class QuizBuilder:
@@ -55,48 +59,79 @@ class QuizBuilder:
         self, target_word: Dict[str, Any], field: str = "text_vi", count: int = 3
     ) -> List[str]:
         """
-        Retrieves distractors matching target's POS & CEFR level.
-        Falls back to same POS, then any word in pool, then built-in defaults.
+        Retrieves distractors tier-by-tier matching target's POS & CEFR level.
+        - Tier 1: Same POS + Same CEFR level
+        - Tier 2: Same POS (different CEFR level)
+        - Tier 3: Any word in pool
+        - Tier 4: POS-aware fallback dictionary
+        Tracks both gloss and lemma in `seen` set to avoid duplicate lemmas or glosses.
         """
         pos = (target_word.get("pos") or "unknown").strip().lower()
         cefr = (target_word.get("cefr_level") or "B1").strip().upper()
         target_val = (target_word.get(field) or "").strip()
         target_lemma = (target_word.get("lemma") or "").strip().lower()
 
-        candidates: List[str] = []
-        seen: set = {target_val.lower(), target_lemma.lower()}
+        selected: List[str] = []
+        seen: set = set()
 
-        def add_candidates_from_list(word_list: List[Dict[str, Any]]):
+        if target_val:
+            seen.add(target_val.lower())
+        if target_lemma:
+            seen.add(target_lemma.lower())
+
+        def filter_and_sample(word_list: List[Dict[str, Any]], needed: int) -> List[str]:
+            candidates: List[str] = []
             for w in word_list:
                 val = (w.get(field) or "").strip()
                 lem = (w.get("lemma") or "").strip().lower()
                 if val and val.lower() not in seen and lem not in seen:
                     candidates.append(val)
-                    seen.add(val.lower())
 
-        # Step 1: Same POS and CEFR level
-        add_candidates_from_list(self.pos_cefr_index.get((pos, cefr), []))
+            unique_candidates: List[str] = []
+            temp_seen: set = set()
+            for val in candidates:
+                if val.lower() not in temp_seen:
+                    unique_candidates.append(val)
+                    temp_seen.add(val.lower())
 
-        # Step 2: Same POS (any CEFR)
-        if len(candidates) < count:
-            add_candidates_from_list(self.pos_index.get(pos, []))
+            sampled = random.sample(unique_candidates, min(needed, len(unique_candidates)))
+            for s in sampled:
+                for w in word_list:
+                    if (w.get(field) or "").strip().lower() == s.lower():
+                        lem = (w.get("lemma") or "").strip().lower()
+                        if lem:
+                            seen.add(lem)
+                        break
+                seen.add(s.lower())
+            return sampled
 
-        # Step 3: Any POS/CEFR in pool
-        if len(candidates) < count:
-            add_candidates_from_list(self.words)
+        # Tier 1: Same POS and Same CEFR level
+        tier1_words = self.pos_cefr_index.get((pos, cefr), [])
+        if tier1_words and len(selected) < count:
+            selected.extend(filter_and_sample(tier1_words, count - len(selected)))
 
-        # Step 4: Fallback options if still under count
-        fallbacks = FALLBACK_VI_GLOSSES if field == "text_vi" else FALLBACK_EN_LEMMAS
-        for fb in fallbacks:
-            if len(candidates) >= count:
-                break
-            if fb.lower() not in seen:
-                candidates.append(fb)
+        # Tier 2: Same POS (different CEFR level)
+        if len(selected) < count:
+            tier2_words = self.pos_index.get(pos, [])
+            selected.extend(filter_and_sample(tier2_words, count - len(selected)))
+
+        # Tier 3: Any word in pool
+        if len(selected) < count:
+            selected.extend(filter_and_sample(self.words, count - len(selected)))
+
+        # Tier 4: POS-aware fallback dictionary
+        if len(selected) < count:
+            fallbacks_dict = FALLBACK_VI_GLOSSES_BY_POS if field == "text_vi" else FALLBACK_EN_LEMMAS_BY_POS
+            fallback_list = fallbacks_dict.get(pos, fallbacks_dict.get("verb", []))
+
+            fb_candidates = [fb for fb in fallback_list if fb.lower() not in seen]
+            needed = count - len(selected)
+            sampled_fb = random.sample(fb_candidates, min(needed, len(fb_candidates)))
+            for fb in sampled_fb:
+                selected.append(fb)
                 seen.add(fb.lower())
 
-        if len(candidates) > count:
-            return random.sample(candidates, count)
-        return candidates[:count]
+        return selected[:count]
 
     def generate_word_mcq(self, word: Dict[str, Any]) -> Dict[str, Any]:
         """Generates a word definition multiple choice question."""
@@ -226,7 +261,7 @@ class QuizBuilder:
         text_en = sentence.get("text_en", "")
         tokens = text_en.split()
         shuffled_tokens = list(tokens)
-        
+
         # Ensure shuffled order differs from original if possible
         if len(shuffled_tokens) > 1:
             for _ in range(5):
