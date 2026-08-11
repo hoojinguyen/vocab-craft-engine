@@ -440,3 +440,99 @@ class DatabaseManager:
             (audio_std, audio_fast, audio_status, phrase_id)
         )
         conn.commit()
+
+    def _get_or_create_sentence(
+        self,
+        cursor: sqlite3.Cursor,
+        text_en: str,
+        text_vi: Optional[str] = None,
+        cefr_level: Optional[str] = None,
+        source: str = "dialogue_generator",
+    ) -> int:
+        """Helper to find existing sentence by text_en or insert a new sentence record."""
+        cursor.execute("SELECT id, text_vi FROM sentences WHERE text_en = ? LIMIT 1;", (text_en,))
+        row = cursor.fetchone()
+        if row:
+            sent_id, existing_vi = row[0], row[1]
+            if not existing_vi and text_vi:
+                cursor.execute("UPDATE sentences SET text_vi = ? WHERE id = ?;", (text_vi, sent_id))
+            return sent_id
+        cursor.execute(
+            """
+            INSERT INTO sentences (text_en, text_vi, cefr_level, source)
+            VALUES (?, ?, ?, ?);
+            """,
+            (text_en, text_vi, cefr_level, source),
+        )
+        return cursor.lastrowid
+
+    def insert_dialogue_scenarios_batch(self, scenarios: List[Dict[str, Any]]) -> Tuple[int, int]:
+        """Batch insert dialogue scenarios (trees and nodes) with sentence auto-linking."""
+        if not scenarios:
+            return 0, 0
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        total_trees = 0
+        total_nodes = 0
+
+        with conn:
+            for scenario in scenarios:
+                title = scenario.get("title", "")
+                topic = scenario.get("topic")
+                cefr_level = scenario.get("cefr_level")
+                nodes = scenario.get("nodes", [])
+
+                cursor.execute(
+                    "INSERT INTO dialogue_trees (title, topic, cefr_level) VALUES (?, ?, ?);",
+                    (title, topic, cefr_level),
+                )
+                tree_id = cursor.lastrowid
+                total_trees += 1
+
+                index_to_db_id: Dict[int, int] = {}
+                root_node_id: Optional[int] = None
+
+                sorted_nodes = sorted(nodes, key=lambda n: n.get("node_index", 0))
+
+                for node in sorted_nodes:
+                    node_idx = node.get("node_index", 0)
+                    parent_idx = node.get("parent_index")
+                    speaker_role = node.get("speaker_role", "")
+                    choice_label = node.get("choice_label")
+                    text_en = node.get("text_en", "")
+                    text_vi = node.get("text_vi")
+
+                    sentence_id = self._get_or_create_sentence(
+                        cursor,
+                        text_en=text_en,
+                        text_vi=text_vi,
+                        cefr_level=cefr_level,
+                        source="dialogue_generator",
+                    )
+
+                    parent_db_id = index_to_db_id.get(parent_idx) if parent_idx is not None else None
+
+                    cursor.execute(
+                        """
+                        INSERT INTO dialogue_nodes (tree_id, parent_node_id, choice_label, speaker_role, sentence_id)
+                        VALUES (?, ?, ?, ?, ?);
+                        """,
+                        (tree_id, parent_db_id, choice_label, speaker_role, sentence_id),
+                    )
+                    db_node_id = cursor.lastrowid
+                    index_to_db_id[node_idx] = db_node_id
+                    total_nodes += 1
+
+                    if node_idx == 0:
+                        root_node_id = db_node_id
+
+                if root_node_id is not None:
+                    cursor.execute(
+                        "UPDATE dialogue_trees SET root_node_id = ? WHERE id = ?;",
+                        (root_node_id, tree_id),
+                    )
+
+        return total_trees, total_nodes
+
