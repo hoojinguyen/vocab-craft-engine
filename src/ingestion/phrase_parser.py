@@ -1,6 +1,8 @@
 """
 Multi-Word Expression Parser for English Dataset System Engine.
 Extracts idioms, phrasal verbs, proverbs and fixed expressions from Kaikki dump entries.
+
+DEPRECATED: Use KaikkiSinglePassParser from src.ingestion.kaikki_single_pass instead.
 """
 
 import logging
