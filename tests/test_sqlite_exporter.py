@@ -68,12 +68,32 @@ def dummy_db(tmp_path) -> Path:
             PRIMARY KEY (phrase_id, sentence_id)
         );
     """)
+    cursor.execute("""
+        CREATE TABLE sentence_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern_name TEXT,
+            structure_json TEXT,
+            example_en TEXT,
+            example_vi TEXT,
+            cefr_level TEXT
+        );
+    """)
+    cursor.execute("""
+        CREATE TABLE pattern_sentences (
+            pattern_id INTEGER NOT NULL,
+            sentence_id INTEGER NOT NULL,
+            matched_tokens_json TEXT,
+            PRIMARY KEY (pattern_id, sentence_id)
+        );
+    """)
     cursor.execute("INSERT INTO words (lemma, pos, cefr_level) VALUES ('apple', 'noun', 'A1');")
     cursor.execute("INSERT INTO sentences (text_en, cefr_level) VALUES ('An apple a day.', 'A1');")
     cursor.execute("INSERT INTO reflex_drills (sentence_id, drill_type, prompt_text, correct_answer) VALUES (1, 'speed_translation', 'quả táo', 'apple');")
     cursor.execute("INSERT INTO word_relations (word_id, relation_type, target_text) VALUES (1, 'synonym', 'fruit');")
     cursor.execute("INSERT INTO word_topics (word_id, topic) VALUES (1, 'food');")
     cursor.execute("INSERT INTO phrase_sentences (phrase_id, sentence_id) VALUES (1, 1);")
+    cursor.execute("INSERT INTO sentence_patterns (pattern_name) VALUES ('it_is_adj_to_v');")
+    cursor.execute("INSERT INTO pattern_sentences (pattern_id, sentence_id) VALUES (1, 1);")
     conn.commit()
     conn.close()
     return db_path
@@ -109,7 +129,7 @@ def test_optimize_and_package_enum_migration(dummy_db):
         cursor.execute("INSERT INTO words (lemma, pos, cefr_level) VALUES ('apple', 1, 1);")
 
     # Check WITHOUT ROWID link tables
-    for tbl in ["word_topics", "word_relations", "phrase_sentences"]:
+    for tbl in ["word_topics", "word_relations", "phrase_sentences", "pattern_sentences"]:
         tbl_sql = cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{tbl}'").fetchone()[0]
         assert "WITHOUT ROWID" in tbl_sql.upper()
 
@@ -161,6 +181,7 @@ def test_benchmark_all_queries_sla(dummy_db):
     assert "fts_search_ms" in benchmarks
     assert "reflex_sampling_ms" in benchmarks
     assert "topic_relation_join_ms" in benchmarks
+    assert "pattern_lookup_ms" in benchmarks
 
     # Assert all query benchmarks are under 5.0 ms SLA
     for key, val in benchmarks.items():
@@ -205,6 +226,31 @@ def test_words_dynamic_columns_preservation(tmp_path):
     ).fetchone()
     assert row == ('banana', 1, 2, 'std.mp3', 'fast.mp3', 'ok', 'extra_val')
     conn.close()
+
+
+def test_pattern_sentences_exporter_without_rowid_and_sla(dummy_db):
+    # Setup pattern_sentences in dummy_db
+    conn = sqlite3.connect(str(dummy_db))
+    conn.execute("CREATE TABLE IF NOT EXISTS sentence_patterns (id INTEGER PRIMARY KEY, pattern_name TEXT, structure_json TEXT, example_en TEXT, example_vi TEXT, cefr_level TEXT);")
+    conn.execute("CREATE TABLE IF NOT EXISTS pattern_sentences (pattern_id INTEGER, sentence_id INTEGER, matched_tokens_json TEXT, PRIMARY KEY(pattern_id, sentence_id));")
+    conn.execute("INSERT OR IGNORE INTO sentence_patterns (id, pattern_name) VALUES (1, 'it_is_adj_to_v');")
+    conn.execute("INSERT OR IGNORE INTO pattern_sentences (pattern_id, sentence_id) VALUES (1, 1);")
+    conn.commit()
+    conn.close()
+
+    exporter = SQLiteExporter(db_path=dummy_db)
+    exporter.optimize_and_package()
+
+    conn = sqlite3.connect(str(dummy_db))
+    # Verify WITHOUT ROWID
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='pattern_sentences';").fetchone()[0]
+    assert "WITHOUT ROWID" in sql.upper()
+    conn.close()
+
+    benchmarks = exporter.benchmark_all_queries(iterations=20)
+    assert "pattern_lookup_ms" in benchmarks
+    assert benchmarks["pattern_lookup_ms"] < 1.0
+
 
 
 

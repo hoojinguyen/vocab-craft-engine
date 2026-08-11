@@ -85,6 +85,7 @@ class SQLiteExporter:
             "word_topics": ["word_id", "topic"],
             "word_relations": ["word_id", "relation_type", "target_text"],
             "phrase_sentences": ["phrase_id", "sentence_id"],
+            "pattern_sentences": ["pattern_id", "sentence_id"],
         }
         col_by_name = {c[1]: c for c in cols}
 
@@ -159,6 +160,7 @@ class SQLiteExporter:
             self._migrate_table_enums(conn, "word_topics", without_rowid=True)
             self._migrate_table_enums(conn, "word_relations", {"relation_type": RELATION_MAP}, without_rowid=True)
             self._migrate_table_enums(conn, "phrase_sentences", without_rowid=True)
+            self._migrate_table_enums(conn, "pattern_sentences", without_rowid=True)
 
             # 3. Other enum tables migration
             self._migrate_table_enums(conn, "reflex_drills", {"drill_type": DRILL_MAP})
@@ -222,6 +224,7 @@ class SQLiteExporter:
             ("phrases", "CREATE INDEX IF NOT EXISTS idx_phrases_type ON phrases(phrase_type);"),
             ("phrase_sentences", "CREATE INDEX IF NOT EXISTS idx_phrase_sentences_phrase ON phrase_sentences(phrase_id);"),
             ("phrase_sentences", "CREATE INDEX IF NOT EXISTS idx_phrase_sentences_sentence ON phrase_sentences(sentence_id);"),
+            ("pattern_sentences", "CREATE INDEX IF NOT EXISTS idx_pattern_sentences_pid ON pattern_sentences(pattern_id, sentence_id);"),
             ("word_relations", "CREATE UNIQUE INDEX IF NOT EXISTS idx_word_relations_unique ON word_relations(word_id, relation_type, target_text);"),
             ("word_relations", "CREATE INDEX IF NOT EXISTS idx_word_relations_target ON word_relations(target_word_id);"),
             ("word_topics", "CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);"),
@@ -347,6 +350,20 @@ class SQLiteExporter:
                 cursor.fetchall()
                 durations.append((time.perf_counter() - t0) * 1000.0)
             results["topic_relation_join_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+
+        # 5. Pattern Sentences Lookup
+        if self._table_exists(conn, "pattern_sentences") and self._table_exists(conn, "sentences"):
+            cursor.execute("PRAGMA table_info(sentences);")
+            s_cols = {col[1] for col in cursor.fetchall()}
+            text_vi_clause = ", s.text_vi" if "text_vi" in s_cols else ""
+            q_pattern = f"SELECT s.id, s.text_en{text_vi_clause} FROM pattern_sentences ps JOIN sentences s ON ps.sentence_id = s.id WHERE ps.pattern_id = 1 LIMIT 10;"
+            durations = []
+            for _ in range(iterations):
+                t0 = time.perf_counter()
+                cursor.execute(q_pattern)
+                cursor.fetchall()
+                durations.append((time.perf_counter() - t0) * 1000.0)
+            results["pattern_lookup_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
 
         conn.close()
         return results
