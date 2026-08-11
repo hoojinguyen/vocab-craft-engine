@@ -162,3 +162,38 @@ def test_duplicate_lemma_prevention():
     # Verify obtain is only included once in distractors
     assert distractors.count("obtain") == 1
     assert len(distractors) == 2
+
+
+def test_lemma_dict_and_cloze_token_lookup():
+    words = [
+        {"id": 1, "lemma": "abandon", "pos": "verb", "cefr_level": "B2", "text_vi": "rời bỏ"},
+        {"id": 2, "lemma": "obtain", "pos": "verb", "cefr_level": "B2", "text_vi": "đạt được"}
+    ]
+    builder = QuizBuilder(words=words)
+    assert builder.lemma_dict["abandon"]["id"] == 1
+    assert builder.lemma_dict["obtain"]["id"] == 2
+
+    sentence = {"id": 10, "text_en": "She decided to abandon her old car.", "cefr_level": "B2"}
+    quiz = builder.generate_sentence_cloze(sentence)
+    assert quiz["correct_answer"] == "abandon"
+    assert "___" in quiz["prompt_text"]
+
+    pattern = {"id": 100, "example_en": "It is necessary to obtain approval.", "cefr_level": "B2"}
+    p_quiz = builder.generate_pattern_cloze(pattern)
+    assert p_quiz["correct_answer"] == "obtain"
+    assert "___" in p_quiz["prompt_text"]
+
+
+def test_tier3_fast_sampling():
+    target = {"id": 1, "lemma": "abandon", "pos": "verb", "cefr_level": "B2", "text_vi": "rời bỏ"}
+    # Create words with non-matching POS to force Tier 3 sampling
+    words = [target] + [
+        {"id": i, "lemma": f"word{i}", "pos": "noun", "cefr_level": "A1", "text_vi": f"nghĩa {i}"}
+        for i in range(2, 200)
+    ]
+    builder = QuizBuilder(words=words)
+    distractors = builder._get_distractors(target, field="text_vi", count=3)
+    assert len(distractors) == 3
+    for d in distractors:
+        assert d != "rời bỏ"
+

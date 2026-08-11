@@ -43,10 +43,11 @@ class QuizBuilder:
         self._index_words(self.words)
 
     def _index_words(self, words: List[Dict[str, Any]]):
-        """Indexes words by (pos, cefr_level) for O(1) distractor lookup."""
+        """Indexes words by (pos, cefr_level) and lemma for O(1) distractor and token lookup."""
         self.words = words or []
         self.pos_cefr_index = defaultdict(list)
         self.pos_index = defaultdict(list)
+        self.lemma_dict = {w["lemma"].lower(): w for w in self.words if w.get("lemma")}
 
         for w in self.words:
             pos = (w.get("pos") or "unknown").strip().lower()
@@ -62,7 +63,7 @@ class QuizBuilder:
         Retrieves distractors tier-by-tier matching target's POS & CEFR level.
         - Tier 1: Same POS + Same CEFR level
         - Tier 2: Same POS (different CEFR level)
-        - Tier 3: Any word in pool
+        - Tier 3: Any word in pool (fast random sampling)
         - Tier 4: POS-aware fallback dictionary
         Tracks both gloss and lemma in `seen` set to avoid duplicate lemmas or glosses.
         """
@@ -115,9 +116,20 @@ class QuizBuilder:
             tier2_words = self.pos_index.get(pos, [])
             selected.extend(filter_and_sample(tier2_words, count - len(selected)))
 
-        # Tier 3: Any word in pool
-        if len(selected) < count:
-            selected.extend(filter_and_sample(self.words, count - len(selected)))
+        # Tier 3: Any word in pool (fast random sampling)
+        if len(selected) < count and self.words:
+            needed = count - len(selected)
+            sample_size = min(len(self.words), max(needed * 10, 50))
+            for w in random.sample(self.words, sample_size):
+                val = (w.get(field) or "").strip()
+                lem = (w.get("lemma") or "").strip().lower()
+                if val and val.lower() not in seen and (not lem or lem not in seen):
+                    selected.append(val)
+                    seen.add(val.lower())
+                    if lem:
+                        seen.add(lem)
+                    if len(selected) == count:
+                        break
 
         # Tier 4: POS-aware fallback dictionary
         if len(selected) < count:
@@ -161,11 +173,12 @@ class QuizBuilder:
         target_word: Optional[Dict[str, Any]] = None
         matched_text: str = ""
 
-        for w in self.words:
-            lemma = (w.get("lemma") or "").strip()
-            if lemma and re.search(r'\b' + re.escape(lemma) + r'\b', text_en, re.IGNORECASE):
-                target_word = w
-                matched_text = lemma
+        tokens = re.findall(r'\b[A-Za-z]+\b', text_en)
+        for token in tokens:
+            token_lower = token.lower()
+            if token_lower in self.lemma_dict:
+                target_word = self.lemma_dict[token_lower]
+                matched_text = target_word.get("lemma", token)
                 break
 
         if not target_word:
@@ -214,11 +227,12 @@ class QuizBuilder:
         target_word: Optional[Dict[str, Any]] = None
         matched_text: str = ""
 
-        for w in self.words:
-            lemma = (w.get("lemma") or "").strip()
-            if lemma and re.search(r'\b' + re.escape(lemma) + r'\b', example_en, re.IGNORECASE):
-                target_word = w
-                matched_text = lemma
+        tokens = re.findall(r'\b[A-Za-z]+\b', example_en)
+        for token in tokens:
+            token_lower = token.lower()
+            if token_lower in self.lemma_dict:
+                target_word = self.lemma_dict[token_lower]
+                matched_text = target_word.get("lemma", token)
                 break
 
         if not target_word:

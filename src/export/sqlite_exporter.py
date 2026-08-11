@@ -296,7 +296,7 @@ class SQLiteExporter:
             ("definitions", "CREATE INDEX IF NOT EXISTS idx_definitions_word_id ON definitions(word_id);"),
             ("quiz_questions", "CREATE INDEX IF NOT EXISTS idx_quiz_type_cefr ON quiz_questions(question_type, cefr_level);"),
             ("quiz_questions", "CREATE INDEX IF NOT EXISTS idx_quiz_target ON quiz_questions(target_type, target_id);"),
-            ("quiz_questions", "CREATE INDEX IF NOT EXISTS idx_quiz_cov ON quiz_questions(question_type, cefr_level, id, prompt_text);"),
+            ("quiz_questions", "CREATE INDEX IF NOT EXISTS idx_quiz_cov ON quiz_questions(question_type, cefr_level, id, prompt_text, correct_answer, options_json);"),
         ]
         for tbl, sql in indexes:
             if self._table_exists(conn, tbl):
