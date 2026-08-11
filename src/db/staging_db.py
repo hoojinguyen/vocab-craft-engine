@@ -215,7 +215,7 @@ class DatabaseManager:
                 PRIMARY KEY (pattern_id, sentence_id),
                 FOREIGN KEY (pattern_id) REFERENCES sentence_patterns (id) ON DELETE CASCADE,
                 FOREIGN KEY (sentence_id) REFERENCES sentences (id) ON DELETE CASCADE
-            );
+            ) WITHOUT ROWID;
         """)
 
         # Indexes for fast mobile and pipeline queries
@@ -227,7 +227,6 @@ class DatabaseManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrases_type ON phrases(phrase_type);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_phrase ON phrase_sentences(phrase_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_sentence ON phrase_sentences(sentence_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pattern_sentences_pattern ON pattern_sentences(pattern_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pattern_sentences_sentence ON pattern_sentences(sentence_id);")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_relations_unique ON word_relations(word_id, relation_type, target_text);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_relations_target ON word_relations(target_word_id);")

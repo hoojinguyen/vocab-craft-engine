@@ -12,9 +12,12 @@ def tmp_db(tmp_path) -> DatabaseManager:
 
 def test_pattern_sentences_schema_and_batch_insert(tmp_db):
     conn = tmp_db.get_connection()
-    # Check pattern_sentences table exists
+    # Check pattern_sentences table exists and uses WITHOUT ROWID
     tbls = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
     assert "pattern_sentences" in tbls
+
+    ddl = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='pattern_sentences';").fetchone()[0]
+    assert "WITHOUT ROWID" in ddl.upper()
 
     # Insert parent sentence_pattern and sentence to satisfy foreign keys
     tmp_db.insert_sentence_patterns_batch([
