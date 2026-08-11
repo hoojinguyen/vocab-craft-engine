@@ -10,6 +10,7 @@ import json
 import time
 import argparse
 import asyncio
+from typing import Tuple, List, Dict, Any
 from pathlib import Path
 
 from config.settings import (
@@ -47,6 +48,7 @@ from src.nlp.phrase_grader import PhraseGrader
 from src.nlp.phrase_example_matcher import PhraseExampleMatcher
 from src.nlp.offline_gloss_extractor import OfflineGlossExtractor
 from src.ingestion.relation_parser import RelationParser
+from src.nlp.pattern_extractor import GrammarPatternExtractor
 
 RELATION_CHECKPOINT = 50_000
 TOPIC_CHECKPOINT = 1_000
@@ -93,6 +95,112 @@ def parse_arguments():
     parser.add_argument("--build-core-pack", action="store_true",
                         help="Build the curated Core 3000 word pack (core_3000.db + report).")
     return parser.parse_args()
+
+
+def run_pattern_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
+    """
+    Step 4C: Extract grammar sentence patterns from corpus sentences using GrammarPatternExtractor.
+    Populates `sentence_patterns` and `pattern_sentences` junction table, and backfills
+    representative example sentences for each pattern.
+    """
+    conn = db_mgr.get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, text_en, text_vi FROM sentences;")
+    sentences = cursor.fetchall()
+
+    if not sentences:
+        logger.info("   [4C] No sentences found in database — skipping pattern extraction.")
+        return (0, 0)
+
+    logger.info("   [4C] Extracting Grammar Sentence Patterns across %s sentences...", f"{len(sentences):,}")
+    extractor = GrammarPatternExtractor()
+
+    patterns_dict: Dict[str, Dict[str, Any]] = {}
+    mappings_list: List[Dict[str, Any]] = []
+
+    for s_id, text_en, text_vi in sentences:
+        if not text_en:
+            continue
+        matches = extractor.extract_patterns(text_en)
+        for match in matches:
+            p_name = match["pattern_name"]
+            if p_name not in patterns_dict:
+                patterns_dict[p_name] = {
+                    "pattern_name": p_name,
+                    "structure_json": match["structure_json"],
+                    "example_en": None,
+                    "example_vi": None,
+                    "cefr_level": match["cefr_level"]
+                }
+            mappings_list.append({
+                "pattern_name": p_name,
+                "sentence_id": s_id,
+                "matched_tokens_json": match["matched_tokens_json"]
+            })
+
+    if patterns_dict:
+        db_mgr.insert_sentence_patterns_batch(list(patterns_dict.values()))
+
+    cursor.execute("SELECT id, pattern_name FROM sentence_patterns;")
+    pattern_name_to_id = {row[1]: row[0] for row in cursor.fetchall()}
+
+    final_mappings = [
+        {
+            "pattern_id": pattern_name_to_id[m["pattern_name"]],
+            "sentence_id": m["sentence_id"],
+            "matched_tokens_json": m["matched_tokens_json"]
+        }
+        for m in mappings_list
+        if m["pattern_name"] in pattern_name_to_id
+    ]
+
+    if final_mappings:
+        db_mgr.insert_pattern_sentences_batch(final_mappings)
+
+    # Backfill representative example sentences (validated VI translation, preferred 8-20 words length)
+    for pattern_name, pattern_id in pattern_name_to_id.items():
+        cursor.execute("""
+            SELECT s.text_en, s.text_vi
+            FROM pattern_sentences ps
+            JOIN sentences s ON s.id = ps.sentence_id
+            WHERE ps.pattern_id = ?;
+        """, (pattern_id,))
+        candidates = cursor.fetchall()
+        if not candidates:
+            continue
+
+        best_candidate = None
+        for text_en, text_vi in candidates:
+            word_count = len(text_en.split()) if text_en else 0
+            if text_vi and 8 <= word_count <= 20:
+                best_candidate = (text_en, text_vi)
+                break
+        if not best_candidate:
+            for text_en, text_vi in candidates:
+                if text_vi:
+                    best_candidate = (text_en, text_vi)
+                    break
+        if not best_candidate:
+            best_candidate = candidates[0]
+
+        cursor.execute("""
+            UPDATE sentence_patterns
+            SET example_en = ?, example_vi = ?
+            WHERE id = ?;
+        """, (best_candidate[0], best_candidate[1], pattern_id))
+
+    conn.commit()
+
+    cursor.execute("SELECT count(*) FROM sentence_patterns;")
+    patterns_count = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM pattern_sentences;")
+    mappings_count = cursor.fetchone()[0]
+
+    logger.info("   [4C] Completed: %s sentence patterns, %s mappings.",
+                f"{patterns_count:,}", f"{mappings_count:,}")
+
+    return (patterns_count, mappings_count)
 
 
 def run_phrase_step(db_manager, args) -> dict:
@@ -742,15 +850,10 @@ def run_pipeline():
     map_count = cursor.fetchone()[0]
     logger.info("   [4B] Linked sentences to %s word links.", f"{map_count:,}")
 
-    # 4C. Sentence Patterns Population
-    logger.info("   [4C] Populating Sentence Patterns...")
-    patterns = [
-        {"pattern_name": "Subject + Verb + Object", "structure_json": json.dumps(["NP", "VP", "NP"]), "example_en": "She drinks hot coffee.", "example_vi": "Cô ấy uống cà phê nóng.", "cefr_level": "A1"},
-        {"pattern_name": "Subject + Verb + Prepositional Phrase", "structure_json": json.dumps(["NP", "VP", "PP"]), "example_en": "They run in the park.", "example_vi": "Họ chạy trong công viên.", "cefr_level": "A2"},
-        {"pattern_name": "Subject + Auxiliary + Verb + Object", "structure_json": json.dumps(["NP", "AUX", "VP", "NP"]), "example_en": "I can learn English.", "example_vi": "Tôi có thể học tiếng Anh.", "cefr_level": "B1"}
-    ]
-    patterns_count = db_manager.insert_sentence_patterns_batch(patterns)
-    logger.info("   [4C] Populated %d sentence patterns.", patterns_count)
+    # 4C. Sentence Patterns Extraction & Integration
+    logger.info("   [4C] Extracting & Populating Grammar Sentence Patterns...")
+    p_count, m_count = run_pattern_step(db_manager, args)
+    logger.info("   [4C] Extracted %s sentence patterns with %s mappings.", f"{p_count:,}", f"{m_count:,}")
 
     # 4D. Interactive Dialogue Scenarios
     logger.info("   [4D] Building Interactive Dialogue Trees with Dynamic Sentence Linking...")
