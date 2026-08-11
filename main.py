@@ -107,37 +107,42 @@ def run_pattern_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
     cursor = conn.cursor()
 
     cursor.execute("SELECT id, text_en, text_vi FROM sentences;")
-    sentences = cursor.fetchall()
 
-    if not sentences:
+    extractor = GrammarPatternExtractor()
+    patterns_dict: Dict[str, Dict[str, Any]] = {}
+    mappings_list: List[Dict[str, Any]] = []
+    total_processed = 0
+
+    while True:
+        sentences = cursor.fetchmany(10000)
+        if not sentences:
+            break
+        total_processed += len(sentences)
+        for s_id, text_en, text_vi in sentences:
+            if not text_en:
+                continue
+            matches = extractor.extract_patterns(text_en)
+            for match in matches:
+                p_name = match["pattern_name"]
+                if p_name not in patterns_dict:
+                    patterns_dict[p_name] = {
+                        "pattern_name": p_name,
+                        "structure_json": match["structure_json"],
+                        "example_en": None,
+                        "example_vi": None,
+                        "cefr_level": match["cefr_level"]
+                    }
+                mappings_list.append({
+                    "pattern_name": p_name,
+                    "sentence_id": s_id,
+                    "matched_tokens_json": match["matched_tokens_json"]
+                })
+
+    if total_processed == 0:
         logger.info("   [4C] No sentences found in database — skipping pattern extraction.")
         return (0, 0)
 
-    logger.info("   [4C] Extracting Grammar Sentence Patterns across %s sentences...", f"{len(sentences):,}")
-    extractor = GrammarPatternExtractor()
-
-    patterns_dict: Dict[str, Dict[str, Any]] = {}
-    mappings_list: List[Dict[str, Any]] = []
-
-    for s_id, text_en, text_vi in sentences:
-        if not text_en:
-            continue
-        matches = extractor.extract_patterns(text_en)
-        for match in matches:
-            p_name = match["pattern_name"]
-            if p_name not in patterns_dict:
-                patterns_dict[p_name] = {
-                    "pattern_name": p_name,
-                    "structure_json": match["structure_json"],
-                    "example_en": None,
-                    "example_vi": None,
-                    "cefr_level": match["cefr_level"]
-                }
-            mappings_list.append({
-                "pattern_name": p_name,
-                "sentence_id": s_id,
-                "matched_tokens_json": match["matched_tokens_json"]
-            })
+    logger.info("   [4C] Extracting Grammar Sentence Patterns across %s sentences...", f"{total_processed:,}")
 
     if patterns_dict:
         db_mgr.insert_sentence_patterns_batch(list(patterns_dict.values()))

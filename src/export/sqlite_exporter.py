@@ -224,7 +224,6 @@ class SQLiteExporter:
             ("phrases", "CREATE INDEX IF NOT EXISTS idx_phrases_type ON phrases(phrase_type);"),
             ("phrase_sentences", "CREATE INDEX IF NOT EXISTS idx_phrase_sentences_phrase ON phrase_sentences(phrase_id);"),
             ("phrase_sentences", "CREATE INDEX IF NOT EXISTS idx_phrase_sentences_sentence ON phrase_sentences(sentence_id);"),
-            ("pattern_sentences", "CREATE INDEX IF NOT EXISTS idx_pattern_sentences_pid ON pattern_sentences(pattern_id, sentence_id);"),
             ("word_relations", "CREATE UNIQUE INDEX IF NOT EXISTS idx_word_relations_unique ON word_relations(word_id, relation_type, target_text);"),
             ("word_relations", "CREATE INDEX IF NOT EXISTS idx_word_relations_target ON word_relations(target_word_id);"),
             ("word_topics", "CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);"),
