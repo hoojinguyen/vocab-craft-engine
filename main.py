@@ -208,6 +208,20 @@ def run_pattern_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
     return (patterns_count, mappings_count)
 
 
+def run_scenario_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
+    """
+    Step 4D: Build interactive dialogue trees with dynamic sentence linking.
+    Generates 25+ structured branching situational scenarios across 8 themes
+    and persists them to database via DatabaseManager.
+    """
+    builder = ScenarioBuilder()
+    scenarios = builder.build_all_scenarios()
+    trees_count, nodes_count = db_mgr.insert_dialogue_scenarios_batch(scenarios)
+    logger.info("   [4D] Completed: %s dialogue trees, %s dialogue nodes stored.",
+                f"{trees_count:,}", f"{nodes_count:,}")
+    return (trees_count, nodes_count)
+
+
 def run_phrase_step(db_manager, args) -> dict:
     """
     Step 4G: Ingest multi-word expressions (idioms, phrasal verbs, proverbs)
@@ -862,39 +876,8 @@ def run_pipeline():
 
     # 4D. Interactive Dialogue Scenarios
     logger.info("   [4D] Building Interactive Dialogue Trees with Dynamic Sentence Linking...")
-    scenario_builder = ScenarioBuilder()
-    scenarios = scenario_builder.build_sample_scenarios()
-
-    for sc in scenarios:
-        cursor.execute("""
-            INSERT INTO dialogue_trees (title, topic, cefr_level)
-            VALUES (?, ?, ?);
-        """, (sc["title"], sc["topic"], sc["cefr_level"]))
-        tree_id = cursor.lastrowid
-
-        local_node_map = {}
-        for node in sc["nodes"]:
-            # Ensure text_en is in sentences table
-            cursor.execute("""
-                INSERT OR IGNORE INTO sentences (text_en, text_vi, difficulty_score, cefr_level, audio_path, source)
-                VALUES (?, ?, ?, ?, ?, ?);
-            """, (node["text_en"], node["text_vi"], 2.0, sc["cefr_level"], f"dialogue_tree_{tree_id}_node_{node['node_index']}.mp3", "DialogueTree"))
-
-            cursor.execute("SELECT id FROM sentences WHERE text_en = ?;", (node["text_en"],))
-            s_row = cursor.fetchone()
-            sent_id = s_row[0] if s_row else 1
-
-            parent_db_id = local_node_map.get(node.get("parent_index"))
-
-            cursor.execute("""
-                INSERT INTO dialogue_nodes (tree_id, parent_node_id, sentence_id, speaker_role, choice_label)
-                VALUES (?, ?, ?, ?, ?);
-            """, (tree_id, parent_db_id, sent_id, node["speaker_role"], node["choice_label"]))
-            node_db_id = cursor.lastrowid
-            local_node_map[node["node_index"]] = node_db_id
-
-    conn.commit()
-    logger.info("   [4D] Built %d dialogue trees and nodes with dynamic sentence links.", len(scenarios))
+    t_count, n_count = run_scenario_step(db_manager, args)
+    logger.info("   [4D] Extracted %s dialogue trees with %s nodes.", f"{t_count:,}", f"{n_count:,}")
 
     # 4E. Speed Reflex Drill Cards Generation
     logger.info("   [4E] Generating Speed Reflex Drill Cards...")
