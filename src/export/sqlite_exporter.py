@@ -33,8 +33,9 @@ class SQLiteExporter:
 
     def _table_exists(self, conn: sqlite3.Connection, table_name: str) -> bool:
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
+        cursor.execute("SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name=?;", (table_name,))
         return cursor.fetchone() is not None
+
 
     def _migrate_table_enums(
         self,
@@ -187,6 +188,36 @@ class SQLiteExporter:
                 cursor.execute("DROP VIEW IF EXISTS v_words;")
                 cursor.execute(f"CREATE VIEW v_words AS SELECT {select_clause} FROM words;")
 
+            # 5. Create SQL view for dialogue_nodes
+            if self._table_exists(conn, "dialogue_nodes"):
+                s_cols = set()
+                if self._table_exists(conn, "sentences"):
+                    cursor.execute("PRAGMA table_info(sentences);")
+                    s_cols = {row[1] for row in cursor.fetchall()}
+
+                text_en_sql = "s.text_en" if "text_en" in s_cols else "NULL AS text_en"
+                text_vi_sql = "s.text_vi" if "text_vi" in s_cols else "NULL AS text_vi"
+                cefr_level_sql = "s.cefr_level" if "cefr_level" in s_cols else "NULL AS cefr_level"
+                audio_path_sql = "s.audio_path" if "audio_path" in s_cols else "NULL AS audio_path"
+
+                cursor.execute("DROP VIEW IF EXISTS v_dialogue_nodes;")
+                cursor.execute(f"""
+                    CREATE VIEW v_dialogue_nodes AS
+                    SELECT 
+                        dn.id AS node_id,
+                        dn.tree_id,
+                        dn.parent_node_id,
+                        dn.choice_label,
+                        dn.speaker_role,
+                        dn.sentence_id,
+                        {text_en_sql},
+                        {text_vi_sql},
+                        {cefr_level_sql},
+                        {audio_path_sql}
+                    FROM dialogue_nodes dn
+                    LEFT JOIN sentences s ON dn.sentence_id = s.id;
+                """)
+
             conn.commit()
         except Exception:
             conn.rollback()
@@ -194,6 +225,7 @@ class SQLiteExporter:
         finally:
             cursor.execute("PRAGMA foreign_keys = ON;")
             conn.commit()
+
 
     def optimize_and_package(self) -> Dict[str, Any]:
         """
@@ -364,8 +396,20 @@ class SQLiteExporter:
                 durations.append((time.perf_counter() - t0) * 1000.0)
             results["pattern_lookup_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
 
+        # 6. Dialogue Scenario Traversal
+        if self._table_exists(conn, "v_dialogue_nodes"):
+            q_scenario = "SELECT node_id, speaker_role, choice_label, text_en, text_vi FROM v_dialogue_nodes WHERE tree_id = 1 AND parent_node_id = 1;"
+            durations = []
+            for _ in range(iterations):
+                t0 = time.perf_counter()
+                cursor.execute(q_scenario)
+                cursor.fetchall()
+                durations.append((time.perf_counter() - t0) * 1000.0)
+            results["scenario_traversal_ms"] = round(sum(durations) / len(durations), 3) if durations else 0.0
+
         conn.close()
         return results
+
 
     def benchmark_reflex_query_speed(self, iterations: int = 50) -> float:
         """

@@ -252,6 +252,32 @@ def test_pattern_sentences_exporter_without_rowid_and_sla(dummy_db):
     assert benchmarks["pattern_lookup_ms"] < 1.0
 
 
+def test_v_dialogue_nodes_view_and_sla(dummy_db):
+    conn = sqlite3.connect(str(dummy_db))
+    conn.execute("CREATE TABLE IF NOT EXISTS dialogue_trees (id INTEGER PRIMARY KEY, title TEXT, topic TEXT, cefr_level TEXT, root_node_id INTEGER);")
+    conn.execute("CREATE TABLE IF NOT EXISTS dialogue_nodes (id INTEGER PRIMARY KEY, tree_id INTEGER, parent_node_id INTEGER, choice_label TEXT, speaker_role TEXT, sentence_id INTEGER);")
+    conn.execute("INSERT INTO dialogue_trees VALUES (1, 'Ordering Coffee', 'Dining', 'A2', 1);")
+    conn.execute("INSERT INTO dialogue_nodes VALUES (1, 1, NULL, NULL, 'A', 1);")
+    conn.execute("INSERT INTO dialogue_nodes VALUES (2, 1, 1, 'Hot Latte', 'B', 1);")
+    conn.commit()
+    conn.close()
+
+    exporter = SQLiteExporter(db_path=dummy_db)
+    exporter.optimize_and_package()
+
+    conn = sqlite3.connect(str(dummy_db))
+    # Check v_dialogue_nodes view exists
+    row = conn.execute("SELECT node_id, choice_label, text_en FROM v_dialogue_nodes WHERE tree_id = 1 AND parent_node_id = 1;").fetchone()
+    assert row is not None
+    assert row[1] == 'Hot Latte'
+    conn.close()
+
+    benchmarks = exporter.benchmark_all_queries(iterations=20)
+    assert "scenario_traversal_ms" in benchmarks
+    assert benchmarks["scenario_traversal_ms"] < 0.5
+
+
+
 
 
 
