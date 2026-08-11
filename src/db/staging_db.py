@@ -218,6 +218,20 @@ class DatabaseManager:
             ) WITHOUT ROWID;
         """)
 
+        # 15. Quiz Questions table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question_type TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id INTEGER,
+                prompt_text TEXT NOT NULL,
+                correct_answer TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                cefr_level TEXT NOT NULL DEFAULT 'B1'
+            );
+        """)
+
         # Indexes for fast mobile and pipeline queries
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_words_lemma ON words(lemma);")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sentences_text_en ON sentences(text_en);")
@@ -233,6 +247,8 @@ class DatabaseManager:
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_definitions_word_id ON definitions(word_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_quiz_type_cefr ON quiz_questions(question_type, cefr_level);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_quiz_target ON quiz_questions(target_type, target_id);")
 
         conn.commit()
         logger.info("Database schema initialized successfully at %s", self.db_path)
@@ -535,4 +551,34 @@ class DatabaseManager:
                     )
 
         return total_trees, total_nodes
+
+    def insert_quiz_questions_batch(self, questions: List[Dict[str, Any]]) -> int:
+        """Batch insert quiz questions into `quiz_questions` table."""
+        if not questions:
+            return 0
+
+        prepared_questions = []
+        for q in questions:
+            prepared_questions.append({
+                "question_type": q["question_type"],
+                "target_type": q["target_type"],
+                "target_id": q.get("target_id"),
+                "prompt_text": q["prompt_text"],
+                "correct_answer": q["correct_answer"],
+                "options_json": q["options_json"],
+                "cefr_level": q.get("cefr_level") or "B1",
+            })
+
+        conn = self.get_connection()
+        query = """
+            INSERT INTO quiz_questions
+            (question_type, target_type, target_id, prompt_text, correct_answer, options_json, cefr_level)
+            VALUES
+            (:question_type, :target_type, :target_id, :prompt_text, :correct_answer, :options_json, :cefr_level);
+        """
+        cursor = conn.cursor()
+        cursor.executemany(query, prepared_questions)
+        conn.commit()
+        return cursor.rowcount
+
 
