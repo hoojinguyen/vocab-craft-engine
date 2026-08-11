@@ -71,10 +71,16 @@ CREATE TABLE IF NOT EXISTS raw_relations (
 );
 
 CREATE TABLE IF NOT EXISTS raw_topics (
+    id INTEGER PRIMARY KEY DEFAULT nextval('raw_topics_id_seq'),
     lemma VARCHAR NOT NULL,
+    raw_topic VARCHAR NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS word_topics (
+    word_id INTEGER NOT NULL,
     topic VARCHAR NOT NULL,
     raw_topic VARCHAR,
-    PRIMARY KEY (lemma, topic)
+    PRIMARY KEY (word_id, topic)
 );
 
 CREATE TABLE IF NOT EXISTS raw_sentences (

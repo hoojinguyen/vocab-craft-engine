@@ -57,8 +57,15 @@ def _ingest_kaikki(ctx: PipelineContext):
     parser = KaikkiSinglePassParser(KAIKKI_JSON_PATH)
     total = {cat: 0 for cat in ["word", "phrase", "relation", "topic", "definition"]}
 
+    table_map = {
+        "word": "raw_words",
+        "phrase": "raw_phrases",
+        "relation": "raw_relations",
+        "topic": "raw_topics",
+        "definition": "raw_definitions",
+    }
     for category, batch in parser.parse_stream(batch_size=5000):
-        db.insert_rows(f"raw_{category}" if category != "word" else "raw_words", batch)
+        db.insert_rows(table_map[category], batch)
         total[category] += len(batch)
         if total[category] % 50_000 == 0 and category == "word":
             logger.info("   [Kaikki] %d words staged...", total["word"])

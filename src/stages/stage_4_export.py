@@ -90,28 +90,29 @@ def _export_phrases(ctx, db, writer):
 def _export_relations(ctx, db, writer):
     if not ctx.lemma_cache:
         return
-    rels = db.query("SELECT lemma, relation_type, target_text, inverted, source FROM raw_relations").fetchall()
+    rels = db.query(
+        "SELECT lemma, relation_type, target_text, inverted, source FROM raw_relations"
+    ).fetchall()
     rows = []
     for lemma, rel_type, target_text, inverted, source in rels:
         word_id = ctx.lemma_cache.get(lemma)
+        if word_id is None:
+            continue
         target_id = ctx.lemma_cache.get(target_text)
-        if word_id:
-            rows.append({"word_id": word_id, "relation_type": rel_type,
-                          "target_text": target_text, "target_word_id": target_id,
-                          "inverted": inverted, "source": source})
+        rows.append({
+            "word_id": word_id, "relation_type": rel_type,
+            "target_text": target_text, "target_word_id": target_id,
+            "inverted": inverted, "source": source,
+        })
     writer.insert_word_relations(rows, commit_every=10)
 
 
 def _export_topics(ctx, db, writer):
-    if not ctx.lemma_cache:
-        return
-    topics = db.query("SELECT lemma, topic, raw_topic FROM raw_topics").fetchall()
-    rows = []
-    for lemma, topic, raw_topic in topics:
-        word_id = ctx.lemma_cache.get(lemma)
-        if word_id:
-            rows.append({"word_id": word_id, "topic": topic, "raw_topic": raw_topic})
-    writer.insert_word_topics(rows, commit_every=10)
+    topics = db.query("SELECT word_id, topic, raw_topic FROM word_topics").fetchall()
+    writer.insert_word_topics([
+        {"word_id": r[0], "topic": r[1], "raw_topic": r[2]}
+        for r in topics
+    ], commit_every=10)
 
 
 def _export_reflex_drills(ctx, db, writer):

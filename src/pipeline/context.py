@@ -34,6 +34,7 @@ class PipelineContext:
     force_reset: bool = False
     vi_budget: int = 1000
     audio_limit: int = 5000
+    build_core_pack: bool = False
 
     duckdb_conn: Any = None
     sqlite_conn: Any = None

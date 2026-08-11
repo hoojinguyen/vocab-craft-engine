@@ -100,17 +100,20 @@ def _build_inverse_relations(db):
 
 
 def _map_topics(ctx: PipelineContext, db):
-    """Map raw topics to curated themes."""
+    """Map raw topics to curated themes, write to word_topics."""
     from src.nlp.topic_mapper import TopicMapper
     topics = db.query("SELECT lemma, raw_topic FROM raw_topics").fetchall()
     mapped = []
     seen = set()
     for lemma, raw_topic in topics:
         theme = TopicMapper.map_topic(raw_topic)
-        key = (lemma, theme)
-        if key not in seen:
-            seen.add(key)
-            mapped.append({"lemma": lemma, "topic": theme, "raw_topic": raw_topic})
-    db.execute("DELETE FROM raw_topics")
-    db.insert_rows("raw_topics", mapped)
-    logger.info("[Stage 2] Topics mapped: %d", db.row_count("raw_topics"))
+        word_id = ctx.lemma_cache.get(lemma)
+        if word_id is None:
+            continue
+        key = (word_id, theme)
+        if key in seen:
+            continue
+        seen.add(key)
+        mapped.append({"word_id": word_id, "topic": theme, "raw_topic": raw_topic})
+    db.insert_rows("word_topics", mapped)
+    logger.info("[Stage 2] Topics mapped: %d", db.row_count("word_topics"))
