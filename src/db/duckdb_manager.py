@@ -21,6 +21,12 @@ CREATE SEQUENCE IF NOT EXISTS raw_words_id_seq START 1;
 CREATE SEQUENCE IF NOT EXISTS raw_sentences_id_seq START 1;
 CREATE SEQUENCE IF NOT EXISTS raw_phrases_id_seq START 1;
 CREATE SEQUENCE IF NOT EXISTS raw_relations_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS raw_definitions_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS raw_topics_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS collocations_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS word_sentence_map_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS reflex_drills_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS dialogue_trees_id_seq START 1;
 
 CREATE TABLE IF NOT EXISTS raw_words (
     id INTEGER PRIMARY KEY DEFAULT nextval('raw_words_id_seq'),
@@ -29,7 +35,8 @@ CREATE TABLE IF NOT EXISTS raw_words (
     ipa_uk VARCHAR,
     ipa_us VARCHAR,
     frequency_rank INTEGER,
-    cefr_level VARCHAR
+    cefr_level VARCHAR,
+    vi_translations VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS raw_definitions (
