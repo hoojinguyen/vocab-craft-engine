@@ -64,14 +64,34 @@ def _generate_reflex_drills(ctx: PipelineContext):
 
 
 def _build_dialogue_scenarios(ctx: PipelineContext):
-    """Build dialogue trees."""
+    """Build and mine interactive dialogue trees and populate staging tables."""
     from src.nlp.scenario_builder import ScenarioBuilder
-    builder = ScenarioBuilder()
-    scenarios = builder.build_sample_scenarios()
+
     db = ctx.duckdb_conn
+    conn = db.conn if hasattr(db, "conn") else db
+    builder = ScenarioBuilder()
+
+    scenarios = builder.mine_dialogue_trees(db, max_trees_per_topic=5)
+
+    node_id_counter = 1
     for sc in scenarios:
-        db.execute(
-            "INSERT INTO dialogue_trees (title, topic, cefr_level) VALUES (?, ?, ?)",
+        tree_res = conn.execute(
+            "INSERT INTO dialogue_trees (title, topic, cefr_level) VALUES (?, ?, ?) RETURNING id",
             (sc["title"], sc["topic"], sc["cefr_level"]),
-        )
-    logger.info("[Stage 3] Dialogue scenarios: %d", db.row_count("dialogue_trees"))
+        ).fetchone()
+
+        tree_id = tree_res[0] if tree_res else 1
+
+        index_to_id = {}
+        for node in sc["nodes"]:
+            parent_id = index_to_id.get(node["parent_index"]) if node.get("parent_index") is not None else None
+
+            conn.execute(
+                """INSERT INTO dialogue_nodes (id, tree_id, parent_node_id, choice_label, speaker_role, sentence_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (node_id_counter, tree_id, parent_id, node.get("choice_label"), node["speaker_role"], node.get("sentence_id")),
+            )
+            index_to_id[node["node_index"]] = node_id_counter
+            node_id_counter += 1
+
+    logger.info("[Stage 3] Dialogue trees mined: %d, nodes: %d", db.row_count("dialogue_trees"), db.row_count("dialogue_nodes"))
