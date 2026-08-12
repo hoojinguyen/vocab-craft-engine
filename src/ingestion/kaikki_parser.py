@@ -108,12 +108,14 @@ class KaikkiParser:
         # Extract IPA transcriptions
         ipa_uk = None
         ipa_us = None
-        sounds = item.get("sounds", [])
+        sounds = item.get("sounds", []) or []
         for sound in sounds:
+            if not isinstance(sound, dict):
+                continue
             ipa = sound.get("ipa")
             if not ipa:
                 continue
-            tags = sound.get("tags", [])
+            tags = sound.get("tags", []) or []
             if "UK" in tags or "British" in tags:
                 ipa_uk = ipa
             elif "US" in tags or "American" in tags:
@@ -124,7 +126,7 @@ class KaikkiParser:
 
         # Extract Vietnamese translations if available
         vi_translations = []
-        translations = item.get("translations", [])
+        translations = item.get("translations", []) or []
         for trans in translations:
             if isinstance(trans, dict):
                 lang_code = trans.get("code") or trans.get("lang_code")
@@ -137,11 +139,13 @@ class KaikkiParser:
         vi_trans_str = ", ".join(vi_translations) if vi_translations else None
 
         # Extract senses / definitions
-        senses = item.get("senses", [])
+        senses = item.get("senses", []) or []
         definitions = []
         for sense in senses:
-            glosses = sense.get("glosses", []) or sense.get("raw_glosses", [])
-            examples = sense.get("examples", [])
+            if not isinstance(sense, dict):
+                continue
+            glosses = sense.get("glosses", []) or sense.get("raw_glosses", []) or []
+            examples = sense.get("examples", []) or []
             example_text = None
             if examples and isinstance(examples, list):
                 first_ex = examples[0]
@@ -151,12 +155,13 @@ class KaikkiParser:
                     example_text = first_ex
 
             for gloss in glosses:
-                definitions.append({
-                    "definition_en": gloss.strip(),
-                    "definition_vi": vi_trans_str,
-                    "example": example_text,
-                    "source": "Kaikki/Wiktionary"
-                })
+                if isinstance(gloss, str) and gloss.strip():
+                    definitions.append({
+                        "definition_en": gloss.strip(),
+                        "definition_vi": vi_trans_str,
+                        "example": example_text,
+                        "source": "Kaikki/Wiktionary"
+                    })
 
         return {
             "lemma": word.lower(),

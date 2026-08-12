@@ -22,11 +22,10 @@ class ChunkExtractor:
             except Exception:
                 self.nlp = spacy.blank("en")
 
-    def extract_collocations(self, text: str) -> List[Dict[str, str]]:
+    def extract_collocations_from_doc(self, doc) -> List[Dict[str, str]]:
         """
-        Extracts collocations such as Verb + Object Noun and Verb + Preposition.
+        Extracts collocations from an existing spaCy Doc object.
         """
-        doc = self.nlp(text)
         collocations = []
 
         for token in doc:
@@ -63,3 +62,10 @@ class ChunkExtractor:
                     })
 
         return collocations
+
+    def extract_collocations(self, text: str) -> List[Dict[str, str]]:
+        """
+        Extracts collocations such as Verb + Object Noun, Phrasal Verbs, and Noun Chunks.
+        """
+        doc = self.nlp(text)
+        return self.extract_collocations_from_doc(doc)

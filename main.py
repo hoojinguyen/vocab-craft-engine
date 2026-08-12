@@ -787,10 +787,10 @@ def run_pipeline():
             ipa_uk = item["ipa_uk"]
             ipa_us = item["ipa_us"]
 
-            final_ipa_us = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_us, fast_only=True)
-            final_ipa_uk = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_uk, fast_only=True)
-
             cefr_lvl, freq_rank = grader.grade_word(lemma)
+
+            final_ipa_us = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_us, fast_only=True, frequency_rank=freq_rank)
+            final_ipa_uk = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_uk, fast_only=True, frequency_rank=freq_rank)
 
             words_batch.append({
                 "lemma": lemma,
@@ -800,9 +800,6 @@ def run_pipeline():
                 "frequency_rank": freq_rank,
                 "cefr_level": cefr_lvl
             })
-
-            for def_item in item["definitions"]:
-                pending_definitions.append((lemma, def_item))
 
             if len(words_batch) >= 5000:
                 db_manager.insert_words_batch(words_batch)
@@ -818,26 +815,27 @@ def run_pipeline():
 
         logger.info("[Step 2/5] Completed words ingestion: %s words stored.", f"{words_count:,}")
 
-        # Ingest definitions using pre-loaded lemma_map
-        logger.info("   -> Staging definitions and Vietnamese translations...")
+        # Ingest definitions using streaming batches and pre-loaded lemma_map
+        logger.info("   -> Staging definitions and Vietnamese translations in streaming batches...")
         cursor.execute("SELECT lemma, id FROM words;")
         lemma_map = dict(cursor.fetchall())
 
-        for lemma, def_item in pending_definitions:
-            word_id = lemma_map.get(lemma)
+        for item in kaikki_parser.parse_stream_unified():
+            word_id = lemma_map.get(item["lemma"])
             if word_id:
-                definitions_batch.append({
-                    "word_id": word_id,
-                    "definition_en": def_item["definition_en"],
-                    "definition_vi": def_item.get("definition_vi"),
-                    "example": def_item.get("example"),
-                    "source": def_item["source"]
-                })
+                for def_item in item["definitions"]:
+                    definitions_batch.append({
+                        "word_id": word_id,
+                        "definition_en": def_item["definition_en"],
+                        "definition_vi": def_item.get("definition_vi"),
+                        "example": def_item.get("example"),
+                        "source": def_item["source"]
+                    })
 
-                if len(definitions_batch) >= 5000:
-                    db_manager.insert_definitions_batch(definitions_batch)
-                    definitions_count += len(definitions_batch)
-                    definitions_batch = []
+                    if len(definitions_batch) >= 5000:
+                        db_manager.insert_definitions_batch(definitions_batch)
+                        definitions_count += len(definitions_batch)
+                        definitions_batch = []
 
         if definitions_batch:
             db_manager.insert_definitions_batch(definitions_batch)
@@ -910,32 +908,23 @@ def run_pipeline():
         texts = [s[1] for s in sample_sentences if s[1]]
 
         for doc in chunk_extractor.nlp.pipe(texts, batch_size=1000):
-            for token in doc:
-                if token.pos_ == "VERB":
-                    for child in token.children:
-                        if child.dep_ in ("dobj", "obj") and child.pos_ == "NOUN":
-                            phrase = f"{token.lemma_} {child.lemma_}".lower()
-                            pos_pattern = "verb + noun"
-                        elif child.dep_ in ("prep", "prt") and child.pos_ in ("ADP", "PART"):
-                            phrase = f"{token.lemma_} {child.text}".lower()
-                            pos_pattern = "phrasal verb"
-                        else:
-                            continue
+            chunks = chunk_extractor.extract_collocations_from_doc(doc)
+            for chunk in chunks:
+                phrase = chunk["phrase"]
+                if phrase not in seen_phrases:
+                    seen_phrases.add(phrase)
+                    c_level, _ = grader.grade_word(phrase.split()[0] if phrase else "the")
+                    vi_gloss = offline_extractor.get_translation(phrase)
+                    colloc_batch.append({
+                        "phrase": phrase,
+                        "meaning_vi": vi_gloss,
+                        "pos_pattern": chunk["pos_pattern"],
+                        "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2") else "B1"
+                    })
 
-                        if phrase not in seen_phrases:
-                            seen_phrases.add(phrase)
-                            c_level, _ = grader.grade_word(phrase.split()[0] if phrase else "the")
-                            vi_gloss = offline_extractor.get_translation(phrase)
-                            colloc_batch.append({
-                                "phrase": phrase,
-                                "meaning_vi": vi_gloss,
-                                "pos_pattern": pos_pattern,
-                                "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2") else "B1"
-                            })
-
-                        if len(colloc_batch) >= 1000:
-                            db_manager.insert_collocations_batch(colloc_batch)
-                            colloc_batch = []
+                if len(colloc_batch) >= 1000:
+                    db_manager.insert_collocations_batch(colloc_batch)
+                    colloc_batch = []
 
         if colloc_batch:
             db_manager.insert_collocations_batch(colloc_batch)
