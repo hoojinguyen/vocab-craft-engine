@@ -485,9 +485,8 @@ def test_classify_relations_matches_expected(conn):
     assert ("happy", "synonym", "glad") in rows
     assert ("happy", "antonym", "sad") in rows
     assert ("happy", "hypernym", "emotion") in rows
-    assert ("run", "synonym", "sprint") in rows
-    assert ("run", "synonym", "operate") in rows
-    assert len(rows) == 5
+    assert ("run", "synonym", "sprint") in rows  # sense-level
+    assert len(rows) == 4  # fixture has 4 relations (no "operate")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
