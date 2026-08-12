@@ -109,3 +109,27 @@ def test_extract_fields_definition_vi_none_without_vietnamese_translation():
     parsed = KaikkiParser.extract_fields(item)
     assert parsed["vi_translations"] is None
     assert parsed["definitions"][0]["definition_vi"] is None
+
+
+def test_parse_stream_unified(tmp_path: Path):
+    kaikki_file = tmp_path / "kaikki_sample.json"
+    sample_entry = {
+        "word": "abandon",
+        "pos": "verb",
+        "sounds": [{"ipa": "/əˈbændən/", "tags": ["UK"]}],
+        "senses": [{"glosses": ["To give up completely."], "tags": []}],
+        "relations": [{"type": "synonym", "word": "relinquish"}],
+        "topics": ["psychology"]
+    }
+    kaikki_file.write_text(json.dumps(sample_entry) + "\n", encoding="utf-8")
+
+    parser = KaikkiParser(kaikki_file)
+    records = list(parser.parse_stream_unified())
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["lemma"] == "abandon"
+    assert rec["pos"] == "verb"
+    assert len(rec["definitions"]) == 1
+    assert len(rec["relations"]) == 1
+    assert len(rec["topics"]) == 1
+
