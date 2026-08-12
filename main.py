@@ -240,7 +240,9 @@ def run_quiz_step(db_mgr: DatabaseManager, args=None) -> int:
         SELECT w.id, w.lemma, w.pos, w.cefr_level, d.definition_vi
         FROM words w
         LEFT JOIN definitions d ON d.word_id = w.id AND d.definition_vi IS NOT NULL
-        GROUP BY w.id;
+        WHERE w.frequency_rank <= 50000
+        GROUP BY w.id
+        LIMIT 50000;
     """)
     words = [
         {
