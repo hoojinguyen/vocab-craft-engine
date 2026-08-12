@@ -21,17 +21,17 @@ def conn(tmp_path):
 
 def test_read_landing_counts_entries_and_skips_corrupt(conn):
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 5  # 7 lines total: 1 corrupt skipped + 1 empty-word filtered
+    assert n == 6  # 8 lines total: 1 corrupt skipped + 1 empty-word filtered
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 5
+    assert n == 6
 
 
 def test_read_landing_is_idempotent(conn):
     read_kaikki_landing(conn, FIXTURE)
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 5
+    assert n == 6
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 5
+    assert n == 6
 
 
 def test_classify_words_matches_expected(conn):
@@ -44,4 +44,5 @@ def test_classify_words_matches_expected(conn):
     assert ("happy", "adj", "/ˈhæpi/") in rows
     assert ("run", "verb", None) in rows  # no sounds on run
     assert ("xyzzy", "noun", None) in rows
-    assert len(rows) == 4  # kick the bucket excluded (phrase)
+    assert ("colour", "noun", "/ˈkʌl.ɚ/") in rows  # untagged fallback for uk, US override
+    assert len(rows) == 5  # kick the bucket excluded (phrase)
