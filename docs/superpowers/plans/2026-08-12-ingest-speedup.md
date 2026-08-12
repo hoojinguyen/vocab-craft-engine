@@ -1,6 +1,6 @@
 # Ingest Speedup — DuckDB-Native Kaikki Ingestion Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Replace the ~2-hour Python-streaming Kaikki ingest with pure DuckDB SQL ingestion (native `read_json` + vectorized classification), bringing Stage 1 under 5 minutes while keeping `KaikkiSinglePassParser` as fallback/oracle.
 
@@ -46,7 +46,7 @@ tests/
 - Create: `tests/fixtures/kaikki_sample.jsonl`
 - Create: `tests/test_kaikki_sql.py` (first test)
 
-- [ ] **Step 1: Write the shared fixture**
+- [x] **Step 1: Write the shared fixture**
 
 `tests/fixtures/kaikki_sample.jsonl` (one JSON object per line — covers words, phrases, sense-level relations, top-level relations, topics, IPA UK/US, VI translations, empty glosses with raw_glosses fallback, corrupt line):
 
@@ -71,7 +71,7 @@ Expected fixture semantics (matches `KaikkiSinglePassParser`):
 - VI: happy→"vui vẻ", run→"chạy"
 - corrupt line: skipped (1 skipped line)
 
-- [ ] **Step 2: Write the failing landing-read test**
+- [x] **Step 2: Write the failing landing-read test**
 
 `tests/test_kaikki_sql.py`:
 
@@ -106,12 +106,12 @@ def test_read_landing_counts_entries_and_skips_corrupt(conn):
     assert n == 5  # 6 lines, 1 corrupt skipped
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_read_landing_counts_entries_and_skips_corrupt -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.ingestion.kaikki_sql'`
 
-- [ ] **Step 4: Implement `read_kaikki_landing`**
+- [x] **Step 4: Implement `read_kaikki_landing`**
 
 `src/ingestion/kaikki_sql.py`:
 
@@ -182,12 +182,12 @@ def read_kaikki_landing(conn: duckdb.DuckDBPyConnection, jsonl_path: Path) -> in
     return n
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_read_landing_counts_entries_and_skips_corrupt -v`
 Expected: PASS (1 passed)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py tests/fixtures/kaikki_sample.jsonl
@@ -202,7 +202,7 @@ git commit -m "feat(ingestion): native DuckDB read into raw_kaikki landing table
 - Modify: `src/ingestion/kaikki_sql.py`
 - Modify: `tests/test_kaikki_sql.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -220,12 +220,12 @@ def test_classify_words_matches_expected(conn):
     assert len(rows) == 4  # kick the bucket excluded (phrase)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_words_matches_expected -v`
 Expected: FAIL — `ImportError: cannot import name 'ingest_words_sql'`
 
-- [ ] **Step 3: Implement `ingest_words_sql`**
+- [x] **Step 3: Implement `ingest_words_sql`**
 
 Add to `src/ingestion/kaikki_sql.py`:
 
@@ -263,12 +263,12 @@ def ingest_words_sql(conn: duckdb.DuckDBPyConnection) -> int:
     return n
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_words_matches_expected -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py
@@ -283,7 +283,7 @@ git commit -m "feat(ingestion): SQL words classification with IPA extraction"
 - Modify: `src/ingestion/kaikki_sql.py`
 - Modify: `tests/test_kaikki_sql.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -301,12 +301,12 @@ def test_classify_definitions_matches_expected(conn):
     assert len(rows) == 4
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_definitions_matches_expected -v`
 Expected: FAIL — `ImportError: cannot import name 'ingest_definitions_sql'`
 
-- [ ] **Step 3: Implement `ingest_definitions_sql`**
+- [x] **Step 3: Implement `ingest_definitions_sql`**
 
 Add to `src/ingestion/kaikki_sql.py`:
 
@@ -354,12 +354,12 @@ def ingest_definitions_sql(conn: duckdb.DuckDBPyConnection) -> int:
 
 Note: `first(g)` / `first(e)` in DuckDB returns the first non-null value in the aggregate, but the `WHERE g != ''` filter handles empty glosses; `first()` is order-dependent within UNNEST so it preserves traversal order.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_definitions_matches_expected -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py
@@ -374,7 +374,7 @@ git commit -m "feat(ingestion): SQL definitions classification with gloss fallba
 - Modify: `src/ingestion/kaikki_sql.py`
 - Modify: `tests/test_kaikki_sql.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -389,12 +389,12 @@ def test_classify_phrases_matches_expected(conn):
     assert len(rows) == 1
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_phrases_matches_expected -v`
 Expected: FAIL — `ImportError: cannot import name 'ingest_phrases_sql'`
 
-- [ ] **Step 3: Implement `ingest_phrases_sql`**
+- [x] **Step 3: Implement `ingest_phrases_sql`**
 
 Add to `src/ingestion/kaikki_sql.py`:
 
@@ -451,12 +451,12 @@ def ingest_phrases_sql(conn: duckdb.DuckDBPyConnection) -> int:
 
 Note: `GROUP BY word, pos` collapses duplicate senses per phrase; `HAVING` enforces the definition requirement. `regexp_matches` uses the same pattern class as Python's `^[a-zA-Z '.-]+$` (anchored, one-or-more clean chars).
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_phrases_matches_expected -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py
@@ -471,7 +471,7 @@ git commit -m "feat(ingestion): SQL phrases classification"
 - Modify: `src/ingestion/kaikki_sql.py`
 - Modify: `tests/test_kaikki_sql.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -489,12 +489,12 @@ def test_classify_relations_matches_expected(conn):
     assert len(rows) == 4  # fixture has 4 relations (no "operate")
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_relations_matches_expected -v`
 Expected: FAIL — `ImportError: cannot import name 'ingest_relations_sql'`
 
-- [ ] **Step 3: Implement `ingest_relations_sql`**
+- [x] **Step 3: Implement `ingest_relations_sql`**
 
 Add to `src/ingestion/kaikki_sql.py`:
 
@@ -571,12 +571,12 @@ def ingest_relations_sql(conn: duckdb.DuckDBPyConnection) -> int:
 
 Note: `ordinal` column differentiates top-level (0) from sense-level (1) for deterministic ordering; `QUALIFY rn <= 25` enforces the cap after dedupe via `row_number()` partitioning. The `UNION ALL` + `row_number` handles the dedupe because duplicate `(lemma, relation_type, target_text)` rows collapse in `raw_relations`'s `INSERT OR IGNORE` semantics of the final table — the `QUALIFY` runs before insert.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_relations_matches_expected -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py
@@ -591,7 +591,7 @@ git commit -m "feat(ingestion): SQL relations classification with cap and dedupe
 - Modify: `src/ingestion/kaikki_sql.py`
 - Modify: `tests/test_kaikki_sql.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -607,12 +607,12 @@ def test_classify_topics_matches_expected(conn):
     assert len(rows) == 2
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_topics_matches_expected -v`
 Expected: FAIL — `ImportError: cannot import name 'ingest_topics_sql'`
 
-- [ ] **Step 3: Implement `ingest_topics_sql`**
+- [x] **Step 3: Implement `ingest_topics_sql`**
 
 Add to `src/ingestion/kaikki_sql.py`:
 
@@ -641,12 +641,12 @@ def ingest_topics_sql(conn: duckdb.DuckDBPyConnection) -> int:
     return n
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_classify_topics_matches_expected -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py
@@ -661,7 +661,7 @@ git commit -m "feat(ingestion): SQL topics classification"
 - Modify: `src/ingestion/kaikki_sql.py`
 - Modify: `tests/test_kaikki_sql.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -679,12 +679,12 @@ def test_backfill_vi_translations_matches_expected(conn):
     assert ("xyzzy", None) in rows
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_backfill_vi_translations_matches_expected -v`
 Expected: FAIL — `ImportError: cannot import name 'ingest_vi_translations_sql'`
 
-- [ ] **Step 3: Implement `ingest_vi_translations_sql`**
+- [x] **Step 3: Implement `ingest_vi_translations_sql`**
 
 Add to `src/ingestion/kaikki_sql.py`:
 
@@ -724,12 +724,12 @@ def ingest_vi_translations_sql(conn: duckdb.DuckDBPyConnection) -> int:
     return n
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_backfill_vi_translations_matches_expected -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py
@@ -744,7 +744,7 @@ git commit -m "feat(ingestion): SQL VI translation backfill on raw_words"
 - Modify: `src/ingestion/kaikki_sql.py`
 - Modify: `tests/test_kaikki_sql.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -768,12 +768,12 @@ def test_drop_landing_removes_table(conn):
     assert tables == []
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_ingest_kaikki_sql_runs_all_steps tests/test_kaikki_sql.py::test_drop_landing_removes_table -v`
 Expected: FAIL — `ImportError: cannot import name 'ingest_kaikki_sql'` / `cannot import name 'drop_landing'`
 
-- [ ] **Step 3: Implement orchestrator + drop**
+- [x] **Step 3: Implement orchestrator + drop**
 
 Add to `src/ingestion/kaikki_sql.py`:
 
@@ -804,12 +804,12 @@ def drop_landing(conn: duckdb.DuckDBPyConnection):
     logger.info("Landing table dropped.")
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py -v`
 Expected: PASS (7 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py
@@ -824,7 +824,7 @@ git commit -m "feat(ingestion): ingest_kaikki_sql orchestrator and landing clean
 - Modify: `src/ingestion/kaikki_sql.py`
 - Modify: `tests/test_kaikki_sql.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -843,12 +843,12 @@ def test_validation_gate_passes_on_fixture(tmp_path):
     assert result.diffs == {}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_validation_gate_passes_on_fixture -v`
 Expected: FAIL — `ImportError: cannot import name 'validate_sql_vs_python'`
 
-- [ ] **Step 3: Implement the gate**
+- [x] **Step 3: Implement the gate**
 
 Add to `src/ingestion/kaikki_sql.py`:
 
@@ -976,17 +976,17 @@ def validate_sql_vs_python(
     return ValidationResult(passed=passed, diffs=diffs)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_validation_gate_passes_on_fixture -v`
 Expected: PASS
 
-- [ ] **Step 5: Run full new test file**
+- [x] **Step 5: Run full new test file**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py -v`
 Expected: PASS (8 tests)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ingestion/kaikki_sql.py tests/test_kaikki_sql.py
@@ -1000,7 +1000,7 @@ git commit -m "feat(ingestion): validation gate diffing SQL path vs Python parse
 **Files:**
 - Modify: `src/stages/stage_1_ingest.py:48-73` (`_ingest_kaikki`)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_kaikki_sql.py`:
 
@@ -1044,12 +1044,12 @@ def test_stage1_uses_sql_path_when_gate_passes(tmp_path, monkeypatch):
     assert called["py"] == 0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_stage1_uses_sql_path_when_gate_passes -v`
 Expected: FAIL — attribute error (`stage_1_ingest` has no `_validate_sql_path`)
 
-- [ ] **Step 3: Rewrite `_ingest_kaikki` in `src/stages/stage_1_ingest.py`**
+- [x] **Step 3: Rewrite `_ingest_kaikki` in `src/stages/stage_1_ingest.py`**
 
 Replace lines 48-73 with:
 
@@ -1111,17 +1111,17 @@ import duckdb
 from src.ingestion.kaikki_sql import ingest_kaikki_sql, drop_landing, validate_sql_vs_python
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/test_kaikki_sql.py::test_stage1_uses_sql_path_when_gate_passes -v`
 Expected: PASS
 
-- [ ] **Step 5: Run full test suite**
+- [x] **Step 5: Run full test suite**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/ -q`
 Expected: 152 previously passing + new tests all PASS (the 25 legacy failures are pre-existing, tracked as sub-project #2)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/stages/stage_1_ingest.py tests/test_kaikki_sql.py
@@ -1136,7 +1136,7 @@ git commit -m "feat(stages): Stage 1 Kaikki uses SQL fast path with Python fallb
 - Create: `tests/test_kaikki_sql_benchmark.py`
 - Modify: `Makefile`
 
-- [ ] **Step 1: Write the marked benchmark test**
+- [x] **Step 1: Write the marked benchmark test**
 
 `tests/test_kaikki_sql_benchmark.py`:
 
@@ -1166,12 +1166,12 @@ def test_full_kaikki_sql_ingest_under_3_minutes(tmp_path):
     assert elapsed < 180, f"Kaikki SQL ingest took {elapsed:.1f}s — target < 3 min"
 ```
 
-- [ ] **Step 2: Run test to verify it's skipped by default**
+- [x] **Step 2: Run test to verify it's skipped by default**
 
 Run: `NLTK_DISABLE_IMPORT_SECURITY=1 .venv/bin/pytest tests/ -q -m "not slow"`
 Expected: PASS — benchmark test skipped (marker not configured → warning only, test still collected). If pytest errors on unknown marker, add to `pyproject.toml` `[tool.pytest.ini_options] markers = ["slow: full-dump benchmark"]`.
 
-- [ ] **Step 3: Add Makefile target**
+- [x] **Step 3: Add Makefile target**
 
 `Makefile` — append:
 
@@ -1182,7 +1182,7 @@ benchmark-ingest:
 	$(PYTHON) -m pytest tests/test_kaikki_sql_benchmark.py -v -s -k full_kaikki
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/test_kaikki_sql_benchmark.py Makefile pyproject.toml
