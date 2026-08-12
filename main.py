@@ -50,6 +50,7 @@ from src.nlp.offline_gloss_extractor import OfflineGlossExtractor
 from src.ingestion.relation_parser import RelationParser
 from src.nlp.pattern_extractor import GrammarPatternExtractor
 from src.nlp.quiz_builder import QuizBuilder
+from src.nlp.parallel_processor import ParallelProcessor
 
 RELATION_CHECKPOINT = 50_000
 TOPIC_CHECKPOINT = 1_000
@@ -95,6 +96,8 @@ def parse_arguments():
                         help="Max MT translation attempts per run for Step 4I backfill (re-run resumes).")
     parser.add_argument("--build-core-pack", action="store_true",
                         help="Build the curated Core 3000 word pack (core_3000.db + report).")
+    parser.add_argument("--no-parallel", action="store_true",
+                        help="Disable multi-core parallel NLP processing.")
     return parser.parse_args()
 
 
@@ -108,42 +111,37 @@ def run_pattern_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
     cursor = conn.cursor()
 
     cursor.execute("SELECT id, text_en, text_vi FROM sentences;")
-
-    extractor = GrammarPatternExtractor()
-    patterns_dict: Dict[str, Dict[str, Any]] = {}
-    mappings_list: List[Dict[str, Any]] = []
-    total_processed = 0
-
-    while True:
-        sentences = cursor.fetchmany(10000)
-        if not sentences:
-            break
-        total_processed += len(sentences)
-        for s_id, text_en, text_vi in sentences:
-            if not text_en:
-                continue
-            matches = extractor.extract_patterns(text_en)
-            for match in matches:
-                p_name = match["pattern_name"]
-                if p_name not in patterns_dict:
-                    patterns_dict[p_name] = {
-                        "pattern_name": p_name,
-                        "structure_json": match["structure_json"],
-                        "example_en": None,
-                        "example_vi": None,
-                        "cefr_level": match["cefr_level"]
-                    }
-                mappings_list.append({
-                    "pattern_name": p_name,
-                    "sentence_id": s_id,
-                    "matched_tokens_json": match["matched_tokens_json"]
-                })
-
-    if total_processed == 0:
+    sentences = cursor.fetchall()
+    if not sentences:
         logger.info("   [4C] No sentences found in database — skipping pattern extraction.")
         return (0, 0)
 
+    total_processed = len(sentences)
     logger.info("   [4C] Extracting Grammar Sentence Patterns across %s sentences...", f"{total_processed:,}")
+
+    disable_parallel = getattr(args, "no_parallel", False) if args else False
+    processor = ParallelProcessor(disable_parallel=disable_parallel)
+    extracted_matches = processor.process_pattern_extraction(sentences)
+
+    patterns_dict: Dict[str, Dict[str, Any]] = {}
+    mappings_list: List[Dict[str, Any]] = []
+
+    for match in extracted_matches:
+        p_name = match["pattern_name"]
+        s_id = match["sentence_id"]
+        if p_name not in patterns_dict:
+            patterns_dict[p_name] = {
+                "pattern_name": p_name,
+                "structure_json": match["structure_json"],
+                "example_en": None,
+                "example_vi": None,
+                "cefr_level": match["cefr_level"]
+            }
+        mappings_list.append({
+            "pattern_name": p_name,
+            "sentence_id": s_id,
+            "matched_tokens_json": match["matched_tokens_json"]
+        })
 
     if patterns_dict:
         db_mgr.insert_sentence_patterns_batch(list(patterns_dict.values()))
@@ -668,25 +666,33 @@ def _clear_sentence_link_checkpoint() -> None:
     SENTENCE_LINK_CHECKPOINT.unlink(missing_ok=True)
 
 
-def _link_sentences_incrementally(db_manager, checkpoint: Path) -> None:
+def _link_sentences_incrementally(db_manager, checkpoint: Path, args=None) -> None:
     """Links sentences with id > last_linked to words, then writes back the checkpoint."""
     last_linked = _read_sentence_link_checkpoint(checkpoint)
-    lemmatizer = Lemmatizer()
+    disable_parallel = getattr(args, "no_parallel", False) if args else False
+    processor = ParallelProcessor(disable_parallel=disable_parallel)
+
     map_batch = []
     new_max = last_linked
     cursor = db_manager.get_connection().cursor()
     lemma_to_id = {lemma: word_id for lemma, word_id in cursor.execute("SELECT lemma, id FROM words;").fetchall()}
     cursor.execute("SELECT id, text_en FROM sentences WHERE id > ? ORDER BY id;", (last_linked,))
-    for s_id, text_en in cursor.fetchall():
-        lemmas = lemmatizer.lemmatize_text(text_en)
-        for lem in lemmas:
-            word_id = lemma_to_id.get(lem["lemma"])
-            if word_id:
-                map_batch.append({"word_id": word_id, "sentence_id": s_id})
+    sentences = cursor.fetchall()
+    if not sentences:
+        return
+
+    lemmatized = processor.process_sentence_lemmatization(sentences)
+    for item in lemmatized:
+        s_id = item["sentence_id"]
+        lem = item["lemma"]
+        word_id = lemma_to_id.get(lem)
+        if word_id:
+            map_batch.append({"word_id": word_id, "sentence_id": s_id})
         new_max = max(new_max, s_id)
         if len(map_batch) >= 5000:
             db_manager.insert_word_sentence_map_batch(map_batch)
             map_batch = []
+
     if map_batch:
         db_manager.insert_word_sentence_map_batch(map_batch)
     if new_max > last_linked:
@@ -912,7 +918,7 @@ def run_pipeline():
 
     # 4B. Word-Sentence Mapping & Lemmatization (incremental since checkpoint)
     logger.info("   [4B] Linking Word-Sentence Mappings (incremental)...")
-    _link_sentences_incrementally(db_manager, SENTENCE_LINK_CHECKPOINT)
+    _link_sentences_incrementally(db_manager, SENTENCE_LINK_CHECKPOINT, args=args)
     cursor.execute("SELECT count(*) FROM word_sentence_map;")
     map_count = cursor.fetchone()[0]
     logger.info("   [4B] Linked sentences to %s word links.", f"{map_count:,}")
