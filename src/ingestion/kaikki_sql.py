@@ -56,7 +56,7 @@ def read_kaikki_landing(conn: duckdb.DuckDBPyConnection, jsonl_path: Path) -> in
             ignore_errors=true,
             columns={LANDING_COLUMNS}
         )
-        WHERE word IS NOT NULL
+        WHERE NULLIF(TRIM(word), '') IS NOT NULL
         """
     )
     n = conn.execute(f"SELECT count(*) FROM {LANDING_TABLE}").fetchone()[0]

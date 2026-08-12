@@ -18,6 +18,15 @@ def conn(tmp_path):
 
 
 def test_read_landing_counts_entries_and_skips_corrupt(conn):
-    read_kaikki_landing(conn, FIXTURE)
+    n = read_kaikki_landing(conn, FIXTURE)
+    assert n == 5  # 7 lines total: 1 corrupt skipped + 1 empty-word filtered
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 5  # 6 lines, 1 corrupt skipped
+    assert n == 5
+
+
+def test_read_landing_is_idempotent(conn):
+    read_kaikki_landing(conn, FIXTURE)
+    n = read_kaikki_landing(conn, FIXTURE)
+    assert n == 5
+    n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
+    assert n == 5

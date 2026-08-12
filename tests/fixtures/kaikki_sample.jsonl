@@ -3,4 +3,5 @@
 {"word": "kick the bucket", "pos": "idiom", "senses": [{"glosses": ["to die"]}]}
 {"word": "run", "pos": "verb", "senses": [{"glosses": [], "raw_glosses": ["to move fast"], "examples": ["Run!"], "synonyms": [{"word": "sprint"}]}, {"glosses": ["to manage"], "topics": ["business"]}], "translations": [{"lang": "Vietnamese", "word": "chạy"}]}
 {"word": "xyzzy", "pos": "noun", "senses": [], "sounds": [], "translations": []}
+{"word": "", "pos": "noun", "senses": []}
 {"this line is not valid json
