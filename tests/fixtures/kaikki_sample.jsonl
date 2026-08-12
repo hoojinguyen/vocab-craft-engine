@@ -1,0 +1,6 @@
+{"word": "hello", "pos": "intj", "sounds": [{"ipa": "/həˈloʊ/", "tags": ["US"]}], "senses": [{"glosses": ["a greeting"], "examples": [{"text": "Hello world!"}]}]}
+{"word": "happy", "pos": "adj", "sounds": [{"ipa": "/ˈhæpi/", "tags": ["US"]}], "senses": [{"glosses": ["feeling joy"], "topics": ["emotion"]}], "synonyms": [{"word": "glad"}], "antonyms": [{"word": "sad"}], "hypernyms": [{"word": "emotion"}], "translations": [{"code": "vi", "lang": "Vietnamese", "word": "vui vẻ"}]}
+{"word": "kick the bucket", "pos": "idiom", "senses": [{"glosses": ["to die"]}]}
+{"word": "run", "pos": "verb", "senses": [{"glosses": [], "raw_glosses": ["to move fast"], "examples": ["Run!"], "synonyms": [{"word": "sprint"}]}, {"glosses": ["to manage"], "topics": ["business"]}], "translations": [{"lang": "Vietnamese", "word": "chạy"}]}
+{"word": "xyzzy", "pos": "noun", "senses": [], "sounds": [], "translations": []}
+{"this line is not valid json
