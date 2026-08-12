@@ -8,6 +8,7 @@ import pytest
 from src.db.duckdb_manager import SCHEMA_SQL
 from src.ingestion.kaikki_sql import (
     ingest_definitions_sql,
+    ingest_phrases_sql,
     ingest_words_sql,
     read_kaikki_landing,
 )
@@ -64,3 +65,13 @@ def test_classify_words_matches_expected(conn):
     assert ("xyzzy", "noun", None) in rows
     assert ("colour", "noun", "/ˈkʌl.ɚ/") in rows  # untagged fallback for uk, US override
     assert len(rows) == 5  # kick the bucket excluded (phrase)
+
+
+def test_classify_phrases_matches_expected(conn):
+    read_kaikki_landing(conn, FIXTURE)
+    ingest_phrases_sql(conn)
+    rows = conn.execute(
+        "SELECT phrase, phrase_type, definition_en FROM raw_phrases"
+    ).fetchall()
+    assert ("kick the bucket", "idiom", "to die") in rows
+    assert len(rows) == 1

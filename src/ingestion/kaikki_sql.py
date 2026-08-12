@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 LANDING_TABLE = "raw_kaikki"
 
+PHRASE_POS_ALLOWED = ("idiom", "phrasal verb", "proverb", "phrase")
+MAX_WORDS_PER_PHRASE = 6
+CLEAN_CHARS_PATTERN = "^[a-zA-Z '.-]+$"
+
+_PHRASE_POS_LIST = "(" + ", ".join(f"'{p}'" for p in PHRASE_POS_ALLOWED) + ")"
+
 LANDING_COLUMNS = """{
     'word': 'VARCHAR',
     'pos': 'VARCHAR',
@@ -161,6 +167,67 @@ def ingest_definitions_sql(conn: duckdb.DuckDBPyConnection) -> int:
     )
     n = conn.execute("SELECT count(*) FROM raw_definitions").fetchone()[0]
     logger.info("Definitions classified: %d", n)
+    return n
+
+
+def ingest_phrases_sql(conn: duckdb.DuckDBPyConnection) -> int:
+    """Classify multiword entries into raw_phrases.
+
+    Mirrors KaikkiSinglePassParser._extract_phrase exactly:
+    - is_phrase: space in word AND pos in allowed set (pos lowercased+trimmed)
+    - word: TRIM(LOWER(word)); must contain space
+    - <=6 words unless pos = proverb (whitespace-run split, like str.split)
+    - regex ^[a-zA-Z '.-]+$ on the cleaned (trimmed) word
+    - definition_en: first non-empty trimmed gloss, first sense that has one
+      (glosses preferred, raw_glosses fallback); skip if none
+    - ipa: first sound with truthy ipa (no tag filtering, no trim)
+    - phrase_type = pos.replace(' ', '_')
+    - INSERT OR IGNORE: phrase is UNIQUE; the dump can repeat a phrase
+      (e.g. "et al." twice), same as ingest_words_sql dedupes by lemma
+    """
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO raw_phrases (phrase, phrase_type, pos, definition_en, ipa)
+        SELECT
+            TRIM(LOWER(t.word)) AS phrase,
+            replace(LOWER(TRIM(COALESCE(t.pos, ''))), ' ', '_') AS phrase_type,
+            LOWER(TRIM(COALESCE(t.pos, ''))) AS pos,
+            glosses.definition_en,
+            (SELECT list_extract(
+                list_filter(
+                    [COALESCE(e->>'ipa', '')
+                     FOR e IN CAST(t.sounds AS JSON[])],
+                    x -> x != ''),
+                1)) AS ipa
+        FROM {LANDING_TABLE} t
+        CROSS JOIN LATERAL (
+            SELECT definition_en
+            FROM (
+                SELECT
+                    list_extract(
+                        list_filter(
+                            [COALESCE(CAST(gl AS VARCHAR), '')
+                             FOR gl IN CAST(
+                                 CASE WHEN len(CAST(s.elt->'glosses' AS VARCHAR[])) > 0
+                                      THEN CAST(s.elt->'glosses' AS VARCHAR[])
+                                      ELSE CAST(s.elt->'raw_glosses' AS VARCHAR[]) END
+                             AS VARCHAR[])],
+                            x -> TRIM(x) != ''),
+                        1) AS definition_en
+                FROM UNNEST(CAST(t.senses AS JSON[])) AS s(elt)
+            ) per_sense
+            WHERE per_sense.definition_en IS NOT NULL
+            LIMIT 1
+        ) glosses
+        WHERE position(' ' in TRIM(t.word)) > 0
+          AND LOWER(TRIM(COALESCE(t.pos, ''))) IN {_PHRASE_POS_LIST}
+          AND (len(string_split_regex(TRIM(t.word), '\\s+')) <= {MAX_WORDS_PER_PHRASE}
+               OR LOWER(TRIM(COALESCE(t.pos, ''))) = 'proverb')
+          AND regexp_matches(TRIM(t.word), '{CLEAN_CHARS_PATTERN.replace("'", "''")}')
+        """
+    )
+    n = conn.execute("SELECT count(*) FROM raw_phrases").fetchone()[0]
+    logger.info("Phrases classified: %d", n)
     return n
 
 
