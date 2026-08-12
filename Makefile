@@ -12,7 +12,7 @@ PYTEST = $(VENV_DIR)/bin/pytest
 # Since .venv lives inside the repo, everything is blocked (false positive).
 export NLTK_DISABLE_IMPORT_SECURITY := 1
 
-.PHONY: help setup download-data corpus-download run run-fresh test clean clean-db
+.PHONY: help setup download-data corpus-download run run-fresh run-step benchmark test clean clean-db
 
 help:
 	@echo "========================================================================"
@@ -58,6 +58,14 @@ run-fresh:
 	@echo "==> Starting English Dataset ETL Pipeline (Force Re-ingest)..."
 	$(PYTHON) main.py --force-reset
 
+run-step:
+	@echo "==> Running pipeline stage: $(STEP)..."
+	$(PYTHON) main.py --stage $(STEP)
+
+benchmark:
+	@echo "==> Running benchmark..."
+	time $(PYTHON) main.py --force-reset
+
 .PHONY: core-pack
 
 core-pack:
@@ -69,11 +77,17 @@ test:
 	@echo "==> Running Pytest test suite..."
 	$(PYTEST) -v
 
+benchmark-ingest:
+	@echo "==> Benchmarking Kaikki SQL ingest (full dump)..."
+	$(PYTEST) tests/test_kaikki_sql_benchmark.py -v -s -m slow
+
 clean-db:
-	@echo "==> Deleting old output SQLite database file..."
+	@echo "==> Deleting old output databases..."
 	rm -f data/output/english_dataset.db data/output/english_dataset.db-wal data/output/english_dataset.db-shm
+	rm -f data/processed/staging.duckdb data/processed/staging.duckdb.wal
 	rm -f data/processed/sentence_link_checkpoint.json
-	@echo "==> Old SQLite database successfully deleted."
+	rm -f data/processed/checkpoint_*.json
+	@echo "==> Databases and checkpoints deleted."
 
 clean:
 	@echo "==> Cleaning virtualenv and build caches..."

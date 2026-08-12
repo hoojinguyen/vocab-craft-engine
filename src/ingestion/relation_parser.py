@@ -2,6 +2,8 @@
 Lexical Relation & Topic Parser for English Dataset System Engine.
 Extracts synonyms, antonyms, hypernyms, hyponyms and sense-level topics
 from raw Kaikki dump entries (single-word entries only).
+
+DEPRECATED: Use KaikkiSinglePassParser from src.ingestion.kikki_single_pass instead.
 """
 
 import logging

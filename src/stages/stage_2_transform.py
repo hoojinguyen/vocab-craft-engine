@@ -1,0 +1,181 @@
+"""Stage 2: Transform — CEFR grading, lemmatization, collocations."""
+
+import logging
+from src.pipeline.context import PipelineContext
+
+logger = logging.getLogger(__name__)
+
+
+def stage_2_transform(ctx: PipelineContext):
+    """Apply transforms to DuckDB staging data."""
+    db = ctx.duckdb_conn
+    _apply_cefr_grading(ctx, db)
+    _build_lemma_cache(ctx, db)
+    _link_word_sentences(ctx, db)
+    _grade_sentences_dynamically(ctx, db)
+    _extract_collocations(ctx, db)
+    _build_inverse_relations(db)
+    _map_topics(ctx, db)
+    logger.info("[Stage 2] Transform complete.")
+
+
+def _apply_cefr_grading(ctx: PipelineContext, db):
+    """Apply CEFR grading via vectorized DuckDB SQL."""
+    subtlex_path = ctx.raw_dir / "SUBTLEX_US.csv"
+    conn = db.conn if hasattr(db, "conn") else db
+
+    if not subtlex_path.exists():
+        logger.warning("[Stage 2] SUBTLEX_US.csv not found — skipping CEFR grading.")
+        return
+
+    conn.execute(f"""
+        CREATE TEMP TABLE subtlex_ranked AS
+        SELECT
+            lower(Word) AS word,
+            row_number() OVER (ORDER BY CAST(FREQcount AS DOUBLE) DESC) AS rank
+        FROM read_csv_auto('{subtlex_path}', ignore_errors=true)
+        WHERE Word IS NOT NULL AND Word != '';
+    """)
+
+    conn.execute("""
+        UPDATE raw_words
+        SET
+            frequency_rank = s.rank,
+            cefr_level = CASE
+                WHEN s.rank <= 1000 THEN 'A1'
+                WHEN s.rank <= 3000 THEN 'A2'
+                WHEN s.rank <= 6000 THEN 'B1'
+                WHEN s.rank <= 10000 THEN 'B2'
+                WHEN s.rank <= 16000 THEN 'C1'
+                ELSE 'C2'
+            END
+        FROM subtlex_ranked s
+        WHERE raw_words.lemma = s.word;
+    """)
+
+    conn.execute("DROP TABLE subtlex_ranked;")
+    logger.info("[Stage 2] Vectorized CEFR grading applied in SQL.")
+
+
+def _build_lemma_cache(ctx: PipelineContext, db):
+    """Build in-memory lemma to id cache for fast lookups."""
+    rows = db.query("SELECT id, lemma FROM raw_words").fetchall()
+    ctx.lemma_cache = {lemma: word_id for word_id, lemma in rows}
+    logger.info("[Stage 2] Lemma cache: %d entries.", len(ctx.lemma_cache))
+
+
+def _link_word_sentences(ctx: PipelineContext, db):
+    """Lemmatize sentences using spaCy multi-core stream and link to words."""
+    import spacy
+
+    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+    sentences = db.query("SELECT id, text_en FROM raw_sentences").fetchall()
+    if not sentences:
+        return
+
+    ids, texts = zip(*sentences)
+    map_batch = []
+
+    for s_id, doc in zip(ids, nlp.pipe(texts, batch_size=2000)):
+        for token in doc:
+            lemma = token.lemma_.lower()
+            word_id = ctx.lemma_cache.get(lemma)
+            if word_id:
+                map_batch.append({"word_id": word_id, "sentence_id": s_id})
+
+        if len(map_batch) >= 20_000:
+            db.insert_rows("word_sentence_map", map_batch)
+            map_batch = []
+
+    if map_batch:
+        db.insert_rows("word_sentence_map", map_batch)
+
+    logger.info("[Stage 2] Word-sentence links: %d", db.row_count("word_sentence_map"))
+
+
+def _extract_collocations(ctx: PipelineContext, db):
+    """Extract collocations from sentences."""
+    from src.nlp.chunk_extractor import ChunkExtractor
+    extractor = ChunkExtractor()
+    sentences = db.query("SELECT text_en FROM raw_sentences").fetchall()
+    seen = set()
+    colloc_batch = []
+    for (text_en,) in sentences:
+        chunks = extractor.extract_collocations(text_en)
+        for chunk in chunks:
+            phrase = chunk["phrase"]
+            if phrase not in seen:
+                seen.add(phrase)
+                colloc_batch.append({
+                    "phrase": phrase,
+                    "pos_pattern": chunk["pos_pattern"],
+                    "cefr_level": "B1",
+                    "meaning_vi": None,
+                })
+    db.insert_rows("collocations", colloc_batch)
+    logger.info("[Stage 2] Collocations: %d", db.row_count("collocations"))
+
+
+def _build_inverse_relations(db):
+    """Build inverse hyponym links via SQL set-based operation."""
+    db.execute("""
+        INSERT OR IGNORE INTO raw_relations (lemma, relation_type, target_text, target_word_id, inverted, source)
+        SELECT w.lemma, 'hyponym', rw.lemma, r.lemma, 1, r.source
+        FROM raw_relations r
+        JOIN raw_words w ON w.lemma = r.lemma
+        JOIN raw_words rw ON rw.lemma = r.target_text
+        WHERE r.relation_type = 'hypernym' AND r.inverted = 0
+    """)
+    logger.info("[Stage 2] Inverse relations built.")
+
+
+def _map_topics(ctx: PipelineContext, db):
+    """Map raw topics to curated themes, write to word_topics."""
+    from src.nlp.topic_mapper import TopicMapper
+    topics = db.query("SELECT lemma, raw_topic FROM raw_topics").fetchall()
+    mapped = []
+    seen = set()
+    for lemma, raw_topic in topics:
+        theme = TopicMapper.map_topic(raw_topic)
+        word_id = ctx.lemma_cache.get(lemma)
+        if word_id is None:
+            continue
+        key = (word_id, theme)
+        if key in seen:
+            continue
+        seen.add(key)
+        mapped.append({"word_id": word_id, "topic": theme, "raw_topic": raw_topic})
+    db.insert_rows("word_topics", mapped)
+    logger.info("[Stage 2] Topics mapped: %d", db.row_count("word_topics"))
+
+
+def _grade_sentences_dynamically(ctx: PipelineContext, db):
+    """Compute sentence difficulty_score and cefr_level from constituent word ranks."""
+    conn = db.conn if hasattr(db, "conn") else db
+
+    conn.execute("""
+        UPDATE raw_sentences
+        SET
+            difficulty_score = COALESCE(sub.avg_rank, 2.0),
+            cefr_level = COALESCE(sub.max_cefr, 'B1')
+        FROM (
+            SELECT
+                s.id AS sentence_id,
+                avg(w.frequency_rank) AS avg_rank,
+                max_by(w.cefr_level, CASE w.cefr_level
+                    WHEN 'C2' THEN 6
+                    WHEN 'C1' THEN 5
+                    WHEN 'B2' THEN 4
+                    WHEN 'B1' THEN 3
+                    WHEN 'A2' THEN 2
+                    WHEN 'A1' THEN 1
+                    ELSE 0
+                END) AS max_cefr
+            FROM raw_sentences s
+            JOIN word_sentence_map m ON m.sentence_id = s.id
+            JOIN raw_words w ON w.id = m.word_id
+            GROUP BY s.id
+        ) sub
+        WHERE raw_sentences.id = sub.sentence_id;
+    """)
+    logger.info("[Stage 2] Dynamic sentence difficulty & CEFR levels updated.")

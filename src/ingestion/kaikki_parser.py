@@ -1,6 +1,9 @@
 """
 Kaikki JSON Dictionary Parser for English Dataset System Engine.
 Streams entries from Kaikki.org dictionary dumps (JSON list or JSONL) with low memory usage.
+
+DEPRECATED: Use KaikkiSinglePassParser from src.ingestion.kaikki_single_pass instead.
+This module is kept for backward compatibility with legacy tests only.
 """
 
 import json

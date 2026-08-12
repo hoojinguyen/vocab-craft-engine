@@ -1,0 +1,26 @@
+{"word": "hello", "pos": "intj", "sounds": [{"ipa": "/həˈloʊ/", "tags": ["US"]}], "senses": [{"glosses": ["a greeting"], "examples": [{"text": "Hello world!"}]}]}
+{"word": "happy", "pos": "adj", "sounds": [{"ipa": "/ˈhæpi/", "tags": ["US"]}], "senses": [{"glosses": ["feeling joy"], "topics": ["emotion"]}], "synonyms": [{"word": "glad"}], "antonyms": [{"word": "sad"}], "hypernyms": [{"word": "emotion"}], "translations": [{"code": "vi", "lang": "Vietnamese", "word": "vui vẻ"}]}
+{"word": "kick the bucket", "pos": "idiom", "senses": [{"glosses": ["to die"]}]}
+{"word": "run", "pos": "verb", "senses": [{"glosses": [], "raw_glosses": ["to move fast"], "examples": ["Run!"], "synonyms": [{"word": "sprint"}]}, {"glosses": ["to manage"], "topics": ["business"]}], "translations": [{"lang": "Vietnamese", "word": "chạy"}]}
+{"word": "xyzzy", "pos": "noun", "senses": [], "sounds": [], "translations": []}
+{"word": "", "pos": "noun", "senses": []}
+{"this line is not valid json
+{"word": "colour", "pos": "noun", "sounds": [{"ipa": "/ˈkʌl.ə/"}, {"ipa": "/ˈkʌl.ɚ/", "tags": ["US"]}]}
+{"word": "take off", "pos": "verb", "senses": [{"glosses": ["to remove clothing"]}]}
+{"word": "by and large", "pos": "phrase", "senses": [{"glosses": ["  generally speaking  "]}]}
+{"word": "in a nutshell", "pos": "proverb", "senses": [{"glosses": ["  briefly  ", "in summary"]}]}
+{"word": "bite the bullet", "pos": "idiom", "senses": [{"glosses": ["to face something"]}], "synonyms": [{"word": "endure"}]}
+{"word": "carry out", "pos": "verb", "senses": [{"glosses": ["to perform"]}], "synonyms": [{"word": "perform"}]}
+{"word": "fast", "pos": "adj", "senses": [{"synonyms": [{"word": "quick"}]}], "synonyms": [{"word": "quick"}]}
+{"word": "big", "pos": "adj", "synonyms": [{"word": "ba"},{"word": "bb"},{"word": "bc"},{"word": "bd"},{"word": "be"},{"word": "bf"},{"word": "bg"},{"word": "bh"},{"word": "bi"},{"word": "bj"},{"word": "bk"},{"word": "bl"},{"word": "bm"},{"word": "bn"},{"word": "bo"},{"word": "bp"},{"word": "bq"},{"word": "br"},{"word": "bs"},{"word": "bt"},{"word": "bu"},{"word": "bv"},{"word": "bw"},{"word": "bx"},{"word": "by"},{"word": "bz"},{"word": "ca"}]}
+{"word": "excited", "pos": "adj", "senses": [{"topics": ["emotion", "EMOTION"]}, {"topics": ["mood"]}]}
+{"word": "at first", "pos": "phrase", "senses": [{"topics": ["time"]}]}
+{"word": "bring up", "pos": "verb", "senses": [{"topics": ["communication"]}]}
+{"word": "smile", "pos": "noun", "senses": [{"topics": ["", "expression"]}]}
+{"word": "luck", "pos": "noun", "senses": [{"topics": ["  chance  "]}]}
+{"word": "learn", "pos": "verb", "translations": [{"code": "vi", "word": "học"}, {"lang": "Vietnamese", "word": "học"}, {"code": "vi", "word": "tìm hiểu"}]}
+{"word": "go", "pos": "verb", "translations": [{"lang_code": "vi", "word": "đi"}]}
+{"word": "stay", "pos": "verb", "translations": [{"code": "VI", "word": "ở lại"}]}
+{"word": "read", "pos": "verb", "translations": [{"code": "vi", "word": "  đọc  "}]}
+{"word": "write", "pos": "verb", "translations": [{"code": "vi", "word": "viết"}, "not a dict"]}
+{"word": "watch", "pos": "verb", "translations": [{"code": " vi ", "word": "xem"}]}
