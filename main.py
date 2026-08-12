@@ -787,8 +787,8 @@ def run_pipeline():
             ipa_uk = item["ipa_uk"]
             ipa_us = item["ipa_us"]
 
-            final_ipa_us = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_us)
-            final_ipa_uk = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_uk)
+            final_ipa_us = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_us, fast_only=True)
+            final_ipa_uk = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_uk, fast_only=True)
 
             cefr_lvl, freq_rank = grader.grade_word(lemma)
 
@@ -844,6 +844,10 @@ def run_pipeline():
             definitions_count += len(definitions_batch)
 
         logger.info("[Step 2/5] Completed definitions ingestion: %s definitions stored.", f"{definitions_count:,}")
+
+        # Build secondary indexes now that bulk staging of words/definitions is finished
+        logger.info("   -> Creating staging database indexes...")
+        db_manager.create_staging_indexes()
 
     # Check sentences count for Step 3 checkpointing
     cursor.execute("SELECT count(*) FROM sentences;")

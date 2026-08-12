@@ -241,9 +241,19 @@ class DatabaseManager:
             );
         """)
 
-        # Indexes for fast mobile and pipeline queries
+        # Primary unique indexes needed for staging deduplication and INSERT OR IGNORE idempotency
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_words_lemma ON words(lemma);")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sentences_text_en ON sentences(text_en);")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_relations_unique ON word_relations(word_id, relation_type, target_text);")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);")
+
+        conn.commit()
+        logger.info("Database schema initialized successfully at %s", self.db_path)
+
+    def create_staging_indexes(self):
+        """Creates secondary lookup indexes after bulk staging ingestion to maximize throughput."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_reflex_cefr_type ON reflex_drills(drill_type, sentence_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_tree_parent ON dialogue_nodes(tree_id, parent_node_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrases_cefr ON phrases(cefr_level);")
@@ -251,16 +261,12 @@ class DatabaseManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_phrase ON phrase_sentences(phrase_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_sentence ON phrase_sentences(sentence_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pattern_sentences_sentence ON pattern_sentences(sentence_id);")
-        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_relations_unique ON word_relations(word_id, relation_type, target_text);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_relations_target ON word_relations(target_word_id);")
-        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_definitions_word_id ON definitions(word_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_quiz_type_cefr ON quiz_questions(question_type, cefr_level);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_quiz_target ON quiz_questions(target_type, target_id);")
-
         conn.commit()
-        logger.info("Database schema initialized successfully at %s", self.db_path)
 
     def insert_words_batch(self, words_data: List[Dict[str, Any]]) -> int:
         """Batch insert words into `words` table with IGNORE on duplicate lemma."""

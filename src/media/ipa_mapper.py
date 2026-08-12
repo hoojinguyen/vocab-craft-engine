@@ -44,12 +44,16 @@ class IPAMapper:
             self._g2p = g2p_en.G2p()
         return self._g2p
 
-    def get_ipa(self, word: str, existing_ipa: Optional[str] = None) -> str:
+    def get_ipa(self, word: str, existing_ipa: Optional[str] = None, fast_only: bool = False) -> Optional[str]:
         """
-        Returns existing IPA if valid, otherwise falls back to G2P conversion.
+        Returns existing IPA if valid.
+        If missing, uses G2P conversion unless fast_only is True.
         """
         if existing_ipa and existing_ipa.strip():
             return existing_ipa.strip()
+
+        if fast_only:
+            return None
 
         word_clean = word.strip().lower()
         try:
