@@ -894,8 +894,8 @@ def run_pipeline():
     logger.info("[Step 4/5] Running NLP Enrichment across all 9 schema tables...")
 
     # 4A. Collocation Extraction & Translation
-    cursor.execute("SELECT id, text_en FROM sentences;")
-    all_sentences = cursor.fetchall()
+    cursor.execute("SELECT id, text_en FROM sentences LIMIT 50000;")
+    sample_sentences = cursor.fetchall()
     cursor.execute("SELECT count(*) FROM collocations;")
     existing_collocs = cursor.fetchone()[0]
     if existing_collocs > 500 and not args.force_reset:
@@ -903,27 +903,39 @@ def run_pipeline():
     else:
         logger.info("   [4A] Extracting & Translating Verb+Noun & Phrasal Verb Collocations...")
         chunk_extractor = ChunkExtractor()
-        translator = Translator()
+        offline_extractor = OfflineGlossExtractor(KAIKKI_JSON_PATH)
 
         colloc_batch = []
         seen_phrases = set()
-        for s_id, text_en in all_sentences:
-            chunks = chunk_extractor.extract_collocations(text_en)
-            for chunk in chunks:
-                phrase = chunk["phrase"]
-                if phrase not in seen_phrases:
-                    seen_phrases.add(phrase)
-                    c_level, _ = grader.grade_word(phrase.split()[0] if phrase else "the")
-                    colloc_batch.append({
-                        "phrase": phrase,
-                        "meaning_vi": translator.translate_text(phrase),
-                        "pos_pattern": chunk["pos_pattern"],
-                        "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2") else "B1"
-                    })
+        texts = [s[1] for s in sample_sentences if s[1]]
 
-                if len(colloc_batch) >= 1000:
-                    db_manager.insert_collocations_batch(colloc_batch)
-                    colloc_batch = []
+        for doc in chunk_extractor.nlp.pipe(texts, batch_size=1000):
+            for token in doc:
+                if token.pos_ == "VERB":
+                    for child in token.children:
+                        if child.dep_ in ("dobj", "obj") and child.pos_ == "NOUN":
+                            phrase = f"{token.lemma_} {child.lemma_}".lower()
+                            pos_pattern = "verb + noun"
+                        elif child.dep_ in ("prep", "prt") and child.pos_ in ("ADP", "PART"):
+                            phrase = f"{token.lemma_} {child.text}".lower()
+                            pos_pattern = "phrasal verb"
+                        else:
+                            continue
+
+                        if phrase not in seen_phrases:
+                            seen_phrases.add(phrase)
+                            c_level, _ = grader.grade_word(phrase.split()[0] if phrase else "the")
+                            vi_gloss = offline_extractor.get_translation(phrase)
+                            colloc_batch.append({
+                                "phrase": phrase,
+                                "meaning_vi": vi_gloss,
+                                "pos_pattern": pos_pattern,
+                                "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2") else "B1"
+                            })
+
+                        if len(colloc_batch) >= 1000:
+                            db_manager.insert_collocations_batch(colloc_batch)
+                            colloc_batch = []
 
         if colloc_batch:
             db_manager.insert_collocations_batch(colloc_batch)
