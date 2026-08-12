@@ -7,3 +7,5 @@
 {"this line is not valid json
 {"word": "colour", "pos": "noun", "sounds": [{"ipa": "/ˈkʌl.ə/"}, {"ipa": "/ˈkʌl.ɚ/", "tags": ["US"]}]}
 {"word": "take off", "pos": "verb", "senses": [{"glosses": ["to remove clothing"]}]}
+{"word": "by and large", "pos": "phrase", "senses": [{"glosses": ["  generally speaking  "]}]}
+{"word": "in a nutshell", "pos": "proverb", "senses": [{"glosses": ["  briefly  ", "in summary"]}]}

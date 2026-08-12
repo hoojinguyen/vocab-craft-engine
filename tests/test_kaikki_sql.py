@@ -26,17 +26,17 @@ def conn(tmp_path):
 
 def test_read_landing_counts_entries_and_skips_corrupt(conn):
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 7  # 9 lines total: 1 corrupt skipped + 1 empty-word filtered
+    assert n == 9  # 11 lines total: 1 corrupt skipped + 1 empty-word filtered
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 7
+    assert n == 9
 
 
 def test_read_landing_is_idempotent(conn):
     read_kaikki_landing(conn, FIXTURE)
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 7
+    assert n == 9
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 7
+    assert n == 9
 
 
 def test_classify_definitions_matches_expected(conn):
@@ -74,4 +74,6 @@ def test_classify_phrases_matches_expected(conn):
         "SELECT phrase, phrase_type, definition_en FROM raw_phrases"
     ).fetchall()
     assert ("kick the bucket", "idiom", "to die") in rows
-    assert len(rows) == 1
+    assert ("by and large", "phrase", "generally speaking") in rows  # gloss trimmed
+    assert ("in a nutshell", "proverb", "briefly") in rows  # first trimmed gloss
+    assert len(rows) == 3

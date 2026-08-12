@@ -9,15 +9,17 @@ from pathlib import Path
 
 import duckdb
 
+from src.ingestion.kaikki_single_pass import (
+    CLEAN_CHARS_PATTERN,
+    MAX_WORDS_PER_PHRASE,
+    PHRASE_POS_ALLOWED,
+)
+
 logger = logging.getLogger(__name__)
 
 LANDING_TABLE = "raw_kaikki"
 
-PHRASE_POS_ALLOWED = ("idiom", "phrasal verb", "proverb", "phrase")
-MAX_WORDS_PER_PHRASE = 6
-CLEAN_CHARS_PATTERN = "^[a-zA-Z '.-]+$"
-
-_PHRASE_POS_LIST = "(" + ", ".join(f"'{p}'" for p in PHRASE_POS_ALLOWED) + ")"
+_PHRASE_POS_LIST = "(" + ", ".join("'" + p + "'" for p in PHRASE_POS_ALLOWED) + ")"
 
 LANDING_COLUMNS = """{
     'word': 'VARCHAR',
@@ -183,7 +185,11 @@ def ingest_phrases_sql(conn: duckdb.DuckDBPyConnection) -> int:
     - ipa: first sound with truthy ipa (no tag filtering, no trim)
     - phrase_type = pos.replace(' ', '_')
     - INSERT OR IGNORE: phrase is UNIQUE; the dump can repeat a phrase
-      (e.g. "et al." twice), same as ingest_words_sql dedupes by lemma
+      (e.g. "et al." twice), same as ingest_words_sql dedupes by lemma.
+      INSERT OR IGNORE collapses duplicate phrases (UNIQUE(phrase)); when the
+      same phrase appears under multiple POS, the surviving row is
+      input-order-dependent — use set-semantics when comparing against the
+      oracle.
     """
     conn.execute(
         f"""
@@ -206,13 +212,13 @@ def ingest_phrases_sql(conn: duckdb.DuckDBPyConnection) -> int:
                 SELECT
                     list_extract(
                         list_filter(
-                            [COALESCE(CAST(gl AS VARCHAR), '')
+                            [TRIM(COALESCE(CAST(gl AS VARCHAR), ''))
                              FOR gl IN CAST(
                                  CASE WHEN len(CAST(s.elt->'glosses' AS VARCHAR[])) > 0
                                       THEN CAST(s.elt->'glosses' AS VARCHAR[])
                                       ELSE CAST(s.elt->'raw_glosses' AS VARCHAR[]) END
                              AS VARCHAR[])],
-                            x -> TRIM(x) != ''),
+                            x -> x != ''),
                         1) AS definition_en
                 FROM UNNEST(CAST(t.senses AS JSON[])) AS s(elt)
             ) per_sense
@@ -223,7 +229,7 @@ def ingest_phrases_sql(conn: duckdb.DuckDBPyConnection) -> int:
           AND LOWER(TRIM(COALESCE(t.pos, ''))) IN {_PHRASE_POS_LIST}
           AND (len(string_split_regex(TRIM(t.word), '\\s+')) <= {MAX_WORDS_PER_PHRASE}
                OR LOWER(TRIM(COALESCE(t.pos, ''))) = 'proverb')
-          AND regexp_matches(TRIM(t.word), '{CLEAN_CHARS_PATTERN.replace("'", "''")}')
+          AND regexp_matches(TRIM(t.word), '{CLEAN_CHARS_PATTERN.pattern.replace("'", "''")}')
         """
     )
     n = conn.execute("SELECT count(*) FROM raw_phrases").fetchone()[0]
