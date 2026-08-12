@@ -10,6 +10,7 @@ import json
 import time
 import argparse
 import asyncio
+from typing import Tuple, List, Dict, Any
 from pathlib import Path
 
 from config.settings import (
@@ -45,7 +46,11 @@ from src.export.sqlite_exporter import SQLiteExporter
 from src.ingestion.phrase_parser import PhraseParser
 from src.nlp.phrase_grader import PhraseGrader
 from src.nlp.phrase_example_matcher import PhraseExampleMatcher
+from src.nlp.offline_gloss_extractor import OfflineGlossExtractor
 from src.ingestion.relation_parser import RelationParser
+from src.nlp.pattern_extractor import GrammarPatternExtractor
+from src.nlp.quiz_builder import QuizBuilder
+from src.nlp.parallel_processor import ParallelProcessor
 
 RELATION_CHECKPOINT = 50_000
 TOPIC_CHECKPOINT = 1_000
@@ -91,7 +96,209 @@ def parse_arguments():
                         help="Max MT translation attempts per run for Step 4I backfill (re-run resumes).")
     parser.add_argument("--build-core-pack", action="store_true",
                         help="Build the curated Core 3000 word pack (core_3000.db + report).")
+    parser.add_argument("--no-parallel", action="store_true",
+                        help="Disable multi-core parallel NLP processing.")
     return parser.parse_args()
+
+
+def run_pattern_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
+    """
+    Step 4C: Extract grammar sentence patterns from corpus sentences using GrammarPatternExtractor.
+    Populates `sentence_patterns` and `pattern_sentences` junction table, and backfills
+    representative example sentences for each pattern.
+    """
+    conn = db_mgr.get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, text_en, text_vi FROM sentences LIMIT 100000;")
+
+    disable_parallel = getattr(args, "no_parallel", False) if args else False
+
+    patterns_dict: Dict[str, Dict[str, Any]] = {}
+    mappings_list: List[Dict[str, Any]] = []
+    total_processed = 0
+
+    with ParallelProcessor(disable_parallel=disable_parallel) as processor:
+        while True:
+            sentences = cursor.fetchmany(50000)
+            if not sentences:
+                break
+
+            total_processed += len(sentences)
+            extracted_matches = processor.process_pattern_extraction(sentences)
+
+            for match in extracted_matches:
+                p_name = match["pattern_name"]
+                s_id = match["sentence_id"]
+                if p_name not in patterns_dict:
+                    patterns_dict[p_name] = {
+                        "pattern_name": p_name,
+                        "structure_json": match["structure_json"],
+                        "example_en": None,
+                        "example_vi": None,
+                        "cefr_level": match["cefr_level"]
+                    }
+                mappings_list.append({
+                    "pattern_name": p_name,
+                    "sentence_id": s_id,
+                    "matched_tokens_json": match["matched_tokens_json"]
+                })
+
+    if total_processed == 0:
+        logger.info("   [4C] No sentences found in database — skipping pattern extraction.")
+        return (0, 0)
+
+    logger.info("   [4C] Extracting Grammar Sentence Patterns across %s sentences...", f"{total_processed:,}")
+
+    if patterns_dict:
+        db_mgr.insert_sentence_patterns_batch(list(patterns_dict.values()))
+
+    cursor.execute("SELECT id, pattern_name FROM sentence_patterns;")
+    pattern_name_to_id = {row[1]: row[0] for row in cursor.fetchall()}
+
+    final_mappings = [
+        {
+            "pattern_id": pattern_name_to_id[m["pattern_name"]],
+            "sentence_id": m["sentence_id"],
+            "matched_tokens_json": m["matched_tokens_json"]
+        }
+        for m in mappings_list
+        if m["pattern_name"] in pattern_name_to_id
+    ]
+
+    if final_mappings:
+        db_mgr.insert_pattern_sentences_batch(final_mappings)
+
+    # Backfill representative example sentences (validated VI translation, preferred 8-20 words length)
+    for pattern_name, pattern_id in pattern_name_to_id.items():
+        cursor.execute("""
+            SELECT s.text_en, s.text_vi
+            FROM pattern_sentences ps
+            JOIN sentences s ON s.id = ps.sentence_id
+            WHERE ps.pattern_id = ?;
+        """, (pattern_id,))
+        candidates = cursor.fetchall()
+        if not candidates:
+            continue
+
+        best_candidate = None
+        for text_en, text_vi in candidates:
+            word_count = len(text_en.split()) if text_en else 0
+            if text_vi and 8 <= word_count <= 20:
+                best_candidate = (text_en, text_vi)
+                break
+        if not best_candidate:
+            for text_en, text_vi in candidates:
+                if text_vi:
+                    best_candidate = (text_en, text_vi)
+                    break
+        if not best_candidate:
+            best_candidate = candidates[0]
+
+        cursor.execute("""
+            UPDATE sentence_patterns
+            SET example_en = ?, example_vi = ?
+            WHERE id = ?;
+        """, (best_candidate[0], best_candidate[1], pattern_id))
+
+    conn.commit()
+
+    cursor.execute("SELECT count(*) FROM sentence_patterns;")
+    patterns_count = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM pattern_sentences;")
+    mappings_count = cursor.fetchone()[0]
+
+    logger.info("   [4C] Completed: %s sentence patterns, %s mappings.",
+                f"{patterns_count:,}", f"{mappings_count:,}")
+
+    return (patterns_count, mappings_count)
+
+
+def run_scenario_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
+    """
+    Step 4D: Build interactive dialogue trees with dynamic sentence linking.
+    Generates 25+ structured branching situational scenarios across 8 themes
+    and persists them to database via DatabaseManager.
+    """
+    builder = ScenarioBuilder()
+    scenarios = builder.build_all_scenarios()
+    trees_count, nodes_count = db_mgr.insert_dialogue_scenarios_batch(scenarios)
+    logger.info("   [4D] Completed: %s dialogue trees, %s dialogue nodes stored.",
+                f"{trees_count:,}", f"{nodes_count:,}")
+    return (trees_count, nodes_count)
+
+
+def run_quiz_step(db_mgr: DatabaseManager, args=None) -> int:
+    """
+    Step 4E: Generate interactive quiz questions (word_mcq, sentence_cloze, pattern_cloze, word_ordering)
+    with POS & CEFR-matched distractors.
+    """
+    conn = db_mgr.get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT w.id, w.lemma, w.pos, w.cefr_level, d.definition_vi
+        FROM words w
+        LEFT JOIN definitions d ON d.word_id = w.id AND d.definition_vi IS NOT NULL
+        WHERE w.frequency_rank <= 50000
+        GROUP BY w.id
+        LIMIT 50000;
+    """)
+    words = [
+        {
+            "id": r[0],
+            "lemma": r[1],
+            "pos": r[2],
+            "cefr_level": r[3],
+            "text_vi": r[4] if r[4] else r[1]
+        }
+        for r in cursor.fetchall()
+    ]
+
+    cursor.execute("SELECT id, text_en, text_vi, cefr_level FROM sentences LIMIT 50000;")
+    sentences = [
+        {"id": r[0], "text_en": r[1], "text_vi": r[2], "cefr_level": r[3]}
+        for r in cursor.fetchall()
+    ]
+
+    cursor.execute("SELECT id, pattern_name, example_en, example_vi, cefr_level FROM sentence_patterns;")
+    patterns = [
+        {"id": r[0], "pattern_name": r[1], "example_en": r[2], "example_vi": r[3], "cefr_level": r[4]}
+        for r in cursor.fetchall()
+    ]
+
+    builder = QuizBuilder(words=words)
+
+    inserted_count = 0
+    quiz_batch = []
+
+    # 1. Word MCQ Quizzes
+    for word in words:
+        quiz_batch.append(builder.generate_word_mcq(word))
+        if len(quiz_batch) >= 5000:
+            inserted_count += db_mgr.insert_quiz_questions_batch(quiz_batch)
+            quiz_batch = []
+
+    # 2. Sentence Cloze & Word Ordering Quizzes
+    for sentence in sentences:
+        quiz_batch.append(builder.generate_sentence_cloze(sentence))
+        quiz_batch.append(builder.generate_word_ordering(sentence))
+        if len(quiz_batch) >= 5000:
+            inserted_count += db_mgr.insert_quiz_questions_batch(quiz_batch)
+            quiz_batch = []
+
+    # 3. Pattern Cloze Quizzes
+    for pattern in patterns:
+        quiz_batch.append(builder.generate_pattern_cloze(pattern))
+        if len(quiz_batch) >= 5000:
+            inserted_count += db_mgr.insert_quiz_questions_batch(quiz_batch)
+            quiz_batch = []
+
+    if quiz_batch:
+        inserted_count += db_mgr.insert_quiz_questions_batch(quiz_batch)
+
+    logger.info("   [4E Quiz] Inserted %s quiz questions into database.", f"{inserted_count:,}")
+    return inserted_count
 
 
 def run_phrase_step(db_manager, args) -> dict:
@@ -115,12 +322,13 @@ def run_phrase_step(db_manager, args) -> dict:
     logger.info("   [4G] Ingesting Multi-Word Expressions (Idioms, Phrasal Verbs, Proverbs)...")
     phrase_parser = PhraseParser(KAIKKI_JSON_PATH)
     grader = PhraseGrader(CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH))
-    translator = Translator()
+    offline_extractor = OfflineGlossExtractor(KAIKKI_JSON_PATH)
 
     phrases_batch = []
     phrase_count = 0
     for item in phrase_parser.parse_phrases():
         graded = grader.grade_phrase(item["phrase"])
+        vi_gloss = item.get("definition_vi") or offline_extractor.get_translation(item["phrase"])
         phrases_batch.append({
             "phrase": item["phrase"],
             "phrase_type": item["phrase_type"],
@@ -128,7 +336,7 @@ def run_phrase_step(db_manager, args) -> dict:
             "cefr_level": graded["cefr_level"],
             "difficulty_score": graded["difficulty_score"],
             "definition_en": item["definition_en"],
-            "definition_vi": item.get("definition_vi") or translator.translate_text(item["phrase"]),
+            "definition_vi": vi_gloss,
             "ipa": item.get("ipa"),
             "audio_std": None,
             "audio_fast": None,
@@ -146,20 +354,15 @@ def run_phrase_step(db_manager, args) -> dict:
         phrase_count += len(phrases_batch)
     logger.info("   [4G] Stored %s multi-word expressions.", f"{phrase_count:,}")
 
-    # Link example sentences from Tatoeba
-    cursor.execute("SELECT id, text_en, cefr_level FROM sentences;")
-    sentence_pool = [
-        {"id": r[0], "text_en": r[1], "cefr_level": r[2]}
-        for r in cursor.fetchall()
-    ]
-    matcher = PhraseExampleMatcher(sentence_pool)
-
+    # Fast SQL-indexed example sentence matching
     cursor.execute("SELECT id, phrase FROM phrases;")
     stored_phrases = [{"id": r[0], "phrase": r[1]} for r in cursor.fetchall()]
-    link_batch = matcher.match_phrases(stored_phrases)
+    matcher = PhraseExampleMatcher(sentences=[])
+    link_batch = matcher.match_phrases_sql(conn, stored_phrases)
+
     for i in range(0, len(link_batch), 5000):
         db_manager.insert_phrase_sentences_batch(link_batch[i:i + 5000])
-    logger.info("   [4G] Linked %s example sentences to phrases.", f"{len(link_batch):,}")
+    logger.info("   [4G] Linked %s example sentences to phrases via SQL matching.", f"{len(link_batch):,}")
 
     # Generate TTS audio for all phrases (batched, one commit per chunk)
     async def generate_phrase_audio():
@@ -298,11 +501,12 @@ def run_relations_step(db_manager, args) -> dict:
 def run_vietnamese_step(db_manager, args) -> dict:
     """
     Step 4I: Vietnamese translation quality & backfill.
-    Cleans English passthrough rows, then backfills missing Vietnamese
-    translations (definitions, collocations, phrases) via Translator,
-    priority-ordered (graded words first). Only translations that pass
-    Vietnamese validation are written. MT calls are capped at args.vi_budget
-    per run (default VI_TRANSLATION_BUDGET); re-running resumes the backfill.
+    Runs a 2-phase hybrid translation engine:
+    Phase 1: Local Offline Gloss Extraction (0ms Instant Backfill from Kaikki/Tatoeba dumps).
+    Phase 2: Tiered Async Translation Pool for candidates missing Vietnamese,
+             priority-ordered (graded words / Core 3000 & Top 10k first).
+    Only translations that pass Vietnamese validation are written. MT calls are capped
+    at args.vi_budget per run (default VI_TRANSLATION_BUDGET); re-running resumes the backfill.
     Checkpoint: skips when no candidates remain NULL.
     """
     conn = db_manager.get_connection()
@@ -314,12 +518,19 @@ def run_vietnamese_step(db_manager, args) -> dict:
     cursor.execute("UPDATE collocations SET meaning_vi = NULL WHERE meaning_vi = phrase;")
     conn.commit()
 
-    # Candidates: missing Vietnamese, graded words first
+    # Phase 1: Local Offline Gloss Extraction (0ms Instant Backfill)
+    logger.info("   [4I Phase 1] Running Offline Gloss Extractor from Kaikki/Tatoeba dumps...")
+    offline_extractor = OfflineGlossExtractor(KAIKKI_JSON_PATH)
+    offline_stats = offline_extractor.backfill_db_glosses(db_manager)
+    logger.info("   [4I Phase 1] Instant Offline Backfill: %d definitions, %d collocations, %d phrases.",
+                offline_stats["definitions"], offline_stats["collocations"], offline_stats["phrases"])
+
+    # Phase 2: Candidates missing Vietnamese, graded words (Core 3000 & Top 10k) first
     cursor.execute("""
         SELECT d.id, d.definition_en FROM definitions d
         JOIN words w ON w.id = d.word_id
         WHERE d.definition_vi IS NULL OR d.definition_vi = ''
-        ORDER BY (w.cefr_level IS NULL), d.id;
+        ORDER BY (w.cefr_level IS NULL), w.frequency_rank ASC, d.id;
     """)
     priority_definitions = cursor.fetchall()
     cursor.execute("SELECT id, phrase FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '';")
@@ -328,79 +539,54 @@ def run_vietnamese_step(db_manager, args) -> dict:
     priority_phrases = cursor.fetchall()
 
     remaining = len(priority_definitions) + len(priority_collocations) + len(priority_phrases)
-    if remaining == VI_EMPTY_BACKFILL_CHECKPOINT and not args.force_reset:
-        logger.info("[4I] CHECKPOINT DETECTED: no missing Vietnamese translations remain. Skipping.")
-        return {"definitions": 0, "collocations": 0, "phrases": 0}
+    if remaining == VI_EMPTY_BACKFILL_CHECKPOINT and not getattr(args, "force_reset", False):
+        logger.info("[4I Phase 2] CHECKPOINT DETECTED: no missing Vietnamese translations remain. Skipping.")
+        return offline_stats
 
-    logger.info("   [4I] Backfilling Vietnamese translations (%s definitions, %s collocations, %s phrases)...",
+    logger.info("   [4I Phase 2] Backfilling Vietnamese translations via Tiered Async Pool (%s definitions, %s collocations, %s phrases)...",
                 f"{len(priority_definitions):,}", f"{len(priority_collocations):,}", f"{len(priority_phrases):,}")
 
     translator = Translator()
-    validator = VietnameseTextValidator()
-    translated_defs = 0
-    translated_colls = 0
-    translated_phrases = 0
-
     budget = getattr(args, "vi_budget", VI_TRANSLATION_BUDGET)
 
-    # Reserve fixed slices for collocations and phrases so they are never
-    # starved by the ~1.4M definitions (all words are graded, so the plain
-    # graded-first order would never reach them). Remainder goes to definitions.
-    colloc_budget = 0
-    phrase_budget = 0
-    defs_budget = 0
-    if budget >= 3:
-        small_table_slice = max(1, budget // 10)
-        colloc_budget = min(len(priority_collocations), small_table_slice)
-        phrase_budget = min(len(priority_phrases), small_table_slice)
-        defs_budget = max(0, budget - colloc_budget - phrase_budget)
-    elif budget > 0:
-        colloc_budget = min(len(priority_collocations), budget)
-
-    def _backfill(rows, table, id_col, target_col, remaining_budget):
-        """Translate up to remaining_budget rows and UPDATE; returns (updated, budget_left)."""
-        updated = 0
-        batches_done = 0
-        for batch_start in range(0, len(rows), 1000):
-            if remaining_budget <= 0:
-                break
-            batch = rows[batch_start:batch_start + 1000]
-            updates = []
-            for row_id, text in batch:
-                if remaining_budget <= 0:
-                    break
-                remaining_budget -= 1
-                vi = translator.translate_text(text)
-                if vi and validator.is_vietnamese(vi):
-                    updates.append((vi, row_id))
-            if updates:
-                # table/id_col/target_col are hardcoded literals at call sites; values are parameterized
-                cursor.executemany(
-                    f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;",
-                    updates
-                )
+    # Process in batches using translate_batch_async (max 20 workers, chunked by 100)
+    def _backfill_async(rows, table, id_col, target_col, current_budget):
+        if current_budget <= 0 or not rows:
+            return 0, current_budget
+        to_process = rows[:current_budget]
+        total_updated = 0
+        chunk_size = 100
+        for i in range(0, len(to_process), chunk_size):
+            chunk = to_process[i:i + chunk_size]
+            if hasattr(translator, "translate_batch_async"):
+                updated_tuples = translator.translate_batch_async(chunk, max_workers=20)
+            else:
+                validator = VietnameseTextValidator()
+                updated_tuples = []
+                for row_id, text in chunk:
+                    vi = translator.translate_text(text)
+                    if vi and validator.is_vietnamese(vi):
+                        updated_tuples.append((vi, row_id))
+            if updated_tuples:
+                cursor.executemany(f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;", updated_tuples)
                 conn.commit()
-                updated += len(updates)
-            batches_done += 1
-            if batches_done % 10 == 0:
-                logger.info("   -> Translated %s %s so far...", f"{updated:,}", table)
-            time.sleep(VI_BATCH_SLEEP_SECONDS)
-        return updated, remaining_budget
+                if hasattr(translator, "save_cache"):
+                    translator.save_cache()
+                total_updated += len(updated_tuples)
+        return total_updated, current_budget - len(to_process)
 
-    translated_defs, _ = _backfill(priority_definitions, "definitions", "id", "definition_vi", defs_budget)
-    if hasattr(translator, "save_cache"):
-        translator.save_cache()
-    translated_colls, _ = _backfill(priority_collocations, "collocations", "id", "meaning_vi", colloc_budget)
-    if hasattr(translator, "save_cache"):
-        translator.save_cache()
-    translated_phrases, _ = _backfill(priority_phrases, "phrases", "id", "definition_vi", phrase_budget)
-    if hasattr(translator, "save_cache"):
-        translator.save_cache()
+    def_updated, budget_left = _backfill_async(priority_definitions, "definitions", "id", "definition_vi", budget)
+    col_updated, budget_left = _backfill_async(priority_collocations, "collocations", "id", "meaning_vi", budget_left)
+    phr_updated, _ = _backfill_async(priority_phrases, "phrases", "id", "definition_vi", budget_left)
 
-    logger.info("   [4I] Translated: %s definitions, %s collocations, %s phrases (rest kept NULL).",
-                f"{translated_defs:,}", f"{translated_colls:,}", f"{translated_phrases:,}")
+    total_defs = offline_stats["definitions"] + def_updated
+    total_colls = offline_stats["collocations"] + col_updated
+    total_phrs = offline_stats["phrases"] + phr_updated
 
-    return {"definitions": translated_defs, "collocations": translated_colls, "phrases": translated_phrases}
+    logger.info("   [4I] Completed: %s definitions, %s collocations, %s phrases translated.",
+                f"{total_defs:,}", f"{total_colls:,}", f"{total_phrs:,}")
+
+    return {"definitions": total_defs, "collocations": total_colls, "phrases": total_phrs}
 
 
 def run_core_pack_step(db_manager, args) -> dict:
@@ -515,24 +701,37 @@ def _clear_sentence_link_checkpoint() -> None:
     SENTENCE_LINK_CHECKPOINT.unlink(missing_ok=True)
 
 
-def _link_sentences_incrementally(db_manager, checkpoint: Path) -> None:
+def _link_sentences_incrementally(db_manager, checkpoint: Path, args=None) -> None:
     """Links sentences with id > last_linked to words, then writes back the checkpoint."""
     last_linked = _read_sentence_link_checkpoint(checkpoint)
-    lemmatizer = Lemmatizer()
+    disable_parallel = getattr(args, "no_parallel", False) if args else False
+
     map_batch = []
     new_max = last_linked
     cursor = db_manager.get_connection().cursor()
+    lemma_to_id = {lemma: word_id for lemma, word_id in cursor.execute("SELECT lemma, id FROM words;").fetchall()}
     cursor.execute("SELECT id, text_en FROM sentences WHERE id > ? ORDER BY id;", (last_linked,))
-    for s_id, text_en in cursor.fetchall():
-        lemmas = lemmatizer.lemmatize_text(text_en)
-        for lem in lemmas:
-            word_id = db_manager.get_word_id_by_lemma(lem["lemma"])
-            if word_id:
-                map_batch.append({"word_id": word_id, "sentence_id": s_id})
-        new_max = max(new_max, s_id)
-        if len(map_batch) >= 5000:
-            db_manager.insert_word_sentence_map_batch(map_batch)
-            map_batch = []
+
+    with ParallelProcessor(disable_parallel=disable_parallel) as processor:
+        while True:
+            sentences = cursor.fetchmany(50000)
+            if not sentences:
+                break
+
+            chunk_max = max(s[0] for s in sentences)
+            new_max = max(new_max, chunk_max)
+
+            lemmatized = processor.process_sentence_lemmatization(sentences)
+            for item in lemmatized:
+                s_id = item["sentence_id"]
+                lem = item["lemma"]
+                word_id = lemma_to_id.get(lem)
+                if word_id:
+                    map_batch.append({"word_id": word_id, "sentence_id": s_id})
+                if len(map_batch) >= 5000:
+                    db_manager.insert_word_sentence_map_batch(map_batch)
+                    map_batch = []
+
     if map_batch:
         db_manager.insert_word_sentence_map_batch(map_batch)
     if new_max > last_linked:
@@ -564,9 +763,9 @@ def run_pipeline():
         cursor = conn.cursor()
         conn.execute("PRAGMA foreign_keys = OFF;")
         tables_to_drop = [
-            "word_relations", "word_topics", "word_sentence_map", "reflex_drills", "dialogue_nodes",
+            "quiz_questions", "word_relations", "word_topics", "word_sentence_map", "reflex_drills", "dialogue_nodes",
             "dialogue_trees", "sentences", "sentence_patterns",
-            "collocations", "definitions", "words"
+            "collocations", "definitions", "words", "phrases", "phrase_sentences"
         ]
         for tbl in tables_to_drop:
             cursor.execute(f"DROP TABLE IF EXISTS {tbl};")
@@ -576,6 +775,7 @@ def run_pipeline():
         logger.info("   -> Cleared stale sentence-link checkpoint for fresh re-link.")
 
     db_manager.init_schema()
+    db_manager.enable_fast_staging_mode()
     logger.info("[Step 1/5] Schema initialized successfully.")
 
     conn = db_manager.get_connection()
@@ -596,28 +796,29 @@ def run_pipeline():
         logger.info("[Step 2/5] CHECKPOINT DETECTED: %s words & %s definitions already exist in database.", f"{existing_words:,}", f"{existing_defs:,}")
         logger.info("[Step 2/5] SKIPPING Step 2 (Saved ~15 minutes!). Use --force-reset to re-ingest.")
     else:
-        logger.info("[Step 2/5] Ingesting Kaikki Dictionary (3.18 GB dump)...")
+        logger.info("[Step 2/5] Ingesting Kaikki Dictionary in Single-Pass Stream (3.18 GB dump)...")
         kaikki_parser = KaikkiParser(KAIKKI_JSON_PATH)
         ipa_mapper = IPAMapper()
 
         words_batch = []
         definitions_batch = []
+        pending_definitions = []  # (lemma, def_dict)
 
         count = 0
         words_count = 0
         definitions_count = 0
 
-        for item in kaikki_parser.parse_stream():
+        for item in kaikki_parser.parse_stream_unified():
             count += 1
             lemma = item["lemma"]
             pos = item["pos"]
             ipa_uk = item["ipa_uk"]
             ipa_us = item["ipa_us"]
 
-            final_ipa_us = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_us)
-            final_ipa_uk = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_uk)
-
             cefr_lvl, freq_rank = grader.grade_word(lemma)
+
+            final_ipa_us = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_us, fast_only=True, frequency_rank=freq_rank)
+            final_ipa_uk = ipa_mapper.get_ipa(lemma, existing_ipa=ipa_uk, fast_only=True, frequency_rank=freq_rank)
 
             words_batch.append({
                 "lemma": lemma,
@@ -642,12 +843,13 @@ def run_pipeline():
 
         logger.info("[Step 2/5] Completed words ingestion: %s words stored.", f"{words_count:,}")
 
-        # Ingest definitions
-        logger.info("   -> Extracting definitions and Vietnamese translations...")
-        def_stream_count = 0
-        for item in kaikki_parser.parse_stream():
-            def_stream_count += 1
-            word_id = db_manager.get_word_id_by_lemma(item["lemma"])
+        # Ingest definitions using streaming batches and pre-loaded lemma_map
+        logger.info("   -> Staging definitions and Vietnamese translations in streaming batches...")
+        cursor.execute("SELECT lemma, id FROM words;")
+        lemma_map = dict(cursor.fetchall())
+
+        for item in kaikki_parser.parse_stream_unified():
+            word_id = lemma_map.get(item["lemma"])
             if word_id:
                 for def_item in item["definitions"]:
                     definitions_batch.append({
@@ -663,14 +865,15 @@ def run_pipeline():
                         definitions_count += len(definitions_batch)
                         definitions_batch = []
 
-            if def_stream_count % 100000 == 0:
-                logger.info("   -> Staged %s definitions...", f"{definitions_count:,}")
-
         if definitions_batch:
             db_manager.insert_definitions_batch(definitions_batch)
             definitions_count += len(definitions_batch)
 
         logger.info("[Step 2/5] Completed definitions ingestion: %s definitions stored.", f"{definitions_count:,}")
+
+        # Build secondary indexes now that bulk staging of words/definitions is finished
+        logger.info("   -> Creating staging database indexes...")
+        db_manager.create_staging_indexes()
 
     # Check sentences count for Step 3 checkpointing
     cursor.execute("SELECT count(*) FROM sentences;")
@@ -717,8 +920,8 @@ def run_pipeline():
     logger.info("[Step 4/5] Running NLP Enrichment across all 9 schema tables...")
 
     # 4A. Collocation Extraction & Translation
-    cursor.execute("SELECT id, text_en FROM sentences;")
-    all_sentences = cursor.fetchall()
+    cursor.execute("SELECT id, text_en FROM sentences LIMIT 50000;")
+    sample_sentences = cursor.fetchall()
     cursor.execute("SELECT count(*) FROM collocations;")
     existing_collocs = cursor.fetchone()[0]
     if existing_collocs > 500 and not args.force_reset:
@@ -726,20 +929,23 @@ def run_pipeline():
     else:
         logger.info("   [4A] Extracting & Translating Verb+Noun & Phrasal Verb Collocations...")
         chunk_extractor = ChunkExtractor()
-        translator = Translator()
+        offline_extractor = OfflineGlossExtractor(KAIKKI_JSON_PATH)
 
         colloc_batch = []
         seen_phrases = set()
-        for s_id, text_en in all_sentences:
-            chunks = chunk_extractor.extract_collocations(text_en)
+        texts = [s[1] for s in sample_sentences if s[1]]
+
+        for doc in chunk_extractor.nlp.pipe(texts, batch_size=1000):
+            chunks = chunk_extractor.extract_collocations_from_doc(doc)
             for chunk in chunks:
                 phrase = chunk["phrase"]
                 if phrase not in seen_phrases:
                     seen_phrases.add(phrase)
                     c_level, _ = grader.grade_word(phrase.split()[0] if phrase else "the")
+                    vi_gloss = offline_extractor.get_translation(phrase)
                     colloc_batch.append({
                         "phrase": phrase,
-                        "meaning_vi": translator.translate_text(phrase),
+                        "meaning_vi": vi_gloss,
                         "pos_pattern": chunk["pos_pattern"],
                         "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2") else "B1"
                     })
@@ -757,56 +963,20 @@ def run_pipeline():
 
     # 4B. Word-Sentence Mapping & Lemmatization (incremental since checkpoint)
     logger.info("   [4B] Linking Word-Sentence Mappings (incremental)...")
-    _link_sentences_incrementally(db_manager, SENTENCE_LINK_CHECKPOINT)
+    _link_sentences_incrementally(db_manager, SENTENCE_LINK_CHECKPOINT, args=args)
     cursor.execute("SELECT count(*) FROM word_sentence_map;")
     map_count = cursor.fetchone()[0]
     logger.info("   [4B] Linked sentences to %s word links.", f"{map_count:,}")
 
-    # 4C. Sentence Patterns Population
-    logger.info("   [4C] Populating Sentence Patterns...")
-    patterns = [
-        {"pattern_name": "Subject + Verb + Object", "structure_json": json.dumps(["NP", "VP", "NP"]), "example_en": "She drinks hot coffee.", "example_vi": "Cô ấy uống cà phê nóng.", "cefr_level": "A1"},
-        {"pattern_name": "Subject + Verb + Prepositional Phrase", "structure_json": json.dumps(["NP", "VP", "PP"]), "example_en": "They run in the park.", "example_vi": "Họ chạy trong công viên.", "cefr_level": "A2"},
-        {"pattern_name": "Subject + Auxiliary + Verb + Object", "structure_json": json.dumps(["NP", "AUX", "VP", "NP"]), "example_en": "I can learn English.", "example_vi": "Tôi có thể học tiếng Anh.", "cefr_level": "B1"}
-    ]
-    patterns_count = db_manager.insert_sentence_patterns_batch(patterns)
-    logger.info("   [4C] Populated %d sentence patterns.", patterns_count)
+    # 4C. Sentence Patterns Extraction & Integration
+    logger.info("   [4C] Extracting & Populating Grammar Sentence Patterns...")
+    p_count, m_count = run_pattern_step(db_manager, args)
+    logger.info("   [4C] Extracted %s sentence patterns with %s mappings.", f"{p_count:,}", f"{m_count:,}")
 
     # 4D. Interactive Dialogue Scenarios
     logger.info("   [4D] Building Interactive Dialogue Trees with Dynamic Sentence Linking...")
-    scenario_builder = ScenarioBuilder()
-    scenarios = scenario_builder.build_sample_scenarios()
-
-    for sc in scenarios:
-        cursor.execute("""
-            INSERT INTO dialogue_trees (title, topic, cefr_level)
-            VALUES (?, ?, ?);
-        """, (sc["title"], sc["topic"], sc["cefr_level"]))
-        tree_id = cursor.lastrowid
-
-        local_node_map = {}
-        for node in sc["nodes"]:
-            # Ensure text_en is in sentences table
-            cursor.execute("""
-                INSERT OR IGNORE INTO sentences (text_en, text_vi, difficulty_score, cefr_level, audio_path, source)
-                VALUES (?, ?, ?, ?, ?, ?);
-            """, (node["text_en"], node["text_vi"], 2.0, sc["cefr_level"], f"dialogue_tree_{tree_id}_node_{node['node_index']}.mp3", "DialogueTree"))
-
-            cursor.execute("SELECT id FROM sentences WHERE text_en = ?;", (node["text_en"],))
-            s_row = cursor.fetchone()
-            sent_id = s_row[0] if s_row else 1
-
-            parent_db_id = local_node_map.get(node.get("parent_index"))
-
-            cursor.execute("""
-                INSERT INTO dialogue_nodes (tree_id, parent_node_id, sentence_id, speaker_role, choice_label)
-                VALUES (?, ?, ?, ?, ?);
-            """, (tree_id, parent_db_id, sent_id, node["speaker_role"], node["choice_label"]))
-            node_db_id = cursor.lastrowid
-            local_node_map[node["node_index"]] = node_db_id
-
-    conn.commit()
-    logger.info("   [4D] Built %d dialogue trees and nodes with dynamic sentence links.", len(scenarios))
+    t_count, n_count = run_scenario_step(db_manager, args)
+    logger.info("   [4D] Extracted %s dialogue trees with %s nodes.", f"{t_count:,}", f"{n_count:,}")
 
     # 4E. Speed Reflex Drill Cards Generation
     logger.info("   [4E] Generating Speed Reflex Drill Cards...")
@@ -843,6 +1013,16 @@ def run_pipeline():
 
         conn.commit()
         logger.info("   [4E] Completed %s reflex drill cards.", f"{reflex_count:,}")
+
+    # Generate Quiz Questions
+    cursor.execute("SELECT count(*) FROM quiz_questions;")
+    existing_quizzes = cursor.fetchone()[0]
+    if existing_quizzes > 0 and not getattr(args, "force_reset", False):
+        logger.info("   [4E Quiz] CHECKPOINT DETECTED: %s quiz questions already exist. Skipping.", f"{existing_quizzes:,}")
+    else:
+        logger.info("   [4E Quiz] Generating Interactive Quiz Questions...")
+        q_count = run_quiz_step(db_manager, args)
+        logger.info("   [4E Quiz] Completed %s interactive quiz questions.", f"{q_count:,}")
 
     # 4F. Physical MP3 Audio Generation via Edge-TTS
     logger.info("   [4F] Generating Physical MP3 Audio Files via Edge-TTS...")

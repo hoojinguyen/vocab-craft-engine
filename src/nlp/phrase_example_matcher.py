@@ -123,6 +123,24 @@ IRREGULAR_BASES = {
 INFLECTION_SUFFIXES = ("ing", "ied", "ed", "ies", "es", "s")
 
 
+REVERSE_IRREGULAR_BASES: Dict[str, List[str]] = {}
+for _inflected, _base in IRREGULAR_BASES.items():
+    REVERSE_IRREGULAR_BASES.setdefault(_base, []).append(_inflected)
+
+
+def _get_search_variants(word: str) -> List[str]:
+    """Get all surface form variants (stems, irregular inflections, suffix variants) of a word for SQL matching."""
+    w = word.lower()
+    stem = _stem(w)
+    variants = {w, stem}
+    variants.update(REVERSE_IRREGULAR_BASES.get(stem, []))
+    variants.update(REVERSE_IRREGULAR_BASES.get(w, []))
+    for s in ("s", "es", "ed", "ing", "d"):
+        variants.add(stem + s)
+        variants.add(w + s)
+    return [v for v in variants if v]
+
+
 def _stem(word: str) -> str:
     """Reduce a word to a rough base form for inflection-tolerant matching."""
     w = word.lower()
@@ -142,8 +160,8 @@ def _stem(word: str) -> str:
 class PhraseExampleMatcher:
     """Finds example sentences containing a given phrase, ranked by difficulty."""
 
-    def __init__(self, sentences: List[Dict[str, Any]]):
-        self.sentences = sentences
+    def __init__(self, sentences: List[Dict[str, Any]] = None):
+        self.sentences = sentences if sentences is not None else []
         self._word_index: Dict[str, List[Dict[str, Any]]] = {}
         self._build_index()
 
@@ -235,3 +253,52 @@ class PhraseExampleMatcher:
                 self.match_phrase(phrase_item["phrase"], phrase_item["id"])
             )
         return results
+
+    def match_phrases_sql(self, conn, phrases: List[Dict[str, Any]], max_candidates: int = 50) -> List[Dict[str, Any]]:
+        """Fast inverted-index candidate lookup for phrase-sentence matching."""
+        if not self._word_index and conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, text_en, cefr_level FROM sentences;")
+            self.sentences = [
+                {"id": r[0], "text_en": r[1], "cefr_level": r[2]}
+                for r in cursor.fetchall()
+            ]
+            self._build_index()
+
+        results: List[Dict[str, Any]] = []
+
+        for item in phrases:
+            p_id = item["id"]
+            phrase = item["phrase"]
+            words = [w.strip(PUNCT) for w in phrase.lower().replace("-", " ").split() if w.strip(PUNCT)]
+            key_words = [w for w in words if w not in STOPWORDS] or words
+            if not key_words:
+                continue
+
+            variants = _get_search_variants(key_words[0])
+            if not variants:
+                continue
+
+            candidate_ids = set()
+            candidates = []
+            for v in variants:
+                stem = _stem(v)
+                for sent in self._word_index.get(stem, []):
+                    s_id = sent["id"]
+                    if s_id not in candidate_ids:
+                        candidate_ids.add(s_id)
+                        candidates.append(sent)
+
+            matches = [
+                sent for sent in candidates
+                if self._is_boundary_match(phrase.lower(), sent["text_en"].lower())
+                or self._tokens_match_phrase(words, sent["text_en"].lower())
+            ]
+            matches.sort(key=lambda s: CEFR_ORDER.get(s.get("cefr_level"), 2))
+
+            for i, sent in enumerate(matches[:MAX_EXAMPLES_PER_PHRASE]):
+                results.append({"phrase_id": p_id, "sentence_id": sent["id"], "rank": i + 1})
+
+        return results
+
+

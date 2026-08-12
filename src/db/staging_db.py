@@ -33,6 +33,15 @@ class DatabaseManager:
             self.conn.close()
             self.conn = None
 
+    def enable_fast_staging_mode(self):
+        """Enables high-performance SQLite PRAGMAs for fast staging database operations."""
+        conn = self.get_connection()
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA cache_size = -64000;")
+        conn.execute("PRAGMA temp_store = MEMORY;")
+
+
     def init_schema(self):
         """Initializes relational database tables and composite indexes."""
         conn = self.get_connection()
@@ -206,23 +215,58 @@ class DatabaseManager:
             );
         """)
 
-        # Indexes for fast mobile and pipeline queries
+        # 14. Pattern - Sentence Map table (N - N)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pattern_sentences (
+                pattern_id INTEGER NOT NULL,
+                sentence_id INTEGER NOT NULL,
+                matched_tokens_json TEXT,
+                PRIMARY KEY (pattern_id, sentence_id),
+                FOREIGN KEY (pattern_id) REFERENCES sentence_patterns (id) ON DELETE CASCADE,
+                FOREIGN KEY (sentence_id) REFERENCES sentences (id) ON DELETE CASCADE
+            ) WITHOUT ROWID;
+        """)
+
+        # 15. Quiz Questions table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question_type TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id INTEGER,
+                prompt_text TEXT NOT NULL,
+                correct_answer TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                cefr_level TEXT NOT NULL DEFAULT 'B1'
+            );
+        """)
+
+        # Primary unique indexes needed for staging deduplication and INSERT OR IGNORE idempotency
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_words_lemma ON words(lemma);")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sentences_text_en ON sentences(text_en);")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_relations_unique ON word_relations(word_id, relation_type, target_text);")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);")
+
+        conn.commit()
+        logger.info("Database schema initialized successfully at %s", self.db_path)
+
+    def create_staging_indexes(self):
+        """Creates secondary lookup indexes after bulk staging ingestion to maximize throughput."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_reflex_cefr_type ON reflex_drills(drill_type, sentence_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_tree_parent ON dialogue_nodes(tree_id, parent_node_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrases_cefr ON phrases(cefr_level);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrases_type ON phrases(phrase_type);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_phrase ON phrase_sentences(phrase_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_sentences_sentence ON phrase_sentences(sentence_id);")
-        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_relations_unique ON word_relations(word_id, relation_type, target_text);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pattern_sentences_sentence ON pattern_sentences(sentence_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_relations_target ON word_relations(target_word_id);")
-        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_definitions_word_id ON definitions(word_id);")
-
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_quiz_type_cefr ON quiz_questions(question_type, cefr_level);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_quiz_target ON quiz_questions(target_type, target_id);")
         conn.commit()
-        logger.info("Database schema initialized successfully at %s", self.db_path)
 
     def insert_words_batch(self, words_data: List[Dict[str, Any]]) -> int:
         """Batch insert words into `words` table with IGNORE on duplicate lemma."""
@@ -296,6 +340,20 @@ class DatabaseManager:
         """
         cursor = conn.cursor()
         cursor.executemany(query, patterns_data)
+        conn.commit()
+        return cursor.rowcount
+
+    def insert_pattern_sentences_batch(self, mappings: List[Dict[str, Any]]) -> int:
+        """Batch insert pattern to sentence mappings into `pattern_sentences` table."""
+        if not mappings:
+            return 0
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        query = """
+            INSERT OR IGNORE INTO pattern_sentences (pattern_id, sentence_id, matched_tokens_json)
+            VALUES (:pattern_id, :sentence_id, :matched_tokens_json);
+        """
+        cursor.executemany(query, mappings)
         conn.commit()
         return cursor.rowcount
 
@@ -413,3 +471,129 @@ class DatabaseManager:
             (audio_std, audio_fast, audio_status, phrase_id)
         )
         conn.commit()
+
+    def _get_or_create_sentence(
+        self,
+        cursor: sqlite3.Cursor,
+        text_en: str,
+        text_vi: Optional[str] = None,
+        cefr_level: Optional[str] = None,
+        source: str = "dialogue_generator",
+    ) -> int:
+        """Helper to find existing sentence by text_en or insert a new sentence record."""
+        cursor.execute("SELECT id, text_vi FROM sentences WHERE text_en = ? LIMIT 1;", (text_en,))
+        row = cursor.fetchone()
+        if row:
+            sent_id, existing_vi = row[0], row[1]
+            if not existing_vi and text_vi:
+                cursor.execute("UPDATE sentences SET text_vi = ? WHERE id = ?;", (text_vi, sent_id))
+            return sent_id
+        cursor.execute(
+            """
+            INSERT INTO sentences (text_en, text_vi, cefr_level, source)
+            VALUES (?, ?, ?, ?);
+            """,
+            (text_en, text_vi, cefr_level, source),
+        )
+        return cursor.lastrowid
+
+    def insert_dialogue_scenarios_batch(self, scenarios: List[Dict[str, Any]]) -> Tuple[int, int]:
+        """Batch insert dialogue scenarios (trees and nodes) with sentence auto-linking."""
+        if not scenarios:
+            return 0, 0
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        total_trees = 0
+        total_nodes = 0
+
+        with conn:
+            for scenario in scenarios:
+                title = scenario.get("title", "")
+                topic = scenario.get("topic")
+                cefr_level = scenario.get("cefr_level")
+                nodes = scenario.get("nodes", [])
+
+                cursor.execute(
+                    "INSERT INTO dialogue_trees (title, topic, cefr_level) VALUES (?, ?, ?);",
+                    (title, topic, cefr_level),
+                )
+                tree_id = cursor.lastrowid
+                total_trees += 1
+
+                index_to_db_id: Dict[int, int] = {}
+                root_node_id: Optional[int] = None
+
+                sorted_nodes = sorted(nodes, key=lambda n: n.get("node_index", 0))
+
+                for node in sorted_nodes:
+                    node_idx = node.get("node_index", 0)
+                    parent_idx = node.get("parent_index")
+                    speaker_role = node.get("speaker_role", "")
+                    choice_label = node.get("choice_label")
+                    text_en = node.get("text_en", "")
+                    text_vi = node.get("text_vi")
+
+                    sentence_id = self._get_or_create_sentence(
+                        cursor,
+                        text_en=text_en,
+                        text_vi=text_vi,
+                        cefr_level=cefr_level,
+                        source="dialogue_generator",
+                    )
+
+                    parent_db_id = index_to_db_id.get(parent_idx) if parent_idx is not None else None
+
+                    cursor.execute(
+                        """
+                        INSERT INTO dialogue_nodes (tree_id, parent_node_id, choice_label, speaker_role, sentence_id)
+                        VALUES (?, ?, ?, ?, ?);
+                        """,
+                        (tree_id, parent_db_id, choice_label, speaker_role, sentence_id),
+                    )
+                    db_node_id = cursor.lastrowid
+                    index_to_db_id[node_idx] = db_node_id
+                    total_nodes += 1
+
+                    if node_idx == 0:
+                        root_node_id = db_node_id
+
+                if root_node_id is not None:
+                    cursor.execute(
+                        "UPDATE dialogue_trees SET root_node_id = ? WHERE id = ?;",
+                        (root_node_id, tree_id),
+                    )
+
+        return total_trees, total_nodes
+
+    def insert_quiz_questions_batch(self, questions: List[Dict[str, Any]]) -> int:
+        """Batch insert quiz questions into `quiz_questions` table."""
+        if not questions:
+            return 0
+
+        prepared_questions = []
+        for q in questions:
+            prepared_questions.append({
+                "question_type": q["question_type"],
+                "target_type": q["target_type"],
+                "target_id": q.get("target_id"),
+                "prompt_text": q["prompt_text"],
+                "correct_answer": q["correct_answer"],
+                "options_json": q["options_json"],
+                "cefr_level": q.get("cefr_level") or "B1",
+            })
+
+        conn = self.get_connection()
+        query = """
+            INSERT INTO quiz_questions
+            (question_type, target_type, target_id, prompt_text, correct_answer, options_json, cefr_level)
+            VALUES
+            (:question_type, :target_type, :target_id, :prompt_text, :correct_answer, :options_json, :cefr_level);
+        """
+        cursor = conn.cursor()
+        cursor.executemany(query, prepared_questions)
+        conn.commit()
+        return cursor.rowcount
+
+

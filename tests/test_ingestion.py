@@ -109,3 +109,50 @@ def test_extract_fields_definition_vi_none_without_vietnamese_translation():
     parsed = KaikkiParser.extract_fields(item)
     assert parsed["vi_translations"] is None
     assert parsed["definitions"][0]["definition_vi"] is None
+
+
+def test_parse_stream_unified(tmp_path: Path):
+    kaikki_file = tmp_path / "kaikki_sample.json"
+    sample_entry = {
+        "word": "abandon",
+        "pos": "verb",
+        "sounds": [{"ipa": "/əˈbændən/", "tags": ["UK"]}],
+        "senses": [{"glosses": ["To give up completely."], "tags": []}],
+        "relations": [{"type": "synonym", "word": "relinquish"}],
+        "topics": ["psychology"]
+    }
+    kaikki_file.write_text(json.dumps(sample_entry) + "\n", encoding="utf-8")
+
+    parser = KaikkiParser(kaikki_file)
+    records = list(parser.parse_stream_unified())
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["lemma"] == "abandon"
+    assert rec["pos"] == "verb"
+    assert len(rec["definitions"]) == 1
+    assert len(rec["relations"]) == 1
+    assert len(rec["topics"]) == 1
+
+
+def test_parse_stream_unified_null_fields_and_string_relations(tmp_path: Path):
+    null_word_entry = {"word": None, "pos": "verb"}
+    null_pos_entry = {
+        "word": "abandon",
+        "pos": None,
+        "synonyms": ["relinquish", {"word": "forsake"}]
+    }
+    kaikki_file = tmp_path / "kaikki_null_sample.jsonl"
+    with open(kaikki_file, "w", encoding="utf-8") as f:
+        f.write(json.dumps(null_word_entry) + "\n")
+        f.write(json.dumps(null_pos_entry) + "\n")
+
+    parser = KaikkiParser(kaikki_file)
+    records = list(parser.parse_stream_unified())
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["lemma"] == "abandon"
+    assert rec["pos"] == "noun"
+    targets = {r["target"] for r in rec["relations"]}
+    assert targets == {"relinquish", "forsake"}
+
+

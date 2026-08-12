@@ -200,3 +200,23 @@ def test_get_max_sentence_id_and_count_by_source(temp_db):
     assert temp_db.get_max_sentence_id() >= 2
     assert temp_db.count_sentences_by_source("OpenSubtitles") == 1
     assert temp_db.count_sentences_by_source("Missing") == 0
+
+
+def test_enable_fast_staging_mode(tmp_path):
+    db_path = tmp_path / "staging.db"
+    db_mgr = DatabaseManager(db_path=db_path)
+    db_mgr.init_schema()
+    db_mgr.enable_fast_staging_mode()
+
+    conn = db_mgr.get_connection()
+    journal = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+    sync = conn.execute("PRAGMA synchronous;").fetchone()[0]
+    cache_size = conn.execute("PRAGMA cache_size;").fetchone()[0]
+    temp_store = conn.execute("PRAGMA temp_store;").fetchone()[0]
+
+    assert journal.lower() == "wal"
+    assert sync in (1, "NORMAL", "1")
+    assert cache_size == -64000
+    assert temp_store in (2, "MEMORY", "2")
+    db_mgr.close()
+

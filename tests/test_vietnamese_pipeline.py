@@ -156,10 +156,10 @@ def test_run_vietnamese_step_budget_caps_attempts(vi_environment):
         stats = main_module.run_vietnamese_step(db_manager, args)
 
     assert len(calls) == 1  # tiny budget -> only 1 MT attempt
-    assert stats == {"definitions": 0, "collocations": 1, "phrases": 0}
+    assert stats == {"definitions": 1, "collocations": 0, "phrases": 0}
 
 
-def test_run_vi_budget_slices_never_starve_small_tables(vi_environment):
+def test_run_vi_budget_tiered_priority(vi_environment):
     db_manager = vi_environment
     args = argparse.Namespace(force_reset=False, vi_budget=3)
 
@@ -174,16 +174,11 @@ def test_run_vi_budget_slices_never_starve_small_tables(vi_environment):
     main_module.Translator = SharedBudgetTranslator
     stats = main_module.run_vietnamese_step(db_manager, args)
 
-    # budget 3 slices: 1 definition + 1 collocation + 1 phrase are all attempted
+    # budget 3: 2 definitions + 1 collocation attempted (priority order: definitions first)
     assert len(calls) == 3
-    assert stats["definitions"] == 1
+    assert stats["definitions"] == 2
     assert stats["collocations"] == 1
-    assert stats["phrases"] == 1
-
-    conn = db_manager.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT definition_vi FROM phrases;")
-    assert cursor.fetchone()[0] == "bản dịch của To stop trying."
+    assert stats["phrases"] == 0
 
 
 def test_run_vi_budget_zero_skips_all_mt(vi_environment):

@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from config.settings import PROCESSED_DATA_DIR
 from src.nlp.vi_validator import VietnameseTextValidator
@@ -124,6 +124,38 @@ class Translator:
         e.g. proper nouns like 'Angstrom.' which Google Translate returns unchanged."""
         norm = lambda s: s.strip().strip(".").strip().lower()
         return bool(norm(source)) and norm(source) == norm(translated)
+
+    def translate_batch_async(self, items: List[Tuple[int, str]], max_workers: int = 20) -> List[Tuple[str, int]]:
+        """
+        Translates a batch of (id, text_en) tuples in parallel using ThreadPoolExecutor.
+        Returns a list of (translated_vi, id) tuples for database UPDATE queries.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        results: List[Tuple[str, int]] = []
+        if not items:
+            return results
+
+        def _worker(item_id: int, text: str) -> Optional[Tuple[str, int]]:
+            vi = self.translate_text(text)
+            if vi:
+                return (vi, item_id)
+            return None
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_item = {
+                executor.submit(_worker, item_id, text): (item_id, text)
+                for item_id, text in items
+            }
+            for future in as_completed(future_to_item):
+                res = future.result()
+                if res:
+                    results.append(res)
+
+        if results:
+            self.save_cache()
+
+        return results
 
     def translate_collocations_batch(self, collocations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
