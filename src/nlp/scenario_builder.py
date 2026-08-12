@@ -23,6 +23,32 @@ class ScenarioBuilder:
     def __init__(self):
         pass
 
+    def create_scenario_tree(self, title: str, topic: str, cefr_level: str = "B1") -> Dict[str, Any]:
+        """Initializes a scenario tree metadata payload."""
+        return {
+            "title": title,
+            "topic": topic,
+            "cefr_level": cefr_level,
+            "nodes": []
+        }
+
+    def add_node(
+        self,
+        tree_id: int,
+        speaker_role: str,
+        sentence_id: Optional[int],
+        parent_node_id: Optional[int] = None,
+        choice_label: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Creates a single dialogue node in the branching graph."""
+        return {
+            "tree_id": tree_id,
+            "parent_node_id": parent_node_id,
+            "choice_label": choice_label,
+            "speaker_role": speaker_role,  # "A" (Bot/Partner) or "B" (User)
+            "sentence_id": sentence_id
+        }
+
     def mine_dialogue_trees(self, conn_or_db, max_trees_per_topic: int = 5) -> List[Dict[str, Any]]:
         """Mine 2-turn branching dialogue trees from raw_sentences corpus."""
         conn = conn_or_db.conn if hasattr(conn_or_db, "conn") else conn_or_db
