@@ -181,70 +181,14 @@ class KaikkiParser:
     def extract_fields_unified(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Extracts lemma, POS, IPA (UK/US), definitions, relations, and topics in a single pass.
+        Reuses extract_fields for base word/definition parsing.
         """
-        word = (item.get("word") or "").strip()
-        if not word or " " in word:  # Filter out multi-word phrases from words table
+        base = KaikkiParser.extract_fields(item)
+        if not base:
             return None
 
-        pos = (item.get("pos") or "noun").strip()
-
-        # Extract IPA transcriptions
-        ipa_uk = None
-        ipa_us = None
-        sounds = item.get("sounds", []) or []
-        for sound in sounds:
-            if not isinstance(sound, dict):
-                continue
-            ipa = sound.get("ipa")
-            if not ipa:
-                continue
-            tags = sound.get("tags", []) or []
-            if "UK" in tags or "British" in tags:
-                ipa_uk = ipa
-            elif "US" in tags or "American" in tags:
-                ipa_us = ipa
-            elif ipa_uk is None and ipa_us is None:
-                ipa_uk = ipa
-                ipa_us = ipa
-
-        # Extract Vietnamese translations if available
-        vi_translations = []
-        translations = item.get("translations", []) or []
-        for trans in translations:
-            if isinstance(trans, dict):
-                lang_code = trans.get("code") or trans.get("lang_code")
-                lang_name = trans.get("lang")
-                if lang_code == "vi" or lang_name == "Vietnamese":
-                    vi_word = (trans.get("word") or "").strip()
-                    if vi_word and vi_word not in vi_translations:
-                        vi_translations.append(vi_word)
-
-        vi_trans_str = ", ".join(vi_translations) if vi_translations else None
-
-        # Extract senses / definitions
+        word = base["lemma"]
         senses = item.get("senses", []) or []
-        definitions = []
-        for sense in senses:
-            if not isinstance(sense, dict):
-                continue
-            glosses = sense.get("glosses", []) or sense.get("raw_glosses", []) or []
-            examples = sense.get("examples", []) or []
-            example_text = None
-            if examples and isinstance(examples, list):
-                first_ex = examples[0]
-                if isinstance(first_ex, dict):
-                    example_text = first_ex.get("text")
-                elif isinstance(first_ex, str):
-                    example_text = first_ex
-
-            for gloss in glosses:
-                if isinstance(gloss, str) and gloss.strip():
-                    definitions.append({
-                        "definition_en": gloss.strip(),
-                        "definition_vi": vi_trans_str,
-                        "example": example_text,
-                        "source": "Kaikki/Wiktionary"
-                    })
 
         # Extract relations (synonyms, antonyms, hypernyms, hyponyms)
         relations: List[Dict[str, str]] = []
@@ -260,10 +204,15 @@ class KaikkiParser:
                 elif isinstance(rel, str):
                     target = rel.strip().lower()
 
-                if not target or target == word.lower():
+                if not target or target == word:
                     continue
                 if len(target) == 1 or not CLEAN_CHARS_PATTERN.match(target):
                     continue
+
+                count_for_type = sum(1 for r in relations if r["relation_type"] == rel_type)
+                if count_for_type >= MAX_TARGETS_PER_RELATION:
+                    continue
+
                 key = (rel_type, target)
                 if key not in seen_rel:
                     seen_rel.add(key)
@@ -285,7 +234,7 @@ class KaikkiParser:
                 elif isinstance(rel, str):
                     target = rel.strip().lower()
 
-                if not target or target == word.lower():
+                if not target or target == word:
                     continue
                 if len(target) == 1 or not CLEAN_CHARS_PATTERN.match(target):
                     continue
@@ -294,7 +243,6 @@ class KaikkiParser:
                     seen_rel.add(key)
                     relations.append({"relation_type": rel_type, "target": target, "source": section})
                     count_for_type += 1
-
 
         # Extract topics
         topics: List[Dict[str, str]] = []
@@ -323,12 +271,7 @@ class KaikkiParser:
                 topics.append({"topic": mapped, "raw_topic": raw_label})
 
         return {
-            "lemma": word.lower(),
-            "pos": pos.lower(),
-            "ipa_uk": ipa_uk,
-            "ipa_us": ipa_us,
-            "vi_translations": vi_trans_str,
-            "definitions": definitions,
+            **base,
             "relations": relations,
             "topics": topics,
         }

@@ -47,7 +47,7 @@ Step 2 and Step 4H in `main.py` consume this unified stream or its cached in-mem
   PRAGMA cache_size = -64000;
   PRAGMA temp_store = MEMORY;
   ```
-  `SQLiteExporter.optimize_and_package()` restores default PRAGMAs (`synchronous = FULL`, `journal_mode = DELETE`) when exporting the final mobile SQLite file.
+  `SQLiteExporter.optimize_and_package()` restores default PRAGMAs (`synchronous = NORMAL`, `journal_mode = WAL`) when exporting the final mobile SQLite file.
 
 ### 2.3 Multi-Core Parallel Processor (`src/nlp/parallel_processor.py`)
 Class `ParallelProcessor` manages multi-core CPU execution:

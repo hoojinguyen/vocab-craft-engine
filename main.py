@@ -768,18 +768,19 @@ def run_pipeline():
         logger.info("[Step 2/5] CHECKPOINT DETECTED: %s words & %s definitions already exist in database.", f"{existing_words:,}", f"{existing_defs:,}")
         logger.info("[Step 2/5] SKIPPING Step 2 (Saved ~15 minutes!). Use --force-reset to re-ingest.")
     else:
-        logger.info("[Step 2/5] Ingesting Kaikki Dictionary (3.18 GB dump)...")
+        logger.info("[Step 2/5] Ingesting Kaikki Dictionary in Single-Pass Stream (3.18 GB dump)...")
         kaikki_parser = KaikkiParser(KAIKKI_JSON_PATH)
         ipa_mapper = IPAMapper()
 
         words_batch = []
         definitions_batch = []
+        pending_definitions = []  # (lemma, def_dict)
 
         count = 0
         words_count = 0
         definitions_count = 0
 
-        for item in kaikki_parser.parse_stream():
+        for item in kaikki_parser.parse_stream_unified():
             count += 1
             lemma = item["lemma"]
             pos = item["pos"]
@@ -800,6 +801,9 @@ def run_pipeline():
                 "cefr_level": cefr_lvl
             })
 
+            for def_item in item["definitions"]:
+                pending_definitions.append((lemma, def_item))
+
             if len(words_batch) >= 5000:
                 db_manager.insert_words_batch(words_batch)
                 words_count += len(words_batch)
@@ -814,29 +818,26 @@ def run_pipeline():
 
         logger.info("[Step 2/5] Completed words ingestion: %s words stored.", f"{words_count:,}")
 
-        # Ingest definitions
-        logger.info("   -> Extracting definitions and Vietnamese translations...")
-        def_stream_count = 0
-        for item in kaikki_parser.parse_stream():
-            def_stream_count += 1
-            word_id = db_manager.get_word_id_by_lemma(item["lemma"])
+        # Ingest definitions using pre-loaded lemma_map
+        logger.info("   -> Staging definitions and Vietnamese translations...")
+        cursor.execute("SELECT lemma, id FROM words;")
+        lemma_map = dict(cursor.fetchall())
+
+        for lemma, def_item in pending_definitions:
+            word_id = lemma_map.get(lemma)
             if word_id:
-                for def_item in item["definitions"]:
-                    definitions_batch.append({
-                        "word_id": word_id,
-                        "definition_en": def_item["definition_en"],
-                        "definition_vi": def_item.get("definition_vi"),
-                        "example": def_item.get("example"),
-                        "source": def_item["source"]
-                    })
+                definitions_batch.append({
+                    "word_id": word_id,
+                    "definition_en": def_item["definition_en"],
+                    "definition_vi": def_item.get("definition_vi"),
+                    "example": def_item.get("example"),
+                    "source": def_item["source"]
+                })
 
-                    if len(definitions_batch) >= 5000:
-                        db_manager.insert_definitions_batch(definitions_batch)
-                        definitions_count += len(definitions_batch)
-                        definitions_batch = []
-
-            if def_stream_count % 100000 == 0:
-                logger.info("   -> Staged %s definitions...", f"{definitions_count:,}")
+                if len(definitions_batch) >= 5000:
+                    db_manager.insert_definitions_batch(definitions_batch)
+                    definitions_count += len(definitions_batch)
+                    definitions_batch = []
 
         if definitions_batch:
             db_manager.insert_definitions_batch(definitions_batch)

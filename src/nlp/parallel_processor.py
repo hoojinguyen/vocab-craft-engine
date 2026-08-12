@@ -94,9 +94,8 @@ class ParallelProcessor:
 
     def __init__(self, max_workers: Optional[int] = None, disable_parallel: bool = False):
         self.disable_parallel = disable_parallel
-        if max_workers is None:
-            max_workers = os.cpu_count() or 4
-        self.max_workers = max(1, max_workers)
+        cpus = os.cpu_count() or 4
+        self.max_workers = max(1, max_workers if max_workers is not None else min(cpus, 8))
         self._executor: Optional[ProcessPoolExecutor] = None
         self._initializer = None
 

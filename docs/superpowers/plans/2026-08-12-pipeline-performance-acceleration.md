@@ -6,7 +6,7 @@
 
 **Architecture:** Add `parse_stream_unified()` to `KaikkiParser` in `src/ingestion/kaikki_parser.py`. Add `enable_fast_staging_mode()` to `DatabaseManager` in `src/db/staging_db.py`. Pre-load `lemma_to_id` in `_link_sentences_incrementally` in `main.py`. Create `ParallelProcessor` in `src/nlp/parallel_processor.py` for multi-core lemmatization and pattern matching with `--no-parallel` CLI flag.
 
-**Tech Stack:** Python 3.10+, SQLite 3, `concurrent.futures.ProcessPoolExecutor`, pytest.
+**Tech Stack:** Python 3.11+, SQLite 3, `concurrent.futures.ProcessPoolExecutor`, pytest.
 
 ## Global Constraints
 

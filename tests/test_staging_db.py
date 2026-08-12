@@ -211,7 +211,12 @@ def test_enable_fast_staging_mode(tmp_path):
     conn = db_mgr.get_connection()
     journal = conn.execute("PRAGMA journal_mode;").fetchone()[0]
     sync = conn.execute("PRAGMA synchronous;").fetchone()[0]
+    cache_size = conn.execute("PRAGMA cache_size;").fetchone()[0]
+    temp_store = conn.execute("PRAGMA temp_store;").fetchone()[0]
+
     assert journal.lower() == "wal"
-    assert sync in (0, "OFF")
+    assert sync in (1, "NORMAL", "1")
+    assert cache_size == -64000
+    assert temp_store in (2, "MEMORY", "2")
     db_mgr.close()
 
