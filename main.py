@@ -675,11 +675,12 @@ def _link_sentences_incrementally(db_manager, checkpoint: Path) -> None:
     map_batch = []
     new_max = last_linked
     cursor = db_manager.get_connection().cursor()
+    lemma_to_id = {lemma: word_id for lemma, word_id in cursor.execute("SELECT lemma, id FROM words;").fetchall()}
     cursor.execute("SELECT id, text_en FROM sentences WHERE id > ? ORDER BY id;", (last_linked,))
     for s_id, text_en in cursor.fetchall():
         lemmas = lemmatizer.lemmatize_text(text_en)
         for lem in lemmas:
-            word_id = db_manager.get_word_id_by_lemma(lem["lemma"])
+            word_id = lemma_to_id.get(lem["lemma"])
             if word_id:
                 map_batch.append({"word_id": word_id, "sentence_id": s_id})
         new_max = max(new_max, s_id)
@@ -729,6 +730,7 @@ def run_pipeline():
         logger.info("   -> Cleared stale sentence-link checkpoint for fresh re-link.")
 
     db_manager.init_schema()
+    db_manager.enable_fast_staging_mode()
     logger.info("[Step 1/5] Schema initialized successfully.")
 
     conn = db_manager.get_connection()

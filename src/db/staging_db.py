@@ -33,6 +33,15 @@ class DatabaseManager:
             self.conn.close()
             self.conn = None
 
+    def enable_fast_staging_mode(self):
+        """Enables high-performance SQLite PRAGMAs for fast staging database operations."""
+        conn = self.get_connection()
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = OFF;")
+        conn.execute("PRAGMA cache_size = -64000;")
+        conn.execute("PRAGMA temp_store = MEMORY;")
+
+
     def init_schema(self):
         """Initializes relational database tables and composite indexes."""
         conn = self.get_connection()
