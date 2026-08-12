@@ -18,3 +18,8 @@
 {"word": "bring up", "pos": "verb", "senses": [{"topics": ["communication"]}]}
 {"word": "smile", "pos": "noun", "senses": [{"topics": ["", "expression"]}]}
 {"word": "luck", "pos": "noun", "senses": [{"topics": ["  chance  "]}]}
+{"word": "learn", "pos": "verb", "translations": [{"code": "vi", "word": "học"}, {"lang": "Vietnamese", "word": "học"}, {"code": "vi", "word": "tìm hiểu"}]}
+{"word": "go", "pos": "verb", "translations": [{"lang_code": "vi", "word": "đi"}]}
+{"word": "stay", "pos": "verb", "translations": [{"code": "VI", "word": "ở lại"}]}
+{"word": "read", "pos": "verb", "translations": [{"code": "vi", "word": "  đọc  "}]}
+{"word": "write", "pos": "verb", "translations": [{"code": "vi", "word": "viết"}, "not a dict"]}

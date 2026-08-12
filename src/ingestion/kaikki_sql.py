@@ -376,6 +376,79 @@ def ingest_relations_sql(conn: duckdb.DuckDBPyConnection) -> int:
     return n
 
 
+def ingest_vi_translations_sql(conn: duckdb.DuckDBPyConnection) -> int:
+    """Backfill vi_translations on raw_words from landing translations.
+
+    Mirrors KaikkiSinglePassParser._extract_vi_translations exactly:
+    - translations where code = 'vi' OR lang = 'Vietnamese' — EXACT,
+      case-sensitive equality; code falls back to lang_code when falsy
+      (COALESCE(NULLIF(TRIM(code), ''), lang_code)), like the oracle's
+      `trans.get('code') or trans.get('lang_code')`; neither code nor
+      lang is lowercased, so 'VI' never matches
+    - translation word = elt->>'word' stripped with the Python whitespace
+      set; empty-after-strip skipped (mirrors .strip() then falsy check)
+    - dedupe on the stripped word EXACT (case-sensitive) per lemma — first
+      occurrence in stream order wins via the module's DISTINCT ON pattern
+      (the oracle's seen-list keeps first occurrence), then survivors are
+      joined with ', ' in stream order (string_agg over ordinal)
+    - non-dict translation elements yield NULL code/lang (->> on a JSON
+      string/number is NULL), filtered out — mirrors the isinstance skip;
+      _json_array_cast() guards non-array translations (0 rows, no raise)
+    - entries with no matching translations are not touched: the
+      UPDATE ... FROM only assigns rows the subquery produced, so existing
+      NULLs are kept
+    - lemma = word stripped + lowercased, joined against raw_words.lemma
+      (the same normalization as ingest_words_sql), which also limits
+      backfill to single-word entries — the oracle only computes
+      vi_translations for words (phrases get definition_vi instead)
+
+    Parity limit: the oracle computes the string per landing entry and
+    INSERT OR IGNORE keeps the first entry's string when the same lemma
+    appears in MULTIPLE landing entries (the dump has multi-POS repeats);
+    this SQL aggregates translations across all landing entries for a
+    lemma. vi_translations is enrichment and not gate-pinned (the Task 9
+    gate compares word rows on (lemma, pos, ipa_uk, ipa_us)), so this
+    divergence is accepted and documented.
+    """
+    code_expr = (
+        f"COALESCE(NULLIF(TRIM(elt->>'code', {_PY_STRIP_SET}), ''), "
+        f"elt->>'lang_code')"
+    )
+    conn.execute(
+        f"""
+        UPDATE raw_words
+        SET vi_translations = sub.vi
+        FROM (
+            SELECT lemma, string_agg(w, ', ' ORDER BY ordinal) AS vi
+            FROM (
+                SELECT DISTINCT ON (lemma, w)
+                    lemma, w, ordinal
+                FROM (
+                    SELECT
+                        TRIM(LOWER(t.word)) AS lemma,
+                        TRIM(elt->>'word', {_PY_STRIP_SET}) AS w,
+                        trans.pos AS ordinal
+                    FROM {LANDING_TABLE} t
+                    CROSS JOIN LATERAL UNNEST({_json_array_cast('t.translations')})
+                        WITH ORDINALITY AS trans(elt, pos)
+                    WHERE ({code_expr} = 'vi' OR (elt->>'lang') = 'Vietnamese')
+                      AND w IS NOT NULL
+                      AND w != ''
+                ) stream
+                ORDER BY lemma, w, ordinal
+            ) deduped
+            GROUP BY lemma
+        ) sub
+        WHERE raw_words.lemma = sub.lemma
+        """
+    )
+    n = conn.execute(
+        "SELECT count(*) FROM raw_words WHERE vi_translations IS NOT NULL"
+    ).fetchone()[0]
+    logger.info("VI translations backfilled: %d", n)
+    return n
+
+
 def ingest_topics_sql(conn: duckdb.DuckDBPyConnection) -> int:
     """Classify sense-level topics into raw_topics.
 

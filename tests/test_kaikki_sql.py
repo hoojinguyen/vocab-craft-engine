@@ -11,6 +11,7 @@ from src.ingestion.kaikki_sql import (
     ingest_phrases_sql,
     ingest_relations_sql,
     ingest_topics_sql,
+    ingest_vi_translations_sql,
     ingest_words_sql,
     read_kaikki_landing,
 )
@@ -28,17 +29,17 @@ def conn(tmp_path):
 
 def test_read_landing_counts_entries_and_skips_corrupt(conn):
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 18  # 20 lines total: 1 corrupt skipped + 1 empty-word filtered
+    assert n == 23  # 25 lines total: 1 corrupt skipped + 1 empty-word filtered
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 18
+    assert n == 23
 
 
 def test_read_landing_is_idempotent(conn):
     read_kaikki_landing(conn, FIXTURE)
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 18
+    assert n == 23
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 18
+    assert n == 23
 
 
 def test_classify_definitions_matches_expected(conn):
@@ -72,7 +73,7 @@ def test_classify_words_matches_expected(conn):
     assert ("excited", "adj", None) in rows
     assert ("smile", "noun", None) in rows
     assert ("luck", "noun", None) in rows
-    assert len(rows) == 10  # kick the bucket, bite the bullet excluded (phrases)
+    assert len(rows) == 15  # kick the bucket, bite the bullet excluded (phrases)
 
 
 def test_classify_phrases_matches_expected(conn):
@@ -128,3 +129,25 @@ def test_classify_topics_matches_expected(conn):
     assert ("bring up", "communication") in rows  # multi-word, non-phrase pos
     assert all(lemma != "at first" for lemma, _ in rows)  # phrase-classified: oracle early-return
     assert len(rows) == 7
+
+
+def test_backfill_vi_translations_matches_expected(conn):
+    read_kaikki_landing(conn, FIXTURE)
+    ingest_words_sql(conn)
+    ingest_vi_translations_sql(conn)
+    rows = conn.execute(
+        "SELECT lemma, vi_translations FROM raw_words ORDER BY lemma"
+    ).fetchall()
+    assert ("happy", "vui vẻ") in rows
+    assert ("run", "chạy") in rows
+    assert ("hello", None) in rows
+    assert ("xyzzy", None) in rows
+    assert ("learn", "học, tìm hiểu") in rows  # dedupe across code AND lang matches, order kept
+    assert ("go", "đi") in rows  # lang_code fallback, no code field
+    assert ("stay", None) in rows  # "VI" != "vi": exact-case, no match
+    assert ("read", "đọc") in rows  # whitespace-stripped word
+    assert ("write", "viết") in rows  # non-dict translation skipped
+    n = conn.execute(
+        "SELECT count(*) FROM raw_words WHERE vi_translations IS NOT NULL"
+    ).fetchone()[0]
+    assert n == 6  # happy, run, learn, go, read, write (oracle-verified)
