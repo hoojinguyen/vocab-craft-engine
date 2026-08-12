@@ -64,22 +64,31 @@ def _build_lemma_cache(ctx: PipelineContext, db):
 
 
 def _link_word_sentences(ctx: PipelineContext, db):
-    """Lemmatize sentences and link to words."""
-    from src.nlp.lemmatizer import Lemmatizer
-    lemmatizer = Lemmatizer()
+    """Lemmatize sentences using spaCy multi-core stream and link to words."""
+    import spacy
+
+    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
     sentences = db.query("SELECT id, text_en FROM raw_sentences").fetchall()
+    if not sentences:
+        return
+
+    ids, texts = zip(*sentences)
     map_batch = []
-    for s_id, text_en in sentences:
-        tokens = lemmatizer.lemmatize_text(text_en)
-        for token in tokens:
-            word_id = ctx.lemma_cache.get(token["lemma"])
+
+    for s_id, doc in zip(ids, nlp.pipe(texts, batch_size=2000)):
+        for token in doc:
+            lemma = token.lemma_.lower()
+            word_id = ctx.lemma_cache.get(lemma)
             if word_id:
                 map_batch.append({"word_id": word_id, "sentence_id": s_id})
-        if len(map_batch) >= 10_000:
+
+        if len(map_batch) >= 20_000:
             db.insert_rows("word_sentence_map", map_batch)
             map_batch = []
+
     if map_batch:
         db.insert_rows("word_sentence_map", map_batch)
+
     logger.info("[Stage 2] Word-sentence links: %d", db.row_count("word_sentence_map"))
 
 
