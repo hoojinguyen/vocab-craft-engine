@@ -10,6 +10,7 @@ from src.ingestion.kaikki_sql import (
     ingest_definitions_sql,
     ingest_phrases_sql,
     ingest_relations_sql,
+    ingest_topics_sql,
     ingest_words_sql,
     read_kaikki_landing,
 )
@@ -27,17 +28,17 @@ def conn(tmp_path):
 
 def test_read_landing_counts_entries_and_skips_corrupt(conn):
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 13  # 15 lines total: 1 corrupt skipped + 1 empty-word filtered
+    assert n == 18  # 20 lines total: 1 corrupt skipped + 1 empty-word filtered
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 13
+    assert n == 18
 
 
 def test_read_landing_is_idempotent(conn):
     read_kaikki_landing(conn, FIXTURE)
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 13
+    assert n == 18
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 13
+    assert n == 18
 
 
 def test_classify_definitions_matches_expected(conn):
@@ -68,7 +69,10 @@ def test_classify_words_matches_expected(conn):
     assert ("colour", "noun", "/ˈkʌl.ɚ/") in rows  # untagged fallback for uk, US override
     assert ("fast", "adj", None) in rows
     assert ("big", "adj", None) in rows
-    assert len(rows) == 7  # kick the bucket, bite the bullet excluded (phrases)
+    assert ("excited", "adj", None) in rows
+    assert ("smile", "noun", None) in rows
+    assert ("luck", "noun", None) in rows
+    assert len(rows) == 10  # kick the bucket, bite the bullet excluded (phrases)
 
 
 def test_classify_phrases_matches_expected(conn):
@@ -106,3 +110,21 @@ def test_classify_relations_matches_expected(conn):
     assert n_big == 25  # cap after dedupe: 27 distinct targets, first 25 in stream order
     assert ("big", "synonym", "ca") not in rows  # 27th target dropped by the cap
     assert len(rows) == 31  # 4 + carry out + fast + big (bite the bullet excluded)
+
+
+def test_classify_topics_matches_expected(conn):
+    read_kaikki_landing(conn, FIXTURE)
+    ingest_topics_sql(conn)
+    rows = conn.execute(
+        "SELECT lemma, raw_topic FROM raw_topics ORDER BY lemma, raw_topic"
+    ).fetchall()
+    assert ("happy", "emotion") in rows
+    assert ("run", "business") in rows
+    assert ("excited", "EMOTION") in rows  # first occurrence wins, original case kept
+    assert ("excited", "emotion") not in rows  # case-insensitive dedupe
+    assert ("excited", "mood") in rows
+    assert ("luck", "chance") in rows  # whitespace-padded topic trimmed
+    assert ("smile", "expression") in rows  # empty topic skipped
+    assert ("bring up", "communication") in rows  # multi-word, non-phrase pos
+    assert all(lemma != "at first" for lemma, _ in rows)  # phrase-classified: oracle early-return
+    assert len(rows) == 7

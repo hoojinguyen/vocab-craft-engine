@@ -365,6 +365,56 @@ def ingest_relations_sql(conn: duckdb.DuckDBPyConnection) -> int:
     return n
 
 
+def ingest_topics_sql(conn: duckdb.DuckDBPyConnection) -> int:
+    """Classify sense-level topics into raw_topics.
+
+    Mirrors KaikkiSinglePassParser._extract_topics exactly:
+    - non-phrase entries only (space in word AND pos in the phrase-allowed
+      set excluded), same predicate as ingest_definitions_sql — the oracle
+      returns early for phrases in _classify
+    - senses unnested in array order, each sense's topics in array order;
+      topic = (raw or '').strip(), empty/whitespace-only skipped
+    - dedupe on lower(raw_topic) per lemma — first occurrence in stream
+      order wins, keeping the original (stripped) case, like the oracle's
+      seen-set; raw_topics has no unique constraint so dedupe must be in SQL
+    - lemma = word stripped + lowercased
+    - _json_array_cast() guards both senses and topics so a malformed-but-
+      parseable line can't abort the ingest (non-array -> zero rows,
+      matching the oracle's tolerance)
+    """
+    conn.execute(
+        f"""
+        INSERT INTO raw_topics (lemma, raw_topic)
+        SELECT lemma, raw_topic
+        FROM (
+            SELECT DISTINCT ON (lemma, lower(raw_topic))
+                lemma, raw_topic
+            FROM (
+                SELECT
+                    TRIM(LOWER(t.word)) AS lemma,
+                    TRIM(topic.elt->>'$') AS raw_topic,
+                    s.pos * 1000000 + topic.pos AS ordinal
+                FROM {LANDING_TABLE} t
+                CROSS JOIN LATERAL UNNEST({_json_array_cast('t.senses')})
+                    WITH ORDINALITY AS s(elt, pos)
+                CROSS JOIN LATERAL UNNEST({_json_array_cast("s.elt->'topics'")})
+                    WITH ORDINALITY AS topic(elt, pos)
+                WHERE NOT (
+                    position(' ' in TRIM(t.word)) > 0
+                    AND LOWER(TRIM(COALESCE(t.pos, ''))) IN {_PHRASE_POS_LIST}
+                )
+                  AND raw_topic IS NOT NULL
+                  AND raw_topic != ''
+            ) stream
+            ORDER BY lemma, lower(raw_topic), ordinal
+        ) deduped
+        """
+    )
+    n = conn.execute("SELECT count(*) FROM raw_topics").fetchone()[0]
+    logger.info("Topics classified: %d", n)
+    return n
+
+
 def read_kaikki_landing(conn: duckdb.DuckDBPyConnection, jsonl_path: Path) -> int:
     """Read the Kaikki JSONL into the raw_kaikki landing table via native reader.
 
