@@ -25,17 +25,17 @@ def conn(tmp_path):
 
 def test_read_landing_counts_entries_and_skips_corrupt(conn):
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 6  # 8 lines total: 1 corrupt skipped + 1 empty-word filtered
+    assert n == 7  # 9 lines total: 1 corrupt skipped + 1 empty-word filtered
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 6
+    assert n == 7
 
 
 def test_read_landing_is_idempotent(conn):
     read_kaikki_landing(conn, FIXTURE)
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 6
+    assert n == 7
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 6
+    assert n == 7
 
 
 def test_classify_definitions_matches_expected(conn):
@@ -48,7 +48,8 @@ def test_classify_definitions_matches_expected(conn):
     assert ("happy", "feeling joy", None) in rows
     assert ("run", "to move fast", "Run!") in rows  # raw_glosses fallback
     assert ("run", "to manage", None) in rows
-    assert len(rows) == 4
+    assert ("take off", "to remove clothing", None) in rows  # multi-word, non-phrase pos
+    assert len(rows) == 5
 
 
 def test_classify_words_matches_expected(conn):

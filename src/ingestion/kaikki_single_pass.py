@@ -182,9 +182,9 @@ class KaikkiSinglePassParser:
         results = []
         vi = self._extract_vi_translations(item)
         for sense in item.get("senses", []):
-            glosses = sense.get("glosses", []) or sense.get("raw_glosses", [])
+            glosses = sense.get("glosses", []) or sense.get("raw_glosses", []) or []
             example = None
-            for ex in sense.get("examples", []):
+            for ex in sense.get("examples", []) or []:
                 if isinstance(ex, dict):
                     example = ex.get("text")
                 elif isinstance(ex, str):
@@ -192,6 +192,8 @@ class KaikkiSinglePassParser:
                 if example:
                     break
             for gloss in glosses:
+                if not isinstance(gloss, str):
+                    continue
                 results.append({
                     "lemma": word.lower(),
                     "definition_en": gloss.strip(),
