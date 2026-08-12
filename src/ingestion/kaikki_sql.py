@@ -22,6 +22,12 @@ LANDING_TABLE = "raw_kaikki"
 
 _PHRASE_POS_LIST = "(" + ", ".join("'" + p + "'" for p in PHRASE_POS_ALLOWED) + ")"
 
+# Python str.strip() removes ASCII whitespace [ \t\n\r\v\f]; DuckDB TRIM
+# defaults to spaces only. E-string escapes cover \t\n\r\f but not \v, hence
+# chr(11) for the vertical tab. Unicode whitespace (e.g. \xa0) is not
+# stripped — known parity limit, JSON dict data never contains those.
+_PY_STRIP_SET = "E' \\t\\n\\r\\f' || chr(11)"
+
 RELATION_SECTIONS = ("synonyms", "antonyms", "hypernyms", "hyponyms")
 RELATION_TYPES = {
     "synonyms": "synonym",
@@ -126,6 +132,15 @@ def ingest_words_sql(conn: duckdb.DuckDBPyConnection) -> int:
     return n
 
 
+def _exclude_phrase(table_alias: str) -> str:
+    """SQL fragment excluding phrase-classified entries (space in word AND pos
+    in the phrase-allowed set) — the oracle early-returns for phrases."""
+    return (
+        f"NOT (position(' ' in TRIM({table_alias}.word)) > 0 "
+        f"AND LOWER(TRIM(COALESCE({table_alias}.pos, ''))) IN {_PHRASE_POS_LIST})"
+    )
+
+
 def ingest_definitions_sql(conn: duckdb.DuckDBPyConnection) -> int:
     """Classify senses into raw_definitions.
 
@@ -168,10 +183,7 @@ def ingest_definitions_sql(conn: duckdb.DuckDBPyConnection) -> int:
                      THEN CAST(sense.elt->'glosses' AS VARCHAR[])
                      ELSE CAST(sense.elt->'raw_glosses' AS VARCHAR[]) END) AS g(gl)
         ) glosses
-        WHERE NOT (
-            position(' ' in TRIM(t.word)) > 0
-            AND LOWER(TRIM(COALESCE(t.pos, ''))) IN {_PHRASE_POS_LIST}
-        )
+        WHERE {_exclude_phrase('t')}
           AND glosses.definition_en IS NOT NULL
         """
     )
@@ -263,9 +275,11 @@ def _json_array_cast(expr: str) -> str:
 def _relations_branch(section: str, relation_type: str, sense_level: bool) -> str:
     """One UNION ALL branch of the relations stream (top-level or sense-level).
 
-    Targets are normalized to LOWER(TRIM(elt->>'word')) before every filter,
-    and non-object candidates yield NULL targets (duckdb's '->>'word'' on a
-    JSON non-object is NULL), matching the oracle's isinstance skip.
+    Targets are normalized to LOWER(TRIM(elt->>'word', _PY_STRIP_SET)) — the
+    full Python strip() ASCII whitespace set, matching the oracle — before
+    every filter, and non-object candidates yield NULL targets (duckdb's
+    '->>'word'' on a JSON non-object is NULL), matching the oracle's
+    isinstance skip.
 
     ordinal reproduces the oracle's stream order: top-level elements in array
     order (rel.pos), then each sense's array in sense order
@@ -293,14 +307,11 @@ def _relations_branch(section: str, relation_type: str, sense_level: bool) -> st
     SELECT
         TRIM(LOWER(t.word)) AS lemma,
         '{relation_type}' AS relation_type,
-        LOWER(TRIM(rel.elt->>'word')) AS target_text,
+        LOWER(TRIM(rel.elt->>'word', {_PY_STRIP_SET})) AS target_text,
         '{section}' AS source,
         {ordinal} AS ordinal
     {from_clause}
-    WHERE NOT (
-        position(' ' in TRIM(t.word)) > 0
-        AND LOWER(TRIM(COALESCE(t.pos, ''))) IN {_PHRASE_POS_LIST}
-    )
+    WHERE {_exclude_phrase('t')}
       AND target_text IS NOT NULL
       AND target_text != ''
       AND target_text != lemma
@@ -370,14 +381,26 @@ def ingest_topics_sql(conn: duckdb.DuckDBPyConnection) -> int:
 
     Mirrors KaikkiSinglePassParser._extract_topics exactly:
     - non-phrase entries only (space in word AND pos in the phrase-allowed
-      set excluded), same predicate as ingest_definitions_sql — the oracle
-      returns early for phrases in _classify
+      set excluded, via _exclude_phrase) — the oracle returns early for
+      phrases in _classify
     - senses unnested in array order, each sense's topics in array order;
       topic = (raw or '').strip(), empty/whitespace-only skipped
     - dedupe on lower(raw_topic) per lemma — first occurrence in stream
       order wins, keeping the original (stripped) case, like the oracle's
       seen-set; raw_topics has no unique constraint so dedupe must be in SQL
     - lemma = word stripped + lowercased
+    - ordinal = s.pos * 1000000 + topic.pos reproduces the oracle's stream
+      order: senses in array order, topics within each sense in array order —
+      the same encoding scheme as _relations_branch, so any earlier stream
+      position has a smaller ordinal and DISTINCT ON picks the true first
+      occurrence
+    - non-string topic elements are coerced to text via ->>'$' (e.g. a JSON
+      number becomes '5'), where the oracle would raise on (raw or '').strip()
+      of a non-string — SQL is deliberately more tolerant
+    - whitespace trim parity limit: TRIM with _PY_STRIP_SET covers the
+      ASCII [ \\t\\n\\r\\v\\f] set that Python str.strip() removes; Python
+      additionally strips Unicode whitespace (e.g. \\xa0), which JSON dict
+      data never contains — accepted divergence
     - _json_array_cast() guards both senses and topics so a malformed-but-
       parseable line can't abort the ingest (non-array -> zero rows,
       matching the oracle's tolerance)
@@ -392,17 +415,14 @@ def ingest_topics_sql(conn: duckdb.DuckDBPyConnection) -> int:
             FROM (
                 SELECT
                     TRIM(LOWER(t.word)) AS lemma,
-                    TRIM(topic.elt->>'$') AS raw_topic,
+                    TRIM(topic.elt->>'$', {_PY_STRIP_SET}) AS raw_topic,
                     s.pos * 1000000 + topic.pos AS ordinal
                 FROM {LANDING_TABLE} t
                 CROSS JOIN LATERAL UNNEST({_json_array_cast('t.senses')})
                     WITH ORDINALITY AS s(elt, pos)
                 CROSS JOIN LATERAL UNNEST({_json_array_cast("s.elt->'topics'")})
                     WITH ORDINALITY AS topic(elt, pos)
-                WHERE NOT (
-                    position(' ' in TRIM(t.word)) > 0
-                    AND LOWER(TRIM(COALESCE(t.pos, ''))) IN {_PHRASE_POS_LIST}
-                )
+                WHERE {_exclude_phrase('t')}
                   AND raw_topic IS NOT NULL
                   AND raw_topic != ''
             ) stream

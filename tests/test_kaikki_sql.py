@@ -120,8 +120,8 @@ def test_classify_topics_matches_expected(conn):
     ).fetchall()
     assert ("happy", "emotion") in rows
     assert ("run", "business") in rows
-    assert ("excited", "EMOTION") in rows  # first occurrence wins, original case kept
-    assert ("excited", "emotion") not in rows  # case-insensitive dedupe
+    assert ("excited", "emotion") in rows  # first occurrence wins, original case kept
+    assert ("excited", "EMOTION") not in rows  # case-insensitive dedupe
     assert ("excited", "mood") in rows
     assert ("luck", "chance") in rows  # whitespace-padded topic trimmed
     assert ("smile", "expression") in rows  # empty topic skipped
