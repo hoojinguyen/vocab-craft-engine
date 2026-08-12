@@ -174,3 +174,17 @@ def test_drop_landing_removes_table(conn):
         "SELECT table_name FROM information_schema.tables WHERE table_name = 'raw_kaikki'"
     ).fetchall()
     assert tables == []
+
+
+def test_validation_gate_passes_on_fixture(tmp_path):
+    from src.ingestion.kaikki_single_pass import KaikkiSinglePassParser
+    from src.ingestion.kaikki_sql import validate_sql_vs_python
+
+    parser = KaikkiSinglePassParser(FIXTURE)
+    conn = duckdb.connect(str(tmp_path / "gate.duckdb"))
+    try:
+        result = validate_sql_vs_python(conn, FIXTURE, parser=parser)
+    finally:
+        conn.close()
+    assert result.passed is True
+    assert result.diffs == {}

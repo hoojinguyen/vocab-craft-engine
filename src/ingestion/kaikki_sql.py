@@ -4,16 +4,21 @@ Mirrors src.ingestion.kaikki_single_pass.KaikkiSinglePassParser semantics
 exactly. KaikkiSinglePassParser is kept as the validation oracle and fallback.
 """
 
+import json
 import logging
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
 
+from src.db.duckdb_manager import SCHEMA_SQL
 from src.ingestion.kaikki_single_pass import (
     CLEAN_CHARS_PATTERN,
     MAX_RELATIONS_PER_TYPE,
     MAX_WORDS_PER_PHRASE,
     PHRASE_POS_ALLOWED,
+    KaikkiSinglePassParser,
 )
 
 logger = logging.getLogger(__name__)
@@ -557,3 +562,168 @@ def drop_landing(conn: duckdb.DuckDBPyConnection):
     """Drop the raw_kaikki landing table to keep staging lean."""
     conn.execute(f"DROP TABLE IF EXISTS {LANDING_TABLE}")
     logger.info("Landing table dropped.")
+
+
+@dataclass
+class ValidationResult:
+    """Outcome of a SQL-fast-path vs Python-parser parity check."""
+
+    passed: bool
+    diffs: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _rows_from_parser(
+    parser: KaikkiSinglePassParser, n_lines: int
+) -> dict[str, set[tuple]]:
+    """Parse the first n_lines of the dump with the Python parser.
+
+    Physical lines are counted (blank/corrupt included), matching
+    parse_all(max_entries) slice semantics. Per-table row sets use the same
+    column shapes as _rows_from_sql so the gate can diff them directly.
+    """
+    rows: dict[str, set[tuple]] = {
+        k: set() for k in ["word", "definition", "phrase", "relation", "topic"]
+    }
+    with open(parser.file_path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if i >= n_lines:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            word = (item.get("word") or "").strip()
+            if not word:
+                continue
+            pos = (item.get("pos") or "").strip().lower()
+            is_phrase = " " in word and pos in PHRASE_POS_ALLOWED
+            if is_phrase:
+                p = parser._extract_phrase(word, pos, item)
+                if p:
+                    rows["phrase"].add(
+                        (p["phrase"], p["phrase_type"], p.get("definition_en"), p.get("ipa"))
+                    )
+                continue
+            w = parser._extract_word(word, pos, item)
+            if w:
+                rows["word"].add((w["lemma"], w["pos"], w.get("ipa_uk"), w.get("ipa_us")))
+            for d in parser._extract_definitions(word, item):
+                rows["definition"].add((d["lemma"], d["definition_en"], d.get("example")))
+            for r in parser._extract_relations(word, item):
+                rows["relation"].add((r["lemma"], r["relation_type"], r["target_text"]))
+            for t in parser._extract_topics(word, item):
+                rows["topic"].add((t["lemma"], t["raw_topic"]))
+    return rows
+
+
+def _rows_from_sql(
+    conn: duckdb.DuckDBPyConnection, n_lines: int, jsonl_path: Path
+) -> dict[str, set[tuple]]:
+    """Run the SQL fast path on the first n_lines, return per-table row sets.
+
+    The slice is materialized to a tempfile so read_json sees exactly the
+    same physical lines (corrupt ones skipped by ignore_errors) the parser
+    iterates. The 5 raw_* tables are wiped first — the gate is safe to run
+    on a conn that already holds staged data from a prior read.
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        sample_path = Path(f.name)
+        with open(jsonl_path, "r", encoding="utf-8") as src:
+            for i, line in enumerate(src):
+                if i >= n_lines:
+                    break
+                f.write(line)
+    try:
+        conn.execute(SCHEMA_SQL)
+        read_kaikki_landing(conn, sample_path)
+        conn.execute("DELETE FROM raw_words")
+        conn.execute("DELETE FROM raw_definitions")
+        conn.execute("DELETE FROM raw_phrases")
+        conn.execute("DELETE FROM raw_relations")
+        conn.execute("DELETE FROM raw_topics")
+        ingest_words_sql(conn)
+        ingest_definitions_sql(conn)
+        ingest_phrases_sql(conn)
+        ingest_relations_sql(conn)
+        ingest_topics_sql(conn)
+        ingest_vi_translations_sql(conn)
+
+        return {
+            "word": set(
+                conn.execute(
+                    "SELECT lemma, pos, ipa_uk, ipa_us FROM raw_words"
+                ).fetchall()
+            ),
+            "definition": set(
+                conn.execute(
+                    "SELECT lemma, definition_en, example FROM raw_definitions"
+                ).fetchall()
+            ),
+            "phrase": set(
+                conn.execute(
+                    "SELECT phrase, phrase_type, definition_en, ipa FROM raw_phrases"
+                ).fetchall()
+            ),
+            "relation": set(
+                conn.execute(
+                    "SELECT lemma, relation_type, target_text FROM raw_relations"
+                ).fetchall()
+            ),
+            "topic": set(
+                conn.execute("SELECT lemma, raw_topic FROM raw_topics").fetchall()
+            ),
+        }
+    finally:
+        sample_path.unlink(missing_ok=True)
+
+
+def validate_sql_vs_python(
+    conn: duckdb.DuckDBPyConnection,
+    jsonl_path: Path,
+    sample_lines: int = 50_000,
+    parser: KaikkiSinglePassParser | None = None,
+) -> ValidationResult:
+    """Compare the SQL fast path against the Python parser on a sample.
+
+    Both sides run on the first `sample_lines` physical lines of the dump
+    (blank and corrupt lines count toward the slice, matching
+    parse_all(max_entries) semantics). The provided conn is used as scratch
+    space: the raw_* tables are wiped first, so prior staged data cannot
+    leak in, and the gate never touches the real staging DB.
+
+    Gate scope — columns compared per table:
+    - word:       (lemma, pos, ipa_uk, ipa_us) — vi_translations deliberately
+      excluded: multi-entry lemmas aggregate translations differently in the
+      SQL backfill (documented divergence in ingest_vi_translations_sql)
+    - definition: (lemma, definition_en, example)
+    - phrase:     (phrase, phrase_type, definition_en, ipa)
+    - relation:   (lemma, relation_type, target_text)
+    - topic:      (lemma, raw_topic)
+
+    Sets, not multisets: raw_phrases.phrase is UNIQUE, so the SQL path
+    collapses repeated dump entries where the oracle keeps duplicates; the
+    SQL relations/topics paths dedupe via DISTINCT ON, mirroring the
+    oracle's seen-sets — set comparison is the right shape for both.
+    """
+    parser = parser or KaikkiSinglePassParser(jsonl_path)
+    py_rows = _rows_from_parser(parser, sample_lines)
+    sql_rows = _rows_from_sql(conn, sample_lines, jsonl_path)
+
+    diffs: dict[str, list[str]] = {}
+    for table in py_rows:
+        only_py = py_rows[table] - sql_rows[table]
+        only_sql = sql_rows[table] - py_rows[table]
+        if only_py or only_sql:
+            diffs[table] = [
+                f"only_py[{len(only_py)}]: {sorted(only_py, key=str)[:3]}",
+                f"only_sql[{len(only_sql)}]: {sorted(only_sql, key=str)[:3]}",
+            ]
+    passed = not diffs
+    if passed:
+        logger.info("Validation gate PASSED (sample=%d lines).", sample_lines)
+    else:
+        logger.warning("Validation gate FAILED: %s", diffs)
+    return ValidationResult(passed=passed, diffs=diffs)
