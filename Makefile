@@ -77,6 +77,10 @@ test:
 	@echo "==> Running Pytest test suite..."
 	$(PYTEST) -v
 
+benchmark-ingest:
+	@echo "==> Benchmarking Kaikki SQL ingest (full dump)..."
+	$(PYTEST) tests/test_kaikki_sql_benchmark.py -v -s -m slow
+
 clean-db:
 	@echo "==> Deleting old output databases..."
 	rm -f data/output/english_dataset.db data/output/english_dataset.db-wal data/output/english_dataset.db-shm

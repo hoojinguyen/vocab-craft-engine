@@ -542,8 +542,10 @@ def ingest_kaikki_sql(
 ) -> dict[str, int]:
     """Run the full SQL fast path: landing read + all classifications.
 
-    Returns per-table row counts for reporting.
+    Returns per-table row counts for reporting. Bootstraps the staging
+    schema first (idempotent), so the entry point is safe on a bare conn.
     """
+    conn.execute(SCHEMA_SQL)
     read_kaikki_landing(conn, jsonl_path)
     stats = {
         "words": ingest_words_sql(conn),
