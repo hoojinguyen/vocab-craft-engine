@@ -109,6 +109,61 @@ def ingest_words_sql(conn: duckdb.DuckDBPyConnection) -> int:
     return n
 
 
+def ingest_definitions_sql(conn: duckdb.DuckDBPyConnection) -> int:
+    """Classify senses into raw_definitions.
+
+    Mirrors KaikkiSinglePassParser._extract_definitions exactly:
+    - UNNEST senses per entry; only phrase-classified entries are excluded
+      (is_phrase: space in word AND pos in phrase-allowed set) — multi-word
+      non-phrase entries keep their full lemma, matching the oracle
+    - glosses preferred, raw_glosses fallback when glosses empty
+    - one row per gloss (trimmed), empty glosses kept (oracle emits them)
+    - example: first non-empty sense example — dict .text or bare string
+    - source: Kaikki/Wiktionary
+    - lemma: word stripped + lowercased
+    """
+    conn.execute(
+        f"""
+        INSERT INTO raw_definitions (lemma, definition_en, example, source)
+        SELECT
+            TRIM(LOWER(t.word)) AS lemma,
+            glosses.definition_en,
+            sense.example,
+            'Kaikki/Wiktionary' AS source
+        FROM {LANDING_TABLE} t
+        CROSS JOIN LATERAL (
+            SELECT
+                elt,
+                list_extract(
+                    list_filter(
+                        [CASE WHEN json_type(e) = 'OBJECT' THEN e->>'text'
+                              WHEN json_type(e) = 'VARCHAR' THEN e->>'$'
+                              ELSE NULL END
+                         FOR e IN CAST(elt->'examples' AS JSON[])],
+                        x -> x IS NOT NULL AND x != ''),
+                    1) AS example
+            FROM UNNEST(CAST(t.senses AS JSON[])) AS s(elt)
+        ) sense
+        CROSS JOIN LATERAL (
+            SELECT TRIM(gl) AS definition_en
+            FROM UNNEST(
+                CASE WHEN len(CAST(sense.elt->'glosses' AS VARCHAR[])) > 0
+                     THEN CAST(sense.elt->'glosses' AS VARCHAR[])
+                     ELSE CAST(sense.elt->'raw_glosses' AS VARCHAR[]) END) AS g(gl)
+        ) glosses
+        WHERE NOT (
+            position(' ' in TRIM(t.word)) > 0
+            AND LOWER(TRIM(COALESCE(t.pos, ''))) IN
+                ('idiom', 'phrasal verb', 'proverb', 'phrase')
+        )
+          AND glosses.definition_en IS NOT NULL
+        """
+    )
+    n = conn.execute("SELECT count(*) FROM raw_definitions").fetchone()[0]
+    logger.info("Definitions classified: %d", n)
+    return n
+
+
 def read_kaikki_landing(conn: duckdb.DuckDBPyConnection, jsonl_path: Path) -> int:
     """Read the Kaikki JSONL into the raw_kaikki landing table via native reader.
 

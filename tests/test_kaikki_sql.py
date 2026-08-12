@@ -6,7 +6,11 @@ import duckdb
 import pytest
 
 from src.db.duckdb_manager import SCHEMA_SQL
-from src.ingestion.kaikki_sql import ingest_words_sql, read_kaikki_landing
+from src.ingestion.kaikki_sql import (
+    ingest_definitions_sql,
+    ingest_words_sql,
+    read_kaikki_landing,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kaikki_sample.jsonl"
 
@@ -32,6 +36,19 @@ def test_read_landing_is_idempotent(conn):
     assert n == 6
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
     assert n == 6
+
+
+def test_classify_definitions_matches_expected(conn):
+    read_kaikki_landing(conn, FIXTURE)
+    ingest_definitions_sql(conn)
+    rows = conn.execute(
+        "SELECT lemma, definition_en, example FROM raw_definitions ORDER BY lemma, definition_en"
+    ).fetchall()
+    assert ("hello", "a greeting", "Hello world!") in rows
+    assert ("happy", "feeling joy", None) in rows
+    assert ("run", "to move fast", "Run!") in rows  # raw_glosses fallback
+    assert ("run", "to manage", None) in rows
+    assert len(rows) == 4
 
 
 def test_classify_words_matches_expected(conn):
