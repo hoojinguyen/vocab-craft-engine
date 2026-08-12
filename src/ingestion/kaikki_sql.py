@@ -382,15 +382,19 @@ def ingest_vi_translations_sql(conn: duckdb.DuckDBPyConnection) -> int:
     Mirrors KaikkiSinglePassParser._extract_vi_translations exactly:
     - translations where code = 'vi' OR lang = 'Vietnamese' — EXACT,
       case-sensitive equality; code falls back to lang_code when falsy
-      (COALESCE(NULLIF(TRIM(code), ''), lang_code)), like the oracle's
-      `trans.get('code') or trans.get('lang_code')`; neither code nor
-      lang is lowercased, so 'VI' never matches
+      (COALESCE(NULLIF(code, ''), lang_code)), like the oracle's
+      `trans.get('code') or trans.get('lang_code')` — code is NOT
+      trimmed (whitespace-padded codes are truthy and never match, e.g.
+      ' vi '); neither code nor lang is lowercased, so 'VI' never
+      matches
     - translation word = elt->>'word' stripped with the Python whitespace
       set; empty-after-strip skipped (mirrors .strip() then falsy check)
     - dedupe on the stripped word EXACT (case-sensitive) per lemma — first
       occurrence in stream order wins via the module's DISTINCT ON pattern
       (the oracle's seen-list keeps first occurrence), then survivors are
-      joined with ', ' in stream order (string_agg over ordinal)
+      joined with ', ' in per-entry stream order (string_agg over ordinal;
+      ordinal restarts per entry, so cross-entry order for multi-entry
+      lemmas is unstable — inside the documented parity limit below)
     - non-dict translation elements yield NULL code/lang (->> on a JSON
       string/number is NULL), filtered out — mirrors the isinstance skip;
       _json_array_cast() guards non-array translations (0 rows, no raise)
@@ -410,10 +414,7 @@ def ingest_vi_translations_sql(conn: duckdb.DuckDBPyConnection) -> int:
     gate compares word rows on (lemma, pos, ipa_uk, ipa_us)), so this
     divergence is accepted and documented.
     """
-    code_expr = (
-        f"COALESCE(NULLIF(TRIM(elt->>'code', {_PY_STRIP_SET}), ''), "
-        f"elt->>'lang_code')"
-    )
+    code_expr = "COALESCE(NULLIF(elt->>'code', ''), elt->>'lang_code')"
     conn.execute(
         f"""
         UPDATE raw_words

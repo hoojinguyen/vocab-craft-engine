@@ -29,17 +29,17 @@ def conn(tmp_path):
 
 def test_read_landing_counts_entries_and_skips_corrupt(conn):
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 23  # 25 lines total: 1 corrupt skipped + 1 empty-word filtered
+    assert n == 24  # 26 lines total: 1 corrupt skipped + 1 empty-word filtered
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 23
+    assert n == 24
 
 
 def test_read_landing_is_idempotent(conn):
     read_kaikki_landing(conn, FIXTURE)
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 23
+    assert n == 24
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 23
+    assert n == 24
 
 
 def test_classify_definitions_matches_expected(conn):
@@ -73,7 +73,8 @@ def test_classify_words_matches_expected(conn):
     assert ("excited", "adj", None) in rows
     assert ("smile", "noun", None) in rows
     assert ("luck", "noun", None) in rows
-    assert len(rows) == 15  # kick the bucket, bite the bullet excluded (phrases)
+    assert ("watch", "verb", None) in rows
+    assert len(rows) == 16  # kick the bucket, bite the bullet excluded (phrases)
 
 
 def test_classify_phrases_matches_expected(conn):
@@ -147,6 +148,7 @@ def test_backfill_vi_translations_matches_expected(conn):
     assert ("stay", None) in rows  # "VI" != "vi": exact-case, no match
     assert ("read", "đọc") in rows  # whitespace-stripped word
     assert ("write", "viết") in rows  # non-dict translation skipped
+    assert ("watch", None) in rows  # " vi " != "vi": code is NOT trimmed
     n = conn.execute(
         "SELECT count(*) FROM raw_words WHERE vi_translations IS NOT NULL"
     ).fetchone()[0]

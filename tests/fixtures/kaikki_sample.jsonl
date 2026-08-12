@@ -23,3 +23,4 @@
 {"word": "stay", "pos": "verb", "translations": [{"code": "VI", "word": "ở lại"}]}
 {"word": "read", "pos": "verb", "translations": [{"code": "vi", "word": "  đọc  "}]}
 {"word": "write", "pos": "verb", "translations": [{"code": "vi", "word": "viết"}, "not a dict"]}
+{"word": "watch", "pos": "verb", "translations": [{"code": " vi ", "word": "xem"}]}
