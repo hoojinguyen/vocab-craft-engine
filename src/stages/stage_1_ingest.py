@@ -108,8 +108,27 @@ def _ingest_kaikki_fallback(db):
     logger.info("[Stage 1] Kaikki (Python fallback): %s", total)
 
 
+def _ingest_corpora_pair(db, en_path, vi_path, source: str):
+    """Ingest parallel EN-VI corpus files directly via DuckDB SQL."""
+    conn = db.conn if hasattr(db, "conn") else db
+
+    conn.execute(f"""
+        INSERT INTO raw_sentences (text_en, text_vi, difficulty_score, cefr_level, source)
+        SELECT
+            en.column0 AS text_en,
+            vi.column0 AS text_vi,
+            2.0 AS difficulty_score,
+            'B1' AS cefr_level,
+            '{source}' AS source
+        FROM read_csv('{en_path}', header=false, auto_detect=false, columns={{'column0': 'VARCHAR'}}, ignore_errors=true) WITH ORDINALITY en
+        JOIN read_csv('{vi_path}', header=false, auto_detect=false, columns={{'column0': 'VARCHAR'}}, ignore_errors=true) WITH ORDINALITY vi
+          ON en.ordinality = vi.ordinality
+        WHERE len(trim(en.column0)) > 2 AND len(trim(vi.column0)) > 2;
+    """)
+
+
 def _ingest_corpora(ctx: PipelineContext):
-    """Ingest Tatoeba + parallel corpora into DuckDB."""
+    """Ingest Tatoeba + parallel corpora into DuckDB via vectorized SQL."""
     db = ctx.duckdb_conn
     corpora = [
         (OPENSUBTITLES_EN, OPENSUBTITLES_VI, "OpenSubtitles"),
@@ -120,30 +139,7 @@ def _ingest_corpora(ctx: PipelineContext):
         if not en_path.exists() or not vi_path.exists():
             logger.info("   [Corpus] %s missing — skipping.", source)
             continue
-        from src.ingestion.opus_parser import ParallelCorpusParser
-        from src.ingestion.sentence_filter import SentenceFilter
-        sf = SentenceFilter()
-        batch = []
-        inserted = 0
-        for pair in ParallelCorpusParser(en_path, vi_path, source=source).parse_pairs():
-            if inserted >= MAX_SENTENCES_PER_CORPUS:
-                break
-            if not sf.is_clean_pair(pair["text_en"], pair["text_vi"]):
-                continue
-            batch.append({
-                "text_en": pair["text_en"],
-                "text_vi": pair["text_vi"],
-                "difficulty_score": 2.0,
-                "cefr_level": "B1",
-                "source": source,
-            })
-            if len(batch) >= 5000:
-                db.insert_rows("raw_sentences", batch)
-                inserted += len(batch)
-                batch = []
-        if batch:
-            db.insert_rows("raw_sentences", batch)
-            inserted += len(batch)
-        logger.info("   [Corpus] %s: %d sentences.", source, inserted)
+        _ingest_corpora_pair(db, en_path, vi_path, source)
+        logger.info("   [Corpus] %s ingested.", source)
 
     logger.info("[Stage 1] Total sentences: %d", db.row_count("raw_sentences"))
