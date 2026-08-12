@@ -19,21 +19,41 @@ def stage_2_transform(ctx: PipelineContext):
 
 
 def _apply_cefr_grading(ctx: PipelineContext, db):
-    """Apply CEFR grading via DuckDB SQL (vectorized)."""
-    from src.nlp.cefr_grader import CEFRGrader
-    grader = CEFRGrader(subtlex_path=ctx.raw_dir / "SUBTLEX_US.csv")
-    rows = db.query("SELECT id, lemma FROM raw_words").fetchall()
-    updates = []
-    for word_id, lemma in rows:
-        level, rank = grader.grade_word(lemma)
-        updates.append((rank, level, word_id))
-    conn = db.connect()
-    conn.executemany(
-        "UPDATE raw_words SET frequency_rank = ?, cefr_level = ? WHERE id = ?",
-        updates,
-    )
-    conn.commit()
-    logger.info("[Stage 2] CEFR grading applied to %d words.", len(updates))
+    """Apply CEFR grading via vectorized DuckDB SQL."""
+    subtlex_path = ctx.raw_dir / "SUBTLEX_US.csv"
+    conn = db.conn if hasattr(db, "conn") else db
+
+    if not subtlex_path.exists():
+        logger.warning("[Stage 2] SUBTLEX_US.csv not found — skipping CEFR grading.")
+        return
+
+    conn.execute(f"""
+        CREATE TEMP TABLE subtlex_ranked AS
+        SELECT
+            lower(Word) AS word,
+            row_number() OVER (ORDER BY CAST(FREQcount AS DOUBLE) DESC) AS rank
+        FROM read_csv_auto('{subtlex_path}', ignore_errors=true)
+        WHERE Word IS NOT NULL AND Word != '';
+    """)
+
+    conn.execute("""
+        UPDATE raw_words
+        SET
+            frequency_rank = s.rank,
+            cefr_level = CASE
+                WHEN s.rank <= 1000 THEN 'A1'
+                WHEN s.rank <= 3000 THEN 'A2'
+                WHEN s.rank <= 6000 THEN 'B1'
+                WHEN s.rank <= 10000 THEN 'B2'
+                WHEN s.rank <= 16000 THEN 'C1'
+                ELSE 'C2'
+            END
+        FROM subtlex_ranked s
+        WHERE raw_words.lemma = s.word;
+    """)
+
+    conn.execute("DROP TABLE subtlex_ranked;")
+    logger.info("[Stage 2] Vectorized CEFR grading applied in SQL.")
 
 
 def _build_lemma_cache(ctx: PipelineContext, db):
