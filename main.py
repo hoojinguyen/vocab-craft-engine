@@ -111,37 +111,44 @@ def run_pattern_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
     cursor = conn.cursor()
 
     cursor.execute("SELECT id, text_en, text_vi FROM sentences;")
-    sentences = cursor.fetchall()
-    if not sentences:
-        logger.info("   [4C] No sentences found in database — skipping pattern extraction.")
-        return (0, 0)
-
-    total_processed = len(sentences)
-    logger.info("   [4C] Extracting Grammar Sentence Patterns across %s sentences...", f"{total_processed:,}")
 
     disable_parallel = getattr(args, "no_parallel", False) if args else False
     processor = ParallelProcessor(disable_parallel=disable_parallel)
-    extracted_matches = processor.process_pattern_extraction(sentences)
 
     patterns_dict: Dict[str, Dict[str, Any]] = {}
     mappings_list: List[Dict[str, Any]] = []
+    total_processed = 0
 
-    for match in extracted_matches:
-        p_name = match["pattern_name"]
-        s_id = match["sentence_id"]
-        if p_name not in patterns_dict:
-            patterns_dict[p_name] = {
+    while True:
+        sentences = cursor.fetchmany(50000)
+        if not sentences:
+            break
+
+        total_processed += len(sentences)
+        extracted_matches = processor.process_pattern_extraction(sentences)
+
+        for match in extracted_matches:
+            p_name = match["pattern_name"]
+            s_id = match["sentence_id"]
+            if p_name not in patterns_dict:
+                patterns_dict[p_name] = {
+                    "pattern_name": p_name,
+                    "structure_json": match["structure_json"],
+                    "example_en": None,
+                    "example_vi": None,
+                    "cefr_level": match["cefr_level"]
+                }
+            mappings_list.append({
                 "pattern_name": p_name,
-                "structure_json": match["structure_json"],
-                "example_en": None,
-                "example_vi": None,
-                "cefr_level": match["cefr_level"]
-            }
-        mappings_list.append({
-            "pattern_name": p_name,
-            "sentence_id": s_id,
-            "matched_tokens_json": match["matched_tokens_json"]
-        })
+                "sentence_id": s_id,
+                "matched_tokens_json": match["matched_tokens_json"]
+            })
+
+    if total_processed == 0:
+        logger.info("   [4C] No sentences found in database — skipping pattern extraction.")
+        return (0, 0)
+
+    logger.info("   [4C] Extracting Grammar Sentence Patterns across %s sentences...", f"{total_processed:,}")
 
     if patterns_dict:
         db_mgr.insert_sentence_patterns_batch(list(patterns_dict.values()))
@@ -677,21 +684,25 @@ def _link_sentences_incrementally(db_manager, checkpoint: Path, args=None) -> No
     cursor = db_manager.get_connection().cursor()
     lemma_to_id = {lemma: word_id for lemma, word_id in cursor.execute("SELECT lemma, id FROM words;").fetchall()}
     cursor.execute("SELECT id, text_en FROM sentences WHERE id > ? ORDER BY id;", (last_linked,))
-    sentences = cursor.fetchall()
-    if not sentences:
-        return
 
-    lemmatized = processor.process_sentence_lemmatization(sentences)
-    for item in lemmatized:
-        s_id = item["sentence_id"]
-        lem = item["lemma"]
-        word_id = lemma_to_id.get(lem)
-        if word_id:
-            map_batch.append({"word_id": word_id, "sentence_id": s_id})
-        new_max = max(new_max, s_id)
-        if len(map_batch) >= 5000:
-            db_manager.insert_word_sentence_map_batch(map_batch)
-            map_batch = []
+    while True:
+        sentences = cursor.fetchmany(50000)
+        if not sentences:
+            break
+
+        chunk_max = max(s[0] for s in sentences)
+        new_max = max(new_max, chunk_max)
+
+        lemmatized = processor.process_sentence_lemmatization(sentences)
+        for item in lemmatized:
+            s_id = item["sentence_id"]
+            lem = item["lemma"]
+            word_id = lemma_to_id.get(lem)
+            if word_id:
+                map_batch.append({"word_id": word_id, "sentence_id": s_id})
+            if len(map_batch) >= 5000:
+                db_manager.insert_word_sentence_map_batch(map_batch)
+                map_batch = []
 
     if map_batch:
         db_manager.insert_word_sentence_map_batch(map_batch)
