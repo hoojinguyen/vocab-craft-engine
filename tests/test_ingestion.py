@@ -133,3 +133,26 @@ def test_parse_stream_unified(tmp_path: Path):
     assert len(rec["relations"]) == 1
     assert len(rec["topics"]) == 1
 
+
+def test_parse_stream_unified_null_fields_and_string_relations(tmp_path: Path):
+    null_word_entry = {"word": None, "pos": "verb"}
+    null_pos_entry = {
+        "word": "abandon",
+        "pos": None,
+        "synonyms": ["relinquish", {"word": "forsake"}]
+    }
+    kaikki_file = tmp_path / "kaikki_null_sample.jsonl"
+    with open(kaikki_file, "w", encoding="utf-8") as f:
+        f.write(json.dumps(null_word_entry) + "\n")
+        f.write(json.dumps(null_pos_entry) + "\n")
+
+    parser = KaikkiParser(kaikki_file)
+    records = list(parser.parse_stream_unified())
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["lemma"] == "abandon"
+    assert rec["pos"] == "noun"
+    targets = {r["target"] for r in rec["relations"]}
+    assert targets == {"relinquish", "forsake"}
+
+

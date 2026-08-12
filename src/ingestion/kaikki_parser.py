@@ -99,11 +99,11 @@ class KaikkiParser:
         """
         Extracts lemma, POS, IPA (UK/US), and senses/definitions.
         """
-        word = item.get("word", "").strip()
+        word = (item.get("word") or "").strip()
         if not word or " " in word:  # Filter out multi-word phrases from words table
             return None
 
-        pos = item.get("pos", "noun").strip()
+        pos = (item.get("pos") or "noun").strip()
 
         # Extract IPA transcriptions
         ipa_uk = None
@@ -130,7 +130,7 @@ class KaikkiParser:
                 lang_code = trans.get("code") or trans.get("lang_code")
                 lang_name = trans.get("lang")
                 if lang_code == "vi" or lang_name == "Vietnamese":
-                    vi_word = trans.get("word", "").strip()
+                    vi_word = (trans.get("word") or "").strip()
                     if vi_word and vi_word not in vi_translations:
                         vi_translations.append(vi_word)
 
@@ -182,11 +182,11 @@ class KaikkiParser:
         """
         Extracts lemma, POS, IPA (UK/US), definitions, relations, and topics in a single pass.
         """
-        word = item.get("word", "").strip()
+        word = (item.get("word") or "").strip()
         if not word or " " in word:  # Filter out multi-word phrases from words table
             return None
 
-        pos = item.get("pos", "noun").strip()
+        pos = (item.get("pos") or "noun").strip()
 
         # Extract IPA transcriptions
         ipa_uk = None
@@ -252,17 +252,22 @@ class KaikkiParser:
 
         if "relations" in item and isinstance(item["relations"], list):
             for rel in item["relations"]:
+                target = None
+                rel_type = "synonym"
                 if isinstance(rel, dict):
-                    rel_type = rel.get("type") or rel.get("relation_type", "synonym")
+                    rel_type = (rel.get("type") or rel.get("relation_type") or "synonym").strip()
                     target = (rel.get("word") or rel.get("target") or rel.get("target_text") or "").strip().lower()
-                    if not target or target == word.lower():
-                        continue
-                    if len(target) == 1 or not CLEAN_CHARS_PATTERN.match(target):
-                        continue
-                    key = (rel_type, target)
-                    if key not in seen_rel:
-                        seen_rel.add(key)
-                        relations.append({"relation_type": rel_type, "target": target, "source": rel.get("source", "relations")})
+                elif isinstance(rel, str):
+                    target = rel.strip().lower()
+
+                if not target or target == word.lower():
+                    continue
+                if len(target) == 1 or not CLEAN_CHARS_PATTERN.match(target):
+                    continue
+                key = (rel_type, target)
+                if key not in seen_rel:
+                    seen_rel.add(key)
+                    relations.append({"relation_type": rel_type, "target": target, "source": "relations"})
 
         for section, rel_type in (("synonyms", "synonym"), ("antonyms", "antonym"),
                                   ("hypernyms", "hypernym"), ("hyponyms", "hyponym")):
@@ -274,9 +279,12 @@ class KaikkiParser:
             for rel in candidates:
                 if count_for_type >= MAX_TARGETS_PER_RELATION:
                     break
-                if not isinstance(rel, dict):
-                    continue
-                target = (rel.get("word") or "").strip().lower()
+                target = None
+                if isinstance(rel, dict):
+                    target = (rel.get("word") or rel.get("target") or "").strip().lower()
+                elif isinstance(rel, str):
+                    target = rel.strip().lower()
+
                 if not target or target == word.lower():
                     continue
                 if len(target) == 1 or not CLEAN_CHARS_PATTERN.match(target):
@@ -286,6 +294,7 @@ class KaikkiParser:
                     seen_rel.add(key)
                     relations.append({"relation_type": rel_type, "target": target, "source": section})
                     count_for_type += 1
+
 
         # Extract topics
         topics: List[Dict[str, str]] = []
