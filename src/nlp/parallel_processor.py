@@ -97,6 +97,36 @@ class ParallelProcessor:
         if max_workers is None:
             max_workers = os.cpu_count() or 4
         self.max_workers = max(1, max_workers)
+        self._executor: Optional[ProcessPoolExecutor] = None
+        self._initializer = None
+
+    def _get_executor(self, initializer=None) -> ProcessPoolExecutor:
+        if self._executor is None:
+            self._executor = ProcessPoolExecutor(
+                max_workers=self.max_workers,
+                initializer=initializer
+            )
+            self._initializer = initializer
+        return self._executor
+
+    def close(self) -> None:
+        """Shuts down the persistent ProcessPoolExecutor if active."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = None
+            self._initializer = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def process_sentence_lemmatization(
         self,
@@ -119,9 +149,9 @@ class ParallelProcessor:
         chunks = [sentences[i:i + chunk_size] for i in range(0, len(sentences), chunk_size)]
 
         results = []
-        with ProcessPoolExecutor(max_workers=self.max_workers, initializer=_init_lemmatizer_worker) as executor:
-            for chunk_res in executor.map(_process_lemmatization_chunk, chunks):
-                results.extend(chunk_res)
+        executor = self._get_executor(initializer=_init_lemmatizer_worker)
+        for chunk_res in executor.map(_process_lemmatization_chunk, chunks):
+            results.extend(chunk_res)
 
         return results
 
@@ -146,8 +176,9 @@ class ParallelProcessor:
         chunks = [sentences[i:i + chunk_size] for i in range(0, len(sentences), chunk_size)]
 
         results = []
-        with ProcessPoolExecutor(max_workers=self.max_workers, initializer=_init_pattern_worker) as executor:
-            for chunk_res in executor.map(_process_pattern_chunk, chunks):
-                results.extend(chunk_res)
+        executor = self._get_executor(initializer=_init_pattern_worker)
+        for chunk_res in executor.map(_process_pattern_chunk, chunks):
+            results.extend(chunk_res)
 
         return results
+
