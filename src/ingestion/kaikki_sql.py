@@ -531,3 +531,29 @@ def read_kaikki_landing(conn: duckdb.DuckDBPyConnection, jsonl_path: Path) -> in
     n = conn.execute(f"SELECT count(*) FROM {LANDING_TABLE}").fetchone()[0]
     logger.info("Landing read: %d entries (corrupt lines skipped)", n)
     return n
+
+
+def ingest_kaikki_sql(
+    conn: duckdb.DuckDBPyConnection, jsonl_path: Path
+) -> dict[str, int]:
+    """Run the full SQL fast path: landing read + all classifications.
+
+    Returns per-table row counts for reporting.
+    """
+    read_kaikki_landing(conn, jsonl_path)
+    stats = {
+        "words": ingest_words_sql(conn),
+        "definitions": ingest_definitions_sql(conn),
+        "phrases": ingest_phrases_sql(conn),
+        "relations": ingest_relations_sql(conn),
+        "topics": ingest_topics_sql(conn),
+    }
+    stats["vi_translations"] = ingest_vi_translations_sql(conn)
+    logger.info("Ingest fast path complete: %s", stats)
+    return stats
+
+
+def drop_landing(conn: duckdb.DuckDBPyConnection):
+    """Drop the raw_kaikki landing table to keep staging lean."""
+    conn.execute(f"DROP TABLE IF EXISTS {LANDING_TABLE}")
+    logger.info("Landing table dropped.")

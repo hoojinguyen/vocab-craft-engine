@@ -7,7 +7,9 @@ import pytest
 
 from src.db.duckdb_manager import SCHEMA_SQL
 from src.ingestion.kaikki_sql import (
+    drop_landing,
     ingest_definitions_sql,
+    ingest_kaikki_sql,
     ingest_phrases_sql,
     ingest_relations_sql,
     ingest_topics_sql,
@@ -153,3 +155,22 @@ def test_backfill_vi_translations_matches_expected(conn):
         "SELECT count(*) FROM raw_words WHERE vi_translations IS NOT NULL"
     ).fetchone()[0]
     assert n == 6  # happy, run, learn, go, read, write (oracle-verified)
+
+
+def test_ingest_kaikki_sql_runs_all_steps(conn):
+    stats = ingest_kaikki_sql(conn, FIXTURE)
+    assert stats["words"] == 16
+    assert stats["definitions"] == 6
+    assert stats["phrases"] == 4
+    assert stats["relations"] == 31
+    assert stats["topics"] == 7
+    assert stats["vi_translations"] == 6
+
+
+def test_drop_landing_removes_table(conn):
+    read_kaikki_landing(conn, FIXTURE)
+    drop_landing(conn)
+    tables = conn.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_name = 'raw_kaikki'"
+    ).fetchall()
+    assert tables == []
