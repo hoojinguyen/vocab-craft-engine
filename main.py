@@ -110,7 +110,7 @@ def run_pattern_step(db_mgr: DatabaseManager, args=None) -> Tuple[int, int]:
     conn = db_mgr.get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id, text_en, text_vi FROM sentences;")
+    cursor.execute("SELECT id, text_en, text_vi FROM sentences LIMIT 100000;")
 
     disable_parallel = getattr(args, "no_parallel", False) if args else False
 
@@ -253,7 +253,7 @@ def run_quiz_step(db_mgr: DatabaseManager, args=None) -> int:
         for r in cursor.fetchall()
     ]
 
-    cursor.execute("SELECT id, text_en, text_vi, cefr_level FROM sentences;")
+    cursor.execute("SELECT id, text_en, text_vi, cefr_level FROM sentences LIMIT 50000;")
     sentences = [
         {"id": r[0], "text_en": r[1], "text_vi": r[2], "cefr_level": r[3]}
         for r in cursor.fetchall()
@@ -266,9 +266,35 @@ def run_quiz_step(db_mgr: DatabaseManager, args=None) -> int:
     ]
 
     builder = QuizBuilder(words=words)
-    quizzes = builder.build_all_quizzes(words=words, sentences=sentences, patterns=patterns)
 
-    inserted_count = db_mgr.insert_quiz_questions_batch(quizzes)
+    inserted_count = 0
+    quiz_batch = []
+
+    # 1. Word MCQ Quizzes
+    for word in words:
+        quiz_batch.append(builder.generate_word_mcq(word))
+        if len(quiz_batch) >= 5000:
+            inserted_count += db_mgr.insert_quiz_questions_batch(quiz_batch)
+            quiz_batch = []
+
+    # 2. Sentence Cloze & Word Ordering Quizzes
+    for sentence in sentences:
+        quiz_batch.append(builder.generate_sentence_cloze(sentence))
+        quiz_batch.append(builder.generate_word_ordering(sentence))
+        if len(quiz_batch) >= 5000:
+            inserted_count += db_mgr.insert_quiz_questions_batch(quiz_batch)
+            quiz_batch = []
+
+    # 3. Pattern Cloze Quizzes
+    for pattern in patterns:
+        quiz_batch.append(builder.generate_pattern_cloze(pattern))
+        if len(quiz_batch) >= 5000:
+            inserted_count += db_mgr.insert_quiz_questions_batch(quiz_batch)
+            quiz_batch = []
+
+    if quiz_batch:
+        inserted_count += db_mgr.insert_quiz_questions_batch(quiz_batch)
+
     logger.info("   [4E Quiz] Inserted %s quiz questions into database.", f"{inserted_count:,}")
     return inserted_count
 
