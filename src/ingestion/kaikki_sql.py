@@ -21,6 +21,15 @@ LANDING_TABLE = "raw_kaikki"
 
 _PHRASE_POS_LIST = "(" + ", ".join("'" + p + "'" for p in PHRASE_POS_ALLOWED) + ")"
 
+RELATION_SECTIONS = ("synonyms", "antonyms", "hypernyms", "hyponyms")
+RELATION_TYPES = {
+    "synonyms": "synonym",
+    "antonyms": "antonym",
+    "hypernyms": "hypernym",
+    "hyponyms": "hyponym",
+}
+MAX_RELATIONS_PER_TYPE = 25
+
 LANDING_COLUMNS = """{
     'word': 'VARCHAR',
     'pos': 'VARCHAR',
@@ -234,6 +243,108 @@ def ingest_phrases_sql(conn: duckdb.DuckDBPyConnection) -> int:
     )
     n = conn.execute("SELECT count(*) FROM raw_phrases").fetchone()[0]
     logger.info("Phrases classified: %d", n)
+    return n
+
+
+def _relations_branch(section: str, relation_type: str, sense_level: bool) -> str:
+    """One UNION ALL branch of the relations stream (top-level or sense-level).
+
+    Targets are normalized to LOWER(TRIM(elt->>'word')) before every filter,
+    and non-object candidates yield NULL targets (duckdb's '->>'word'' on a
+    JSON non-object is NULL), matching the oracle's isinstance skip.
+
+    ordinal reproduces the oracle's stream order: top-level elements in array
+    order (rel.pos), then each sense's array in sense order
+    (s.pos * 1000000 + rel.pos), so any smaller ordinal is always earlier.
+    """
+    if sense_level:
+        from_clause = (
+            f"FROM {LANDING_TABLE} t\n"
+            f"CROSS JOIN LATERAL UNNEST(CAST(t.senses AS JSON[])) WITH ORDINALITY AS s(elt, pos)\n"
+            f"CROSS JOIN LATERAL UNNEST(CAST(s.elt->'{section}' AS JSON[])) WITH ORDINALITY AS rel(elt, pos)"
+        )
+        ordinal = "s.pos * 1000000 + rel.pos"
+    else:
+        from_clause = (
+            f"FROM {LANDING_TABLE} t\n"
+            f"CROSS JOIN LATERAL UNNEST(CAST(t.{section} AS JSON[])) WITH ORDINALITY AS rel(elt, pos)"
+        )
+        ordinal = "rel.pos"
+
+    return f"""
+    SELECT
+        TRIM(LOWER(t.word)) AS lemma,
+        '{relation_type}' AS relation_type,
+        LOWER(TRIM(rel.elt->>'word')) AS target_text,
+        '{section}' AS source,
+        {ordinal} AS ordinal
+    {from_clause}
+    WHERE NOT (
+        position(' ' in TRIM(t.word)) > 0
+        AND LOWER(TRIM(COALESCE(t.pos, ''))) IN
+            ('idiom', 'phrasal verb', 'proverb', 'phrase')
+    )
+      AND target_text IS NOT NULL
+      AND target_text != ''
+      AND target_text != lemma
+      AND len(target_text) > 1
+      AND regexp_matches(target_text, '{CLEAN_CHARS_PATTERN.pattern.replace("'", "''")}')
+    """
+
+
+def ingest_relations_sql(conn: duckdb.DuckDBPyConnection) -> int:
+    """Classify relations from top-level + sense-level arrays into raw_relations.
+
+    Mirrors KaikkiSinglePassParser._extract_relations exactly:
+    - fixed section order synonyms -> synonym, antonyms -> antonym,
+      hypernyms -> hypernym, hyponyms -> hyponym; per section, top-level
+      array elements first, then each sense's array in sense order
+    - non-object candidates skipped (non-object JSON yields NULL ->>'word'')
+    - target = word stripped + lowercased; skip empty, self (== lemma),
+      length-1, or targets failing ^[a-zA-Z '.-]+$
+    - dedupe on (relation_type, target_text) per lemma — first occurrence in
+      stream order wins (DISTINCT ON before the cap, like the oracle's
+      seen-set before its count); raw_relations has no unique constraint so
+      dedupe must happen in SQL
+    - cap 25 per (section, lemma) applied AFTER dedupe (row_number over
+      ordinal), keeping the first MAX_RELATIONS_PER_TYPE in stream order
+    - phrase-classified entries excluded (space in word AND pos in the
+      phrase-allowed set), same predicate as ingest_definitions_sql — the
+      oracle returns early for phrases in _classify
+    - source is the section name for both top-level and sense rows
+    """
+    branches = []
+    for section in RELATION_SECTIONS:
+        relation_type = RELATION_TYPES[section]
+        branches.append(_relations_branch(section, relation_type, sense_level=False))
+        branches.append(_relations_branch(section, relation_type, sense_level=True))
+    conn.execute(
+        f"""
+        INSERT INTO raw_relations (lemma, relation_type, target_text, source)
+        SELECT lemma, relation_type, target_text, source
+        FROM (
+            SELECT
+                lemma,
+                relation_type,
+                target_text,
+                source,
+                row_number() OVER (
+                    PARTITION BY lemma, relation_type ORDER BY ordinal
+                ) AS rn
+            FROM (
+                SELECT DISTINCT ON (lemma, relation_type, target_text)
+                    lemma, relation_type, target_text, source, ordinal
+                FROM (
+                    {"UNION ALL".join(branches)}
+                ) branches
+                ORDER BY lemma, relation_type, target_text, ordinal
+            ) deduped
+        ) ranked
+        WHERE rn <= {MAX_RELATIONS_PER_TYPE}
+        """
+    )
+    n = conn.execute("SELECT count(*) FROM raw_relations").fetchone()[0]
+    logger.info("Relations classified: %d", n)
     return n
 
 

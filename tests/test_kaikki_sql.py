@@ -9,6 +9,7 @@ from src.db.duckdb_manager import SCHEMA_SQL
 from src.ingestion.kaikki_sql import (
     ingest_definitions_sql,
     ingest_phrases_sql,
+    ingest_relations_sql,
     ingest_words_sql,
     read_kaikki_landing,
 )
@@ -77,3 +78,16 @@ def test_classify_phrases_matches_expected(conn):
     assert ("by and large", "phrase", "generally speaking") in rows  # gloss trimmed
     assert ("in a nutshell", "proverb", "briefly") in rows  # first trimmed gloss
     assert len(rows) == 3
+
+
+def test_classify_relations_matches_expected(conn):
+    read_kaikki_landing(conn, FIXTURE)
+    ingest_relations_sql(conn)
+    rows = conn.execute(
+        "SELECT lemma, relation_type, target_text FROM raw_relations ORDER BY lemma, relation_type, target_text"
+    ).fetchall()
+    assert ("happy", "synonym", "glad") in rows  # top-level
+    assert ("happy", "antonym", "sad") in rows  # top-level
+    assert ("happy", "hypernym", "emotion") in rows  # top-level
+    assert ("run", "synonym", "sprint") in rows  # sense-level
+    assert len(rows) == 4  # fixture has 4 relations (no "operate")
