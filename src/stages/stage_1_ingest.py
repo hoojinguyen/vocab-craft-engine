@@ -1,15 +1,25 @@
 """Stage 1: Ingest — Download raw data, single-pass Kaikki, corpora."""
 
 import logging
+
+import duckdb
+
 from config.settings import (
-    KAIKKI_JSON_PATH, TATOEBA_SENTENCES_PATH, TATOEBA_LINKS_PATH,
-    OPENSUBTITLES_EN, OPENSUBTITLES_VI,
-    ENVICORPORA_TED_LIKE_EN, ENVICORPORA_TED_LIKE_VI,
-    ENVICORPORA_BASIC_EN, ENVICORPORA_BASIC_VI,
+    ENVICORPORA_BASIC_EN,
+    ENVICORPORA_BASIC_VI,
+    ENVICORPORA_TED_LIKE_EN,
+    ENVICORPORA_TED_LIKE_VI,
+    KAIKKI_JSON_PATH,
     MAX_SENTENCES_PER_CORPUS,
+    OPENSUBTITLES_EN,
+    OPENSUBTITLES_VI,
 )
-from src.ingestion.kaikki_single_pass import KaikkiSinglePassParser
 from src.ingestion.downloader import DownloadTask, download_all_parallel
+from src.ingestion.kaikki_sql import (
+    drop_landing,
+    ingest_kaikki_sql,
+    validate_sql_vs_python,
+)
 from src.pipeline.context import PipelineContext
 
 logger = logging.getLogger(__name__)
@@ -46,7 +56,7 @@ def _ensure_raw_data(ctx: PipelineContext):
 
 
 def _ingest_kaikki(ctx: PipelineContext):
-    """Single-pass Kaikki ingestion into DuckDB."""
+    """Kaikki ingestion — SQL fast path gated by parity check, Python fallback."""
     if not KAIKKI_JSON_PATH.exists() or KAIKKI_JSON_PATH.stat().st_size == 0:
         logger.warning("[Stage 1] Kaikki dump not found — skipping.")
         return
@@ -54,9 +64,37 @@ def _ingest_kaikki(ctx: PipelineContext):
     db = ctx.duckdb_conn
     db.init_schema()
 
+    gate = _validate_sql_path(db.conn, KAIKKI_JSON_PATH)
+    if gate.passed:
+        _ingest_kaikki_fast(db.conn, KAIKKI_JSON_PATH)
+    else:
+        logger.warning(
+            "[Stage 1] SQL gate failed (%s) — falling back to Python parser.",
+            gate.diffs,
+        )
+        _ingest_kaikki_fallback(db)
+
+
+def _validate_sql_path(conn, jsonl_path, sample_lines: int = 50_000):
+    """Run the parity gate in-memory; never touches the real staging DB."""
+    gate_conn = duckdb.connect(":memory:")
+    try:
+        return validate_sql_vs_python(gate_conn, jsonl_path, sample_lines=sample_lines)
+    finally:
+        gate_conn.close()
+
+
+def _ingest_kaikki_fast(conn, jsonl_path):
+    stats = ingest_kaikki_sql(conn, jsonl_path)
+    drop_landing(conn)
+    logger.info("[Stage 1] Kaikki (SQL fast path): %s", stats)
+
+
+def _ingest_kaikki_fallback(db):
+    from src.ingestion.kaikki_single_pass import KaikkiSinglePassParser
+
     parser = KaikkiSinglePassParser(KAIKKI_JSON_PATH)
     total = {cat: 0 for cat in ["word", "phrase", "relation", "topic", "definition"]}
-
     table_map = {
         "word": "raw_words",
         "phrase": "raw_phrases",
@@ -67,10 +105,7 @@ def _ingest_kaikki(ctx: PipelineContext):
     for category, batch in parser.parse_stream(batch_size=5000):
         db.insert_rows(table_map[category], batch)
         total[category] += len(batch)
-        if total[category] % 50_000 == 0 and category == "word":
-            logger.info("   [Kaikki] %d words staged...", total["word"])
-
-    logger.info("[Stage 1] Kaikki: %s", total)
+    logger.info("[Stage 1] Kaikki (Python fallback): %s", total)
 
 
 def _ingest_corpora(ctx: PipelineContext):

@@ -213,3 +213,78 @@ def test_validation_gate_fails_when_sql_path_breaks(tmp_path, monkeypatch):
         conn.close()
     assert result.passed is False
     assert "phrase" in result.diffs
+
+
+class _FakeDB:
+    """Minimal DuckDBManager stand-in: init_schema + .conn accessor."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def init_schema(self):
+        pass
+
+
+def test_stage1_uses_sql_path_when_gate_passes(tmp_path, monkeypatch):
+    from src.stages import stage_1_ingest
+
+    called = {"sql": 0, "py": 0}
+    conn = duckdb.connect(":memory:")
+
+    def fake_gate(c, path, sample_lines=50_000):
+        assert c is conn
+        return type("Gate", (), {"passed": True, "diffs": {}})()
+
+    def fake_sql(c, path):
+        called["sql"] += 1
+
+    def fake_py(db):
+        called["py"] += 1
+
+    monkeypatch.setattr(stage_1_ingest, "KAIKKI_JSON_PATH", FIXTURE)
+    monkeypatch.setattr(stage_1_ingest, "_validate_sql_path", fake_gate)
+    monkeypatch.setattr(stage_1_ingest, "_ingest_kaikki_fast", fake_sql)
+    monkeypatch.setattr(stage_1_ingest, "_ingest_kaikki_fallback", fake_py)
+
+    ctx = stage_1_ingest.PipelineContext(duckdb_conn=_FakeDB(conn))
+    stage_1_ingest._ingest_kaikki(ctx)
+    conn.close()
+    assert called["sql"] == 1
+    assert called["py"] == 0
+
+
+def test_stage1_falls_back_to_python_when_gate_fails(tmp_path, monkeypatch):
+    from src.stages import stage_1_ingest
+
+    called = {"sql": 0, "py": 0}
+    conn = duckdb.connect(":memory:")
+
+    def fake_gate(c, path, sample_lines=50_000):
+        return type("Gate", (), {"passed": False, "diffs": {"word": ["x"]}})()
+
+    def fake_sql(c, path):
+        called["sql"] += 1
+
+    def fake_py(db):
+        called["py"] += 1
+
+    monkeypatch.setattr(stage_1_ingest, "KAIKKI_JSON_PATH", FIXTURE)
+    monkeypatch.setattr(stage_1_ingest, "_validate_sql_path", fake_gate)
+    monkeypatch.setattr(stage_1_ingest, "_ingest_kaikki_fast", fake_sql)
+    monkeypatch.setattr(stage_1_ingest, "_ingest_kaikki_fallback", fake_py)
+
+    ctx = stage_1_ingest.PipelineContext(duckdb_conn=_FakeDB(conn))
+    stage_1_ingest._ingest_kaikki(ctx)
+    conn.close()
+    assert called["sql"] == 0
+    assert called["py"] == 1
+
+
+def test_stage1_skips_when_dump_missing(tmp_path, monkeypatch):
+    from src.stages import stage_1_ingest
+
+    monkeypatch.setattr(stage_1_ingest, "KAIKKI_JSON_PATH", tmp_path / "missing.jsonl")
+    monkeypatch.setattr(stage_1_ingest, "_validate_sql_path", lambda *a, **k: 1 / 0)
+
+    ctx = stage_1_ingest.PipelineContext(duckdb_conn=_FakeDB(None))
+    stage_1_ingest._ingest_kaikki(ctx)
