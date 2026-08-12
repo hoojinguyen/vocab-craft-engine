@@ -12,6 +12,7 @@ def stage_2_transform(ctx: PipelineContext):
     _apply_cefr_grading(ctx, db)
     _build_lemma_cache(ctx, db)
     _link_word_sentences(ctx, db)
+    _grade_sentences_dynamically(ctx, db)
     _extract_collocations(ctx, db)
     _build_inverse_relations(db)
     _map_topics(ctx, db)
@@ -146,3 +147,35 @@ def _map_topics(ctx: PipelineContext, db):
         mapped.append({"word_id": word_id, "topic": theme, "raw_topic": raw_topic})
     db.insert_rows("word_topics", mapped)
     logger.info("[Stage 2] Topics mapped: %d", db.row_count("word_topics"))
+
+
+def _grade_sentences_dynamically(ctx: PipelineContext, db):
+    """Compute sentence difficulty_score and cefr_level from constituent word ranks."""
+    conn = db.conn if hasattr(db, "conn") else db
+
+    conn.execute("""
+        UPDATE raw_sentences
+        SET
+            difficulty_score = COALESCE(sub.avg_rank, 2.0),
+            cefr_level = COALESCE(sub.max_cefr, 'B1')
+        FROM (
+            SELECT
+                s.id AS sentence_id,
+                avg(w.frequency_rank) AS avg_rank,
+                max_by(w.cefr_level, CASE w.cefr_level
+                    WHEN 'C2' THEN 6
+                    WHEN 'C1' THEN 5
+                    WHEN 'B2' THEN 4
+                    WHEN 'B1' THEN 3
+                    WHEN 'A2' THEN 2
+                    WHEN 'A1' THEN 1
+                    ELSE 0
+                END) AS max_cefr
+            FROM raw_sentences s
+            JOIN word_sentence_map m ON m.sentence_id = s.id
+            JOIN raw_words w ON w.id = m.word_id
+            GROUP BY s.id
+        ) sub
+        WHERE raw_sentences.id = sub.sentence_id;
+    """)
+    logger.info("[Stage 2] Dynamic sentence difficulty & CEFR levels updated.")
