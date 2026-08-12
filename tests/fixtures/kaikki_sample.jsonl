@@ -9,3 +9,7 @@
 {"word": "take off", "pos": "verb", "senses": [{"glosses": ["to remove clothing"]}]}
 {"word": "by and large", "pos": "phrase", "senses": [{"glosses": ["  generally speaking  "]}]}
 {"word": "in a nutshell", "pos": "proverb", "senses": [{"glosses": ["  briefly  ", "in summary"]}]}
+{"word": "bite the bullet", "pos": "idiom", "senses": [{"glosses": ["to face something"]}], "synonyms": [{"word": "endure"}]}
+{"word": "carry out", "pos": "verb", "senses": [{"glosses": ["to perform"]}], "synonyms": [{"word": "perform"}]}
+{"word": "fast", "pos": "adj", "senses": [{"synonyms": [{"word": "quick"}]}], "synonyms": [{"word": "quick"}]}
+{"word": "big", "pos": "adj", "synonyms": [{"word": "ba"},{"word": "bb"},{"word": "bc"},{"word": "bd"},{"word": "be"},{"word": "bf"},{"word": "bg"},{"word": "bh"},{"word": "bi"},{"word": "bj"},{"word": "bk"},{"word": "bl"},{"word": "bm"},{"word": "bn"},{"word": "bo"},{"word": "bp"},{"word": "bq"},{"word": "br"},{"word": "bs"},{"word": "bt"},{"word": "bu"},{"word": "bv"},{"word": "bw"},{"word": "bx"},{"word": "by"},{"word": "bz"},{"word": "ca"}]}

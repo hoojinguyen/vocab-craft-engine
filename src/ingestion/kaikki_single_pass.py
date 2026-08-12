@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 PHRASE_POS_ALLOWED = {"idiom", "phrasal verb", "proverb", "phrase"}
 MAX_WORDS_PER_PHRASE = 6
+MAX_RELATIONS_PER_TYPE = 25
 CLEAN_CHARS_PATTERN = re.compile(r"^[a-zA-Z '.-]+$")
 
 
@@ -218,7 +219,7 @@ class KaikkiSinglePassParser:
 
             count = 0
             for rel in candidates:
-                if count >= 25:
+                if count >= MAX_RELATIONS_PER_TYPE:
                     break
                 if not isinstance(rel, dict):
                     continue

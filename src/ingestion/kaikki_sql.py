@@ -11,6 +11,7 @@ import duckdb
 
 from src.ingestion.kaikki_single_pass import (
     CLEAN_CHARS_PATTERN,
+    MAX_RELATIONS_PER_TYPE,
     MAX_WORDS_PER_PHRASE,
     PHRASE_POS_ALLOWED,
 )
@@ -28,7 +29,6 @@ RELATION_TYPES = {
     "hypernyms": "hypernym",
     "hyponyms": "hyponym",
 }
-MAX_RELATIONS_PER_TYPE = 25
 
 LANDING_COLUMNS = """{
     'word': 'VARCHAR',
@@ -170,8 +170,7 @@ def ingest_definitions_sql(conn: duckdb.DuckDBPyConnection) -> int:
         ) glosses
         WHERE NOT (
             position(' ' in TRIM(t.word)) > 0
-            AND LOWER(TRIM(COALESCE(t.pos, ''))) IN
-                ('idiom', 'phrasal verb', 'proverb', 'phrase')
+            AND LOWER(TRIM(COALESCE(t.pos, ''))) IN {_PHRASE_POS_LIST}
         )
           AND glosses.definition_en IS NOT NULL
         """
@@ -246,6 +245,21 @@ def ingest_phrases_sql(conn: duckdb.DuckDBPyConnection) -> int:
     return n
 
 
+def _json_array_cast(expr: str) -> str:
+    """CAST a JSON value to JSON[] without raising on non-arrays.
+
+    DuckDB's CAST(x AS JSON[]) raises ConversionException when x is a JSON
+    object/string/number; one malformed-but-parseable line would abort the
+    whole ingest. Non-array (and NULL) values map to an empty array, which
+    yields zero rows — matching the oracle, whose list(...) of a dict
+    iterates keys (non-dicts are skipped) and whose `or []` covers NULL.
+    """
+    return (
+        f"CAST(CASE WHEN json_type({expr}) = 'ARRAY' "
+        f"THEN {expr} ELSE '[]'::JSON END AS JSON[])"
+    )
+
+
 def _relations_branch(section: str, relation_type: str, sense_level: bool) -> str:
     """One UNION ALL branch of the relations stream (top-level or sense-level).
 
@@ -258,16 +272,20 @@ def _relations_branch(section: str, relation_type: str, sense_level: bool) -> st
     (s.pos * 1000000 + rel.pos), so any smaller ordinal is always earlier.
     """
     if sense_level:
+        array_expr = f"s.elt->'{section}'"
         from_clause = (
             f"FROM {LANDING_TABLE} t\n"
             f"CROSS JOIN LATERAL UNNEST(CAST(t.senses AS JSON[])) WITH ORDINALITY AS s(elt, pos)\n"
-            f"CROSS JOIN LATERAL UNNEST(CAST(s.elt->'{section}' AS JSON[])) WITH ORDINALITY AS rel(elt, pos)"
+            f"CROSS JOIN LATERAL UNNEST({_json_array_cast(array_expr)}) "
+            f"WITH ORDINALITY AS rel(elt, pos)"
         )
         ordinal = "s.pos * 1000000 + rel.pos"
     else:
+        array_expr = f"t.{section}"
         from_clause = (
             f"FROM {LANDING_TABLE} t\n"
-            f"CROSS JOIN LATERAL UNNEST(CAST(t.{section} AS JSON[])) WITH ORDINALITY AS rel(elt, pos)"
+            f"CROSS JOIN LATERAL UNNEST({_json_array_cast(array_expr)}) "
+            f"WITH ORDINALITY AS rel(elt, pos)"
         )
         ordinal = "rel.pos"
 
@@ -281,8 +299,7 @@ def _relations_branch(section: str, relation_type: str, sense_level: bool) -> st
     {from_clause}
     WHERE NOT (
         position(' ' in TRIM(t.word)) > 0
-        AND LOWER(TRIM(COALESCE(t.pos, ''))) IN
-            ('idiom', 'phrasal verb', 'proverb', 'phrase')
+        AND LOWER(TRIM(COALESCE(t.pos, ''))) IN {_PHRASE_POS_LIST}
     )
       AND target_text IS NOT NULL
       AND target_text != ''

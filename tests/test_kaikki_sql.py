@@ -27,17 +27,17 @@ def conn(tmp_path):
 
 def test_read_landing_counts_entries_and_skips_corrupt(conn):
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 9  # 11 lines total: 1 corrupt skipped + 1 empty-word filtered
+    assert n == 13  # 15 lines total: 1 corrupt skipped + 1 empty-word filtered
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 9
+    assert n == 13
 
 
 def test_read_landing_is_idempotent(conn):
     read_kaikki_landing(conn, FIXTURE)
     n = read_kaikki_landing(conn, FIXTURE)
-    assert n == 9
+    assert n == 13
     n = conn.execute("SELECT count(*) FROM raw_kaikki").fetchone()[0]
-    assert n == 9
+    assert n == 13
 
 
 def test_classify_definitions_matches_expected(conn):
@@ -51,7 +51,8 @@ def test_classify_definitions_matches_expected(conn):
     assert ("run", "to move fast", "Run!") in rows  # raw_glosses fallback
     assert ("run", "to manage", None) in rows
     assert ("take off", "to remove clothing", None) in rows  # multi-word, non-phrase pos
-    assert len(rows) == 5
+    assert ("carry out", "to perform", None) in rows  # multi-word, non-phrase pos
+    assert len(rows) == 6
 
 
 def test_classify_words_matches_expected(conn):
@@ -65,7 +66,9 @@ def test_classify_words_matches_expected(conn):
     assert ("run", "verb", None) in rows  # no sounds on run
     assert ("xyzzy", "noun", None) in rows
     assert ("colour", "noun", "/ˈkʌl.ɚ/") in rows  # untagged fallback for uk, US override
-    assert len(rows) == 5  # kick the bucket excluded (phrase)
+    assert ("fast", "adj", None) in rows
+    assert ("big", "adj", None) in rows
+    assert len(rows) == 7  # kick the bucket, bite the bullet excluded (phrases)
 
 
 def test_classify_phrases_matches_expected(conn):
@@ -77,7 +80,8 @@ def test_classify_phrases_matches_expected(conn):
     assert ("kick the bucket", "idiom", "to die") in rows
     assert ("by and large", "phrase", "generally speaking") in rows  # gloss trimmed
     assert ("in a nutshell", "proverb", "briefly") in rows  # first trimmed gloss
-    assert len(rows) == 3
+    assert ("bite the bullet", "idiom", "to face something") in rows
+    assert len(rows) == 4
 
 
 def test_classify_relations_matches_expected(conn):
@@ -90,4 +94,15 @@ def test_classify_relations_matches_expected(conn):
     assert ("happy", "antonym", "sad") in rows  # top-level
     assert ("happy", "hypernym", "emotion") in rows  # top-level
     assert ("run", "synonym", "sprint") in rows  # sense-level
-    assert len(rows) == 4  # fixture has 4 relations (no "operate")
+    assert ("carry out", "synonym", "perform") in rows  # multi-word, non-phrase pos
+    assert ("bite the bullet", "synonym", "endure") not in rows  # phrase: oracle early-return
+    n_fast = conn.execute(
+        "SELECT count(*) FROM raw_relations WHERE lemma='fast' AND relation_type='synonym' AND target_text='quick'"
+    ).fetchone()[0]
+    assert n_fast == 1  # sense-level dup of top-level collapsed; top-level (first) wins
+    n_big = conn.execute(
+        "SELECT count(*) FROM raw_relations WHERE lemma='big'"
+    ).fetchone()[0]
+    assert n_big == 25  # cap after dedupe: 27 distinct targets, first 25 in stream order
+    assert ("big", "synonym", "ca") not in rows  # 27th target dropped by the cap
+    assert len(rows) == 31  # 4 + carry out + fast + big (bite the bullet excluded)
