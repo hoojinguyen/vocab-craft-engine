@@ -188,3 +188,28 @@ def test_validation_gate_passes_on_fixture(tmp_path):
         conn.close()
     assert result.passed is True
     assert result.diffs == {}
+
+
+def test_validation_gate_scales_sample(tmp_path):
+    from src.ingestion.kaikki_sql import validate_sql_vs_python
+
+    conn = duckdb.connect(str(tmp_path / "gate_slice.duckdb"))
+    try:
+        result = validate_sql_vs_python(conn, FIXTURE, sample_lines=4)
+    finally:
+        conn.close()
+    assert result.passed is True
+    assert result.diffs == {}
+
+
+def test_validation_gate_fails_when_sql_path_breaks(tmp_path, monkeypatch):
+    from src.ingestion import kaikki_sql
+
+    conn = duckdb.connect(str(tmp_path / "gate_broken.duckdb"))
+    try:
+        monkeypatch.setattr(kaikki_sql, "ingest_phrases_sql", lambda c: 0)
+        result = kaikki_sql.validate_sql_vs_python(conn, FIXTURE)
+    finally:
+        conn.close()
+    assert result.passed is False
+    assert "phrase" in result.diffs

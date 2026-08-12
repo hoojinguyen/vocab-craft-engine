@@ -4,7 +4,6 @@ Mirrors src.ingestion.kaikki_single_pass.KaikkiSinglePassParser semantics
 exactly. KaikkiSinglePassParser is kept as the validation oracle and fallback.
 """
 
-import json
 import logging
 import tempfile
 from dataclasses import dataclass, field
@@ -580,42 +579,36 @@ def _rows_from_parser(
     Physical lines are counted (blank/corrupt included), matching
     parse_all(max_entries) slice semantics. Per-table row sets use the same
     column shapes as _rows_from_sql so the gate can diff them directly.
+
+    The oracle's own _stream_jsonl/_classify_to_dict drive this loop, so the
+    gate validates against the LIVE oracle dispatch instead of a private
+    copy that could drift.
     """
     rows: dict[str, set[tuple]] = {
         k: set() for k in ["word", "definition", "phrase", "relation", "topic"]
     }
-    with open(parser.file_path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            if i >= n_lines:
-                break
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            word = (item.get("word") or "").strip()
-            if not word:
-                continue
-            pos = (item.get("pos") or "").strip().lower()
-            is_phrase = " " in word and pos in PHRASE_POS_ALLOWED
-            if is_phrase:
-                p = parser._extract_phrase(word, pos, item)
-                if p:
+    batch: dict[str, list[dict]] = {
+        "word": [], "phrase": [], "relation": [], "topic": [], "definition": []
+    }
+    for i, item in parser._stream_jsonl():
+        if i >= n_lines:
+            break
+        parser._classify_to_dict(item, batch)
+        for category, parsed in batch.items():
+            for r in parsed:
+                if category == "word":
+                    rows["word"].add((r["lemma"], r["pos"], r.get("ipa_uk"), r.get("ipa_us")))
+                elif category == "phrase":
                     rows["phrase"].add(
-                        (p["phrase"], p["phrase_type"], p.get("definition_en"), p.get("ipa"))
+                        (r["phrase"], r["phrase_type"], r.get("definition_en"), r.get("ipa"))
                     )
-                continue
-            w = parser._extract_word(word, pos, item)
-            if w:
-                rows["word"].add((w["lemma"], w["pos"], w.get("ipa_uk"), w.get("ipa_us")))
-            for d in parser._extract_definitions(word, item):
-                rows["definition"].add((d["lemma"], d["definition_en"], d.get("example")))
-            for r in parser._extract_relations(word, item):
-                rows["relation"].add((r["lemma"], r["relation_type"], r["target_text"]))
-            for t in parser._extract_topics(word, item):
-                rows["topic"].add((t["lemma"], t["raw_topic"]))
+                elif category == "definition":
+                    rows["definition"].add((r["lemma"], r["definition_en"], r.get("example")))
+                elif category == "relation":
+                    rows["relation"].add((r["lemma"], r["relation_type"], r["target_text"]))
+                elif category == "topic":
+                    rows["topic"].add((r["lemma"], r["raw_topic"]))
+        batch = {k: [] for k in batch}
     return rows
 
 
@@ -629,14 +622,16 @@ def _rows_from_sql(
     iterates. The 5 raw_* tables are wiped first — the gate is safe to run
     on a conn that already holds staged data from a prior read.
     """
-    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
-        sample_path = Path(f.name)
-        with open(jsonl_path, "r", encoding="utf-8") as src:
-            for i, line in enumerate(src):
-                if i >= n_lines:
-                    break
-                f.write(line)
     try:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".jsonl", delete=False, encoding="utf-8"
+        ) as f:
+            sample_path = Path(f.name)
+            with open(jsonl_path, "r", encoding="utf-8") as src:
+                for i, line in enumerate(src):
+                    if i >= n_lines:
+                        break
+                    f.write(line)
         conn.execute(SCHEMA_SQL)
         read_kaikki_landing(conn, sample_path)
         conn.execute("DELETE FROM raw_words")
@@ -690,9 +685,10 @@ def validate_sql_vs_python(
 
     Both sides run on the first `sample_lines` physical lines of the dump
     (blank and corrupt lines count toward the slice, matching
-    parse_all(max_entries) semantics). The provided conn is used as scratch
-    space: the raw_* tables are wiped first, so prior staged data cannot
-    leak in, and the gate never touches the real staging DB.
+    parse_all(max_entries) semantics). Callers MUST pass a scratch conn:
+    the raw_* tables on it are wiped first, so the gate cannot be pointed
+    at the real staging DB. If any ingest step raises, the exception
+    propagates (Task 10's try/except turns that into a fallback).
 
     Gate scope — columns compared per table:
     - word:       (lemma, pos, ipa_uk, ipa_us) — vi_translations deliberately
