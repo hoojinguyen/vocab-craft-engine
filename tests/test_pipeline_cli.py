@@ -10,6 +10,23 @@ def test_cli_argument_parser():
     assert args.vi_budget == 500
 
 
+def test_cli_default_arguments():
+    args = parse_arguments([])
+    assert args.resume is False
+    assert args.tui is True
+    assert args.max_retries == 3
+    assert args.log_dir == "logs"
+
+
+def test_cli_new_argument_overrides():
+    args = parse_arguments(["--resume", "--no-tui", "--max-retries", "5", "--log-dir", "custom_logs"])
+    assert args.resume is True
+    assert args.tui is False
+    assert args.max_retries == 5
+    assert args.log_dir == "custom_logs"
+
+
+
 def test_default_registry_loading():
     reg = get_default_registry()
     steps = reg.get_all_steps()

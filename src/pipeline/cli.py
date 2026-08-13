@@ -44,4 +44,8 @@ def parse_arguments(args_list: Optional[List[str]] = None):
     parser.add_argument("--skip-dict", action="store_true", help="Skip Kaikki dictionary ingestion step.")
     parser.add_argument("--vi-budget", type=int, default=1000, help="Max MT translation attempts for Vietnamese backfill.")
     parser.add_argument("--build-core-pack", action="store_true", help="Build the curated Core 3000 word pack.")
+    parser.add_argument("--resume", action="store_true", help="Resume execution from previous failed state.")
+    parser.add_argument("--no-tui", action="store_false", dest="tui", default=True, help="Disable Rich Terminal UI dashboard.")
+    parser.add_argument("--max-retries", type=int, default=3, help="Maximum auto-retries per step (default: 3).")
+    parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store file logs and JSON reports.")
     return parser.parse_args(args_list)
