@@ -60,6 +60,7 @@ def test_orchestrator_resume_skips_completed_steps(tmp_path):
     orchestrator.state_manager.save_step_status("step_a", "SUCCESS", 1.0, 10)
 
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.dry_run = False
     mock_args.resume = True
     mock_args.steps = None
@@ -90,6 +91,7 @@ def test_orchestrator_auto_retry_integration(tmp_path):
     orchestrator = PipelineOrchestrator(registry=registry, state_file=state_file)
 
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.dry_run = False
     mock_args.resume = False
     mock_args.steps = None
@@ -116,6 +118,7 @@ def test_orchestrator_run_logger_report_generation(tmp_path):
     orchestrator = PipelineOrchestrator(registry=registry, state_file=state_file)
 
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.dry_run = False
     mock_args.resume = False
     mock_args.steps = None

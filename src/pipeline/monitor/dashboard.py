@@ -3,9 +3,9 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Header, RichLog
-from textual.worker import work
 
 
 class DashboardLoggingHandler(logging.Handler):
@@ -53,6 +53,7 @@ class TextualPipelineDashboard(App):
         self.dashboard_handler: DashboardLoggingHandler | None = None
         self._worker_func: Callable[[], None] | None = None
         self.start_time = time.time()
+        self.logs_buffer: list[str] = []
         # Ensure title reflects the parameter
         self.title = self.title_str
 
@@ -143,19 +144,18 @@ class TextualPipelineDashboard(App):
         metrics_str: str = ""
     ) -> None:
         """Update step progress, execution state, and metrics. Safe to call from threads."""
+        if step_name not in self.steps_data:
+            self.steps_data[step_name] = {}
+
+        self.steps_data[step_name].update({
+            "status": status,
+            "duration": duration,
+            "items": items,
+            "retries": retries,
+            "metrics": metrics_str
+        })
         
         def do_update():
-            if step_name not in self.steps_data:
-                self.steps_data[step_name] = {}
-
-            self.steps_data[step_name].update({
-                "status": status,
-                "duration": duration,
-                "items": items,
-                "retries": retries,
-                "metrics": metrics_str
-            })
-            
             st = status
             if st == "SUCCESS":
                 status_cell = "[bold green]SUCCESS[/bold green]"
@@ -187,6 +187,10 @@ class TextualPipelineDashboard(App):
 
     def add_log(self, log_line: str) -> None:
         """Append a log line to the live log stream buffer. Safe to call from threads."""
+        self.logs_buffer.append(log_line)
+        if len(self.logs_buffer) > 10:
+            self.logs_buffer.pop(0)
+
         def do_log():
             try:
                 logs = self.query_one(RichLog)

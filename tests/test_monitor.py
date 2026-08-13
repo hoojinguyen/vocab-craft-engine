@@ -122,81 +122,41 @@ def test_run_logger_handles_failed_run_and_tracebacks(tmp_path):
     assert data["steps"][0]["error_details"]["stacktrace"] == tb
 
 
-def test_dashboard_initialization_no_tui():
-    from src.pipeline.monitor.dashboard import RichPipelineDashboard
-    dash = RichPipelineDashboard(enabled=False)
-    dash.start()
-    assert dash.is_active is False
-    dash.set_steps(["step_1", "step_2"])
-    dash.update_step("step_1", "RUNNING", duration=1.0, items=10, retries=1, metrics_str="50%")
-    dash.add_log("Testing log line")
-    dash.stop()
-    assert dash.is_active is False
+@pytest.mark.asyncio
+async def test_dashboard_set_steps_and_updates():
+    from src.pipeline.monitor.dashboard import TextualPipelineDashboard
+    from textual.widgets import DataTable, RichLog
 
-
-def test_dashboard_set_steps_and_updates():
-    from src.pipeline.monitor.dashboard import RichPipelineDashboard
-    dash = RichPipelineDashboard(enabled=False)
+    dash = TextualPipelineDashboard(enabled=True)
     dash.set_steps(["step_a", "step_b"])
     assert "step_a" in dash.steps_data
     assert "step_b" in dash.steps_data
     assert dash.steps_data["step_a"]["status"] == "PENDING"
 
-    dash.update_step("step_a", "SUCCESS", duration=2.5, items=100, retries=0, metrics_str="100%")
-    assert dash.steps_data["step_a"]["status"] == "SUCCESS"
-    assert dash.steps_data["step_a"]["duration"] == 2.5
-    assert dash.steps_data["step_a"]["items"] == 100
-    assert dash.steps_data["step_a"]["retries"] == 0
-    assert dash.steps_data["step_a"]["metrics"] == "100%"
+    async with dash.run_test() as pilot:
+        dash.update_step("step_a", "SUCCESS", duration=2.5, items=100, retries=0, metrics_str="100%")
+        # Yield to event loop to allow call_from_thread to process
+        await pilot.pause()
 
-    # Add 12 logs and check buffer capping at 10
-    for i in range(12):
-        dash.add_log(f"Log line {i}")
-    assert len(dash.logs_buffer) == 10
-    assert dash.logs_buffer[0] == "Log line 2"
-    assert dash.logs_buffer[-1] == "Log line 11"
+        assert dash.steps_data["step_a"]["status"] == "SUCCESS"
+        assert dash.steps_data["step_a"]["duration"] == 2.5
+        assert dash.steps_data["step_a"]["items"] == 100
+        assert dash.steps_data["step_a"]["retries"] == 0
+        assert dash.steps_data["step_a"]["metrics"] == "100%"
 
+        for i in range(12):
+            dash.add_log(f"Log line {i}")
 
-def test_dashboard_layout_generation():
-    from src.pipeline.monitor.dashboard import RichPipelineDashboard
-    dash = RichPipelineDashboard(enabled=False)
-    dash.set_steps(["step_1"])
-    dash.update_step("step_1", "RUNNING", duration=1.2, items=5, retries=0, metrics_str="OK")
-    dash.add_log("Log 1")
-
-    layout = dash._generate_layout()
-    assert layout is not None
-    assert layout["header"] is not None
-    assert layout["body"] is not None
-    assert layout["footer"] is not None
+        assert len(dash.logs_buffer) == 10
+        assert dash.logs_buffer[0] == "Log line 2"
+        assert dash.logs_buffer[-1] == "Log line 11"
 
 
-def test_dashboard_start_and_stop_with_tty(monkeypatch):
-    from rich.console import Console
-    from src.pipeline.monitor.dashboard import RichPipelineDashboard
-
-    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
-
-    dash = RichPipelineDashboard(enabled=True)
-    assert dash.enabled is True
-
-    dash.set_steps(["step_1"])
-    dash.start()
-    assert dash.is_active is True
-    assert dash.live is not None
-
-    dash.update_step("step_1", "SUCCESS")
-    dash.add_log("Log message")
-    dash.stop()
-    assert dash.is_active is False
-
-
-def test_dashboard_logging_redirection(monkeypatch):
+@pytest.mark.asyncio
+async def test_dashboard_logging_redirection():
     import logging
-    from rich.console import Console
-    from src.pipeline.monitor.dashboard import RichPipelineDashboard
-
-    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+    from textual.widgets import RichLog
+    from src.pipeline.monitor.dashboard import TextualPipelineDashboard
 
     root_logger = logging.getLogger()
     orig_level = root_logger.level
@@ -205,17 +165,17 @@ def test_dashboard_logging_redirection(monkeypatch):
     stream_handler = logging.StreamHandler()
     root_logger.addHandler(stream_handler)
 
-    dash = RichPipelineDashboard(enabled=True)
+    dash = TextualPipelineDashboard(enabled=True)
     dash.set_steps(["step_1"])
-    dash.start()
+    
+    async with dash.run_test() as pilot:
+        # Verify stream_handler was removed, and DashboardLoggingHandler was added
+        assert stream_handler not in root_logger.handlers
+        assert dash.dashboard_handler in root_logger.handlers
 
-    # Verify stream_handler was removed, and DashboardLoggingHandler was added
-    assert stream_handler not in root_logger.handlers
-    assert dash.dashboard_handler in root_logger.handlers
-
-    # Log a message and verify it was added to dashboard's buffer
-    logging.getLogger("test_logger").info("Hello dashboard log redirection!")
-    assert any("Hello dashboard log redirection!" in log for log in dash.logs_buffer)
+        # Log a message and verify it was added to dashboard's RichLog
+        logging.getLogger("test_logger").info("Hello dashboard log redirection!")
+        assert any("Hello dashboard log redirection!" in log for log in dash.logs_buffer)
 
     # Stop dashboard and verify original state is restored
     dash.stop()

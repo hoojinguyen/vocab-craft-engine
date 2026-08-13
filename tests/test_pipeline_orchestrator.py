@@ -59,6 +59,7 @@ def test_orchestrator_execution(tmp_path):
 
     orchestrator = PipelineOrchestrator(registry=reg, state_file=tmp_path / ".pipeline_state.json")
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.steps = None
     mock_args.skip_steps = None
     mock_args.dry_run = False
@@ -78,6 +79,7 @@ def test_orchestrator_dry_run(tmp_path):
 
     orchestrator = PipelineOrchestrator(registry=reg, state_file=tmp_path / ".pipeline_state.json")
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.steps = None
     mock_args.skip_steps = None
     mock_args.dry_run = True
@@ -97,6 +99,7 @@ def test_orchestrator_failing_step(tmp_path):
 
     orchestrator = PipelineOrchestrator(registry=reg, state_file=tmp_path / ".pipeline_state.json")
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.steps = None
     mock_args.skip_steps = None
     mock_args.dry_run = False
@@ -117,6 +120,7 @@ def test_orchestrator_step_filtering(tmp_path):
 
     orchestrator = PipelineOrchestrator(registry=reg, state_file=tmp_path / ".pipeline_state.json")
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.steps = "step_a, step_b"
     mock_args.skip_steps = "step_b"
     mock_args.dry_run = False
@@ -160,6 +164,7 @@ def test_orchestrator_should_skip_exception(tmp_path):
 
     orchestrator = PipelineOrchestrator(registry=reg, state_file=tmp_path / ".pipeline_state.json")
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.steps = None
     mock_args.skip_steps = None
     mock_args.dry_run = False
@@ -182,6 +187,7 @@ def test_orchestrator_skips_save_step_status_on_dry_run_and_skip(tmp_path):
     orchestrator.state_manager.save_step_status = MagicMock()
 
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.steps = None
     mock_args.skip_steps = None
     mock_args.dry_run = True
@@ -209,6 +215,7 @@ def test_orchestrator_handles_save_step_status_failure_gracefully(tmp_path, capl
     orchestrator.state_manager.save_step_status = MagicMock(side_effect=RuntimeError("IO Error writing state"))
 
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.steps = None
     mock_args.skip_steps = None
     mock_args.dry_run = False
@@ -236,6 +243,7 @@ def test_orchestrator_clears_state_on_non_dry_run(tmp_path):
     orchestrator.state_manager.clear_state = MagicMock()
 
     mock_args = MagicMock()
+    mock_args.tui = False
     mock_args.steps = None
     mock_args.skip_steps = None
 
