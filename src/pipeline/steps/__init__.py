@@ -8,6 +8,10 @@ NLPEnrichmentStep = importlib.import_module("src.pipeline.steps.05_nlp_enrichmen
 ReflexDrillsStep = importlib.import_module("src.pipeline.steps.06_reflex_drills").ReflexDrillsStep
 ScenarioTreesStep = importlib.import_module("src.pipeline.steps.07_scenario_trees").ScenarioTreesStep
 IPAMappingStep = importlib.import_module("src.pipeline.steps.08_ipa_mapping").IPAMappingStep
+AudioGenerationStep = importlib.import_module("src.pipeline.steps.09_audio_generation").AudioGenerationStep
+PhraseMWEStep = importlib.import_module("src.pipeline.steps.10_phrase_mwe").PhraseMWEStep
+RelationsTopicsStep = importlib.import_module("src.pipeline.steps.11_relations_topics").RelationsTopicsStep
+VietnameseBackfillStep = importlib.import_module("src.pipeline.steps.12_vietnamese_backfill").VietnameseBackfillStep
 
 __all__ = [
     "SchemaInitStep",
@@ -18,4 +22,9 @@ __all__ = [
     "ReflexDrillsStep",
     "ScenarioTreesStep",
     "IPAMappingStep",
+    "AudioGenerationStep",
+    "PhraseMWEStep",
+    "RelationsTopicsStep",
+    "VietnameseBackfillStep",
 ]
+
