@@ -6,7 +6,8 @@ Now modularized via src.pipeline steps & orchestrator.
 
 import sys
 import logging
-from src.pipeline.cli import parse_arguments
+from src.pipeline.cli import parse_arguments, REQUIRED_RAW_FILES, get_missing_raw_files
+from scripts.download_raw_data import download_all_raw_data
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.orchestrator import PipelineOrchestrator
 from src.pipeline.core.registry import get_default_registry
@@ -22,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 def main():
     args = parse_arguments()
+    missing_raw = get_missing_raw_files(REQUIRED_RAW_FILES)
+    if missing_raw:
+        logger.info("Raw data files missing: %s", [str(p) for p in missing_raw])
+        logger.info("Raw data files check/download in progress...")
+        download_all_raw_data()
+
     db_manager = DatabaseManager(db_path=EXPORT_SQLITE_PATH)
     context = PipelineContext(db_manager=db_manager, args=args)
 
