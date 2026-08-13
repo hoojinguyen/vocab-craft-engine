@@ -1,0 +1,38 @@
+import json
+from pathlib import Path
+from typing import Dict, Any
+
+
+class StateManager:
+    def __init__(self, state_file: Path = Path(".pipeline_state.json")):
+        self.state_file = state_file
+
+    def load_state(self) -> Dict[str, Any]:
+        if not self.state_file.exists():
+            return {}
+        try:
+            content = self.state_file.read_text(encoding="utf-8")
+            data = json.loads(content)
+        except Exception as e:
+            raise ValueError(f"Failed to parse state file {self.state_file}: {e}") from e
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"State file {self.state_file} top-level element must be a dict/mapping, got {type(data).__name__}"
+            )
+        return data
+
+    def save_step_status(self, step_name: str, status: str, duration: float, items: int) -> None:
+        state = self.load_state()
+        state[step_name] = {
+            "status": status,
+            "duration": duration,
+            "items": items,
+        }
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    def clear_state(self) -> None:
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps({}, indent=2), encoding="utf-8")
+

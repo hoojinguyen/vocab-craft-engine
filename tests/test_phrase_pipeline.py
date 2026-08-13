@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import main as main_module
+import importlib
+main_module = importlib.import_module("src.pipeline.steps.10_phrase_mwe")
 from src.db.staging_db import DatabaseManager
 
 
@@ -120,14 +121,21 @@ def test_run_phrase_step_checkpoint_skips(phrase_environment, monkeypatch):
     args = argparse.Namespace(force_reset=False)
 
     # Pre-populate enough phrases with complete audio to trigger the checkpoint
-    phrases = [
-        {"phrase": f"checkpoint phrase {i}", "phrase_type": "idiom", "pos": "idiom",
-         "cefr_level": "B1", "difficulty_score": 2.0, "definition_en": "x",
-         "definition_vi": None, "ipa": None,
-         "audio_std": f"phrase_{i}_std.mp3", "audio_fast": f"phrase_{i}_fast.mp3",
-         "audio_status": "ok"}
-        for i in range(600)
-    ]
+    audio_dir = db_path.parent / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    phrases = []
+    for i in range(600):
+        std_p = audio_dir / f"phrase_{i}_std.mp3"
+        fast_p = audio_dir / f"phrase_{i}_fast.mp3"
+        std_p.write_bytes(b"dummy")
+        fast_p.write_bytes(b"dummy")
+        phrases.append({
+            "phrase": f"checkpoint phrase {i}", "phrase_type": "idiom", "pos": "idiom",
+            "cefr_level": "B1", "difficulty_score": 2.0, "definition_en": "x",
+            "definition_vi": None, "ipa": None,
+            "audio_std": str(std_p), "audio_fast": str(fast_p),
+            "audio_status": "ok"
+        })
     db_manager.insert_phrases_batch(phrases)
 
     with patch.object(main_module, "PhraseParser") as mock_parser, \
@@ -162,11 +170,10 @@ def test_run_phrase_step_repairs_missing_audio(phrase_environment, monkeypatch):
 
         stats = main_module.run_phrase_step(db_manager, args)
 
-        # Regression catch: the old count-only checkpoint skipped here
-        mock_parser.assert_called_once()
+        # Kaikki dump re-parsing is skipped since > 500 phrases exist
+        mock_parser.assert_not_called()
 
-    # The mocked parser yields no items, so nothing new is ingested
-    assert stats["phrases"] == 0
+    assert stats["phrases"] == 600
 
     # The repair pass rewrote every corrupted row: all 600 pre-seeded phrases
     # with missing audio got their status updated instead of being skipped

@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-import main as main_module
+import importlib.util
+_step12_path = Path(__file__).parent.parent / "src" / "pipeline" / "steps" / "12_vietnamese_backfill.py"
+_spec = importlib.util.spec_from_file_location("step_12_vietnamese_backfill", _step12_path)
+main_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(main_module)
 from src.db.staging_db import DatabaseManager
 
 

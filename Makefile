@@ -2,7 +2,7 @@
 # Makefile for VocabCraft Engine
 # ==============================================================================
 
-PYTHON_SYS ?= $(shell command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || command -v python3.13 2>/dev/null || (test -x ~/.local/bin/uv && ~/.local/bin/uv python find 3.12 2>/dev/null) || (command -v uv 2>/dev/null && uv python find 3.12 2>/dev/null) || command -v python3 2>/dev/null)
+PYTHON_SYS ?= $(shell command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || command -v python3.13 2>/dev/null || command -v python3.14 2>/dev/null || (test -x ~/.local/bin/uv && ~/.local/bin/uv python find 3.12 2>/dev/null) || (command -v uv >/dev/null 2>&1 && uv python find 3.12 2>/dev/null) || command -v python3 2>/dev/null)
 VENV_DIR = .venv
 PYTHON = $(VENV_DIR)/bin/python
 PIP = $(VENV_DIR)/bin/pip
@@ -53,6 +53,14 @@ corpus-download:
 run:
 	@echo "==> Starting English Dataset ETL Pipeline (Smart Auto-Resume)..."
 	$(PYTHON) main.py
+
+dry-run:
+	@echo "==> Running English Dataset ETL Pipeline (Dry-Run Mode)..."
+	$(PYTHON) main.py --dry-run
+
+resume:
+	@echo "==> Resuming English Dataset ETL Pipeline from failure..."
+	$(PYTHON) main.py --resume
 
 run-fresh:
 	@echo "==> Starting English Dataset ETL Pipeline (Force Re-ingest)..."

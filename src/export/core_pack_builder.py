@@ -199,6 +199,7 @@ class CorePackBuilder:
         self.db_path = self.output_dir / "core_3000.db"
         self._audio_gen_instance = None
         self._cp = self._load_checkpoint()
+        self._remaining_vi_budget = 5000
 
     # ---- checkpoint ----------------------------------------------------
 
@@ -220,8 +221,36 @@ class CorePackBuilder:
         tmp.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, self.checkpoint_path)
 
-    def _is_done(self, word_id: int) -> bool:
-        return str(word_id) in self._cp.get("done", {})
+    def reset(self):
+        """Clears checkpoint and deletes stale pack database and audio files if needed."""
+        if self.checkpoint_path.exists():
+            try:
+                self.checkpoint_path.unlink()
+            except Exception as e:
+                logger.warning("Failed to remove checkpoint %s: %s", self.checkpoint_path, e)
+        if self.db_path.exists():
+            try:
+                self.db_path.unlink()
+            except Exception as e:
+                logger.warning("Failed to remove DB %s: %s", self.db_path, e)
+        for suffix in ("-wal", "-shm"):
+            p = self.db_path.with_name(self.db_path.name + suffix)
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+        self._cp = {"done": {}}
+
+    def _is_done(self, word_id: int, pack_conn: Optional[sqlite3.Connection] = None) -> bool:
+        if str(word_id) not in self._cp.get("done", {}):
+            return False
+        if pack_conn is not None:
+            row = pack_conn.execute("SELECT 1 FROM words WHERE id = ?", (word_id,)).fetchone()
+            if row is None:
+                self._cp["done"].pop(str(word_id), None)
+                return False
+        return True
 
     # ---- audio ---------------------------------------------------------
 
@@ -271,6 +300,20 @@ class CorePackBuilder:
 
     # ---- enrichment ---------------------------------------------------
 
+    def _translate_with_budget(self, text: str, translator: Any) -> str:
+        if not text or not text.strip():
+            return ""
+        clean_text = text.strip()
+        cache = getattr(translator, "cache", None)
+        if cache and isinstance(cache, dict) and clean_text in cache:
+            return cache[clean_text]
+        if getattr(self, "_remaining_vi_budget", 5000) <= 0:
+            logger.debug("Vietnamese translation budget exhausted; skipping translation for '%s'", clean_text[:30])
+            return ""
+        translated = translator.translate_text(clean_text)
+        self._remaining_vi_budget -= 1
+        return translated
+
     def _enrich_word(
         self,
         conn: sqlite3.Connection,
@@ -304,14 +347,15 @@ class CorePackBuilder:
                 def_row = (def_row[0], def_row[1], ex_row[0] if ex_row else None)
         if def_row is None:
             return {"word": None, "quarantine": "definition"}
-        definition_en, existing_vi, kaikki_example = def_row
+        definition_en, existing_vi, me_example = def_row
+        kaikki_example = me_example
 
         # definition_vi
         definition_vi = ""
         if existing_vi and validator.is_vietnamese(existing_vi):
             definition_vi = existing_vi
         else:
-            definition_vi = translator.translate_text(definition_en)
+            definition_vi = self._translate_with_budget(definition_en, translator)
         if not validator.is_vietnamese(definition_vi):
             return {"word": None, "quarantine": "definition_vi"}
 
@@ -331,9 +375,9 @@ class CorePackBuilder:
         ).fetchone()
         if sent_row is not None:
             example_en, example_vi = sent_row
-        elif kaikki_example:
-            example_en = kaikki_example
-            example_vi = translator.translate_text(kaikki_example)
+        elif me_example:
+            example_en = me_example
+            example_vi = self._translate_with_budget(me_example, translator)
         else:
             return {"word": None, "quarantine": "example_en"}
         if not example_en or not example_vi:
@@ -425,8 +469,6 @@ class CorePackBuilder:
     """
 
     def _init_pack_db(self) -> sqlite3.Connection:
-        if self.db_path.exists():
-            self.db_path.unlink()
         conn = sqlite3.connect(str(self.db_path))
         conn.executescript(self.SCHEMA)
         return conn
@@ -445,23 +487,50 @@ class CorePackBuilder:
         import asyncio
         from src.nlp.translator import Translator
 
+        self._remaining_vi_budget = vi_budget
         source = sqlite3.connect(str(self.source_db_path))
         selected, metrics = select_core_words_with_gates(
             source, freq_dict, ngsl_path=ngsl_path, target=target
         )
+
+        current_selected_ids = {w["id"] for w in selected}
+        prev_selected_ids = set(self._cp.get("selected_ids", []))
+        if prev_selected_ids and prev_selected_ids != current_selected_ids:
+            logger.info("Selection changed between runs; resetting pack DB and checkpoint.")
+            self.reset()
+        self._cp["selected_ids"] = list(current_selected_ids)
+
         topics_by_word = self._topics_by_word(source)
         definitions_by_word = self._definitions_by_word(source)
 
         translator = Translator()
         pack_conn = self._init_pack_db()
+
+        # Remove stale words outside current selection if any exist in pack DB
+        existing_words = pack_conn.execute("SELECT id FROM words").fetchall()
+        existing_word_ids = {row[0] for row in existing_words}
+        stale_ids = existing_word_ids - current_selected_ids
+        if stale_ids:
+            stale_list = list(stale_ids)
+            placeholders = ",".join("?" for _ in stale_list)
+            pack_conn.execute(f"DELETE FROM words WHERE id IN ({placeholders})", tuple(stale_list))
+            pack_conn.execute(f"DELETE FROM word_topics WHERE word_id IN ({placeholders})", tuple(stale_list))
+            pack_conn.execute(f"DELETE FROM definitions WHERE word_id IN ({placeholders})", tuple(stale_list))
+            pack_conn.execute(f"DELETE FROM word_sentences WHERE word_id IN ({placeholders})", tuple(stale_list))
+            pack_conn.execute("DELETE FROM sentences WHERE id NOT IN (SELECT sentence_id FROM word_sentences)")
+            pack_conn.commit()
+            for sid in stale_ids:
+                self._cp["done"].pop(str(sid), None)
+
         sent_id_map: Dict[str, int] = {}
-        next_sent_id = 1
+        max_sent_row = pack_conn.execute("SELECT MAX(id) FROM sentences").fetchone()
+        next_sent_id = (max_sent_row[0] + 1) if (max_sent_row and max_sent_row[0] is not None) else 1
 
         enriched = []
         quarantined = []
         pending = []
         for word in selected:
-            if self._is_done(word["id"]):
+            if self._is_done(word["id"], pack_conn=pack_conn):
                 continue
             result = self._enrich_word(source, (
                 word["id"], word["lemma"], word["pos"], word["ipa_uk"],
@@ -498,31 +567,32 @@ class CorePackBuilder:
                     result["audio_fast"] = fast_path
                     enriched.append(result)
                     self._cp["done"][str(word["id"])] = True
-                if enriched:
-                    self._save_checkpoint(self._cp)
-
         # -- write words + definitions + topics --------------------------
+        newly_committed_ids = []
         for r in enriched:
             pack_conn.execute(
-                "INSERT INTO words (id, lemma, pos, cefr_level, frequency_rank, "
+                "INSERT OR REPLACE INTO words (id, lemma, pos, cefr_level, frequency_rank, "
                 "ipa_uk, ipa_us, audio_std, audio_fast, audio_status) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')",
                 (r["word"]["id"], r["word"]["lemma"], r["word"]["pos"], r["cefr_level"],
                  r["frequency_rank"], r["ipa_uk"], r["ipa_us"],
                  r["audio_std"], r["audio_fast"]),
             )
+            pack_conn.execute("DELETE FROM word_topics WHERE word_id = ?", (r["word"]["id"],))
             pack_conn.execute(
                 "INSERT INTO word_topics (word_id, topic) VALUES (?, ?)",
                 (r["word"]["id"], r["topic"]),
             )
+            pack_conn.execute("DELETE FROM definitions WHERE word_id = ?", (r["word"]["id"],))
             pack_conn.execute(
                 "INSERT INTO definitions (word_id, definition_en, definition_vi, "
                 "example_en, example_vi, example_vi_source) VALUES (?, ?, ?, ?, ?, 'validated')",
                 (r["word"]["id"], r["definition_en"], r["definition_vi"],
                  r["example_en"], r["example_vi"]),
             )
+            pack_conn.execute("DELETE FROM word_sentences WHERE word_id = ?", (r["word"]["id"],))
             pack_conn.execute(
-                "INSERT INTO sentences (id, text_en, text_vi, cefr_level, source) "
+                "INSERT OR REPLACE INTO sentences (id, text_en, text_vi, cefr_level, source) "
                 "VALUES (?, ?, ?, ?, 'Tatoeba')",
                 (next_sent_id, r["example_en"], r["example_vi"], r["cefr_level"]),
             )
@@ -532,10 +602,14 @@ class CorePackBuilder:
             )
             sent_id_map[r["word"]["id"]] = next_sent_id
             next_sent_id += 1
+            newly_committed_ids.append(r["word"]["id"])
 
         # -- collocations & phrases rooted in the pack --------------------
-        core_lemma_ids = {r["word"]["id"] for r in enriched}
-        first_words = {w["lemma"]: w["id"] for w in selected}
+        all_pack_words = pack_conn.execute("SELECT id, lemma FROM words").fetchall()
+        core_lemma_ids = {row[0] for row in all_pack_words}
+        first_words = {row[1]: row[0] for row in all_pack_words}
+
+        pack_conn.execute("DELETE FROM collocations")
         colloc_rows = source.execute(
             "SELECT c.phrase, c.meaning_vi, c.pos_pattern, c.cefr_level, c.id "
             "FROM collocations c"
@@ -552,6 +626,7 @@ class CorePackBuilder:
                 )
                 pack_collocs += 1
 
+        pack_conn.execute("DELETE FROM phrases")
         phrase_rows = source.execute(
             "SELECT phrase, definition_en, definition_vi, cefr_level, audio_std, audio_fast "
             "FROM phrases WHERE cefr_level IN ('A1','A2','B1','B2')"
@@ -567,6 +642,7 @@ class CorePackBuilder:
                 )
                 pack_phrases += 1
 
+        pack_conn.execute("DELETE FROM quarantine")
         for q in quarantined:
             pack_conn.execute(
                 "INSERT INTO quarantine (word_id, lemma, failed_gate) VALUES (?, ?, ?)",
@@ -586,14 +662,17 @@ class CorePackBuilder:
             """
         )
         pack_conn.commit()
+
+        for w_id in newly_committed_ids:
+            self._cp["done"][str(w_id)] = True
+        self._save_checkpoint(self._cp)
+
         pack_conn.execute("VACUUM;")
         pack_conn.execute("PRAGMA journal_mode = WAL;")
         pack_conn.execute("PRAGMA synchronous = NORMAL;")
         pack_conn.commit()
+        report = self._write_report(metrics, enriched, quarantined, pack_collocs, pack_phrases, pack_conn)
         pack_conn.close()
-
-        self._save_checkpoint(self._cp)
-        report = self._write_report(metrics, enriched, quarantined, pack_collocs, pack_phrases)
         source.close()
         return report
 
@@ -604,14 +683,38 @@ class CorePackBuilder:
         quarantined: List[Dict[str, Any]],
         colloc_count: int,
         phrase_count: int,
+        pack_conn: Optional[sqlite3.Connection] = None,
     ) -> Dict[str, Any]:
-        total = len(enriched) + len(quarantined)
-        pass_rate = len(enriched) / total if total else 0.0
-        theme_counts: Dict[str, int] = {}
-        cefr_counts: Dict[str, int] = {}
-        for r in enriched:
-            theme_counts[r["topic"]] = theme_counts.get(r["topic"], 0) + 1
-            cefr_counts[r["cefr_level"]] = cefr_counts.get(r["cefr_level"], 0) + 1
+        if pack_conn is not None:
+            words_rows = pack_conn.execute("SELECT id, cefr_level FROM words").fetchall()
+            topic_rows = pack_conn.execute("SELECT topic FROM word_topics").fetchall()
+            quarantine_rows = pack_conn.execute("SELECT lemma, failed_gate FROM quarantine").fetchall()
+
+            word_count = len(words_rows)
+            quarantined_count = len(quarantine_rows)
+            total = word_count + quarantined_count
+            pass_rate = word_count / total if total else 0.0
+
+            theme_counts: Dict[str, int] = {}
+            for (t,) in topic_rows:
+                theme_counts[t] = theme_counts.get(t, 0) + 1
+
+            cefr_counts: Dict[str, int] = {}
+            for _, cefr in words_rows:
+                if cefr:
+                    cefr_counts[cefr] = cefr_counts.get(cefr, 0) + 1
+
+            report_quarantined = [{"lemma": l, "failed_gate": g} for l, g in quarantine_rows]
+        else:
+            total = len(enriched) + len(quarantined)
+            pass_rate = len(enriched) / total if total else 0.0
+            theme_counts: Dict[str, int] = {}
+            cefr_counts: Dict[str, int] = {}
+            for r in enriched:
+                theme_counts[r["topic"]] = theme_counts.get(r["topic"], 0) + 1
+                cefr_counts[r["cefr_level"]] = cefr_counts.get(r["cefr_level"], 0) + 1
+            report_quarantined = quarantined
+            quarantined_count = len(quarantined)
 
         lines = [
             "# Core 3000 Pack Quality Report",
@@ -621,7 +724,7 @@ class CorePackBuilder:
             f"- NGSL overlap: {metrics.get('ngsl_overlap', 0) * 100:.1f}% (gate >= 85%)",
             f"- Tatoeba coverage: {metrics.get('tatoeba_coverage', 0) * 100:.1f}% (gate >= 90%)",
             f"- Pass rate: {pass_rate * 100:.1f}% (gate >= 97%)",
-            f"- Quarantined: {len(quarantined)}",
+            f"- Quarantined: {quarantined_count}",
             f"- Themes covered: {len(theme_counts)}/18",
             f"- Collocations linked: {colloc_count}",
             f"- Idioms linked: {phrase_count}",
@@ -637,10 +740,10 @@ class CorePackBuilder:
         for theme, count in sorted(theme_counts.items(), key=lambda kv: -kv[1]):
             lines.append(f"| {theme} | {count} |")
         lines += ["", "## Quarantined words", ""]
-        if quarantined:
+        if report_quarantined:
             lines.append("| lemma | gate |")
             lines.append("|-------|------|")
-            for q in quarantined:
+            for q in report_quarantined:
                 lines.append(f"| {q['lemma']} | {q['failed_gate']} |")
         else:
             lines.append("None.")
@@ -652,11 +755,12 @@ class CorePackBuilder:
         return {
             "selected": metrics.get("selected", 0),
             "pass_rate": round(pass_rate, 4),
-            "quarantined": len(quarantined),
+            "quarantined": quarantined_count,
             "themes_covered": len(theme_counts),
             "collocations": colloc_count,
             "phrases": phrase_count,
         }
+
 
 
 def build_report_invariants(pack_db_path: Path, report: Dict[str, Any]) -> List[str]:

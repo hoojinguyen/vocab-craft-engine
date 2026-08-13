@@ -507,3 +507,79 @@ def test_example_prefers_cleaner_source(small_db, tmp_path):
 
     assert word["word"]["lemma"] == "cat"
     assert word["example_en"] == "The cat is sleeping."  # TED-EnVi wins over OpenSubtitles
+import json
+import sqlite3
+import pytest
+from src.export.core_pack_builder import CorePackBuilder
+
+def test_is_done_invalidates_uncommitted_checkpoint_id(tmp_path, small_db):
+    _seed_pack_source(small_db)
+    small_db.close()
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+    builder.checkpoint_path.write_text(json.dumps({"done": {"1": True, "2": True}}), encoding="utf-8")
+    builder._cp = builder._load_checkpoint()
+
+    pack_conn = builder._init_pack_db()
+    pack_conn.execute("INSERT INTO words (id, lemma) VALUES (1, 'cat')")
+    pack_conn.commit()
+
+    assert builder._is_done(1, pack_conn=pack_conn) is True
+    assert builder._is_done(2, pack_conn=pack_conn) is False
+    assert "2" not in builder._cp["done"]
+    pack_conn.close()
+
+
+def test_rerun_purges_stale_words_and_report_invariants_pass(tmp_path, small_db, monkeypatch):
+    _seed_pack_source(small_db)
+    small_db.execute(
+        "INSERT INTO words (lemma, pos, ipa_uk, ipa_us, frequency_rank, cefr_level) "
+        "VALUES ('bird', 'noun', '/b/', '/b/', 5, 'C2')"
+    )
+    bird_id = small_db.execute("SELECT id FROM words WHERE lemma='bird'").fetchone()[0]
+    small_db.execute(
+        "INSERT INTO definitions (word_id, definition_en, definition_vi, example) "
+        "VALUES (?, 'A creature with wings.', NULL, 'A bird sings.')", (bird_id,)
+    )
+    small_db.execute(
+        "INSERT INTO sentences (text_en, text_vi, difficulty_score, cefr_level) "
+        "VALUES ('A bird sings.', 'Con chim hót.', 1.0, 'A1')"
+    )
+    small_db.execute(
+        "INSERT INTO word_sentence_map (word_id, sentence_id) VALUES (?, ?)", (bird_id, 4)
+    )
+    small_db.commit()
+    small_db.close()
+
+    ngsl = tmp_path / "ngsl.csv"
+    ngsl.write_text("cat,,,\ndog,,,\nrun,,,\nbird,,,\n", encoding="utf-8")
+
+    import src.export.core_pack_builder as cpb
+
+    class StubPackTranslator:
+        def translate_text(self, text):
+            return f"bản dịch của {text}"
+        def save_cache(self):
+            pass
+
+    monkeypatch.setattr("src.nlp.translator.Translator", StubPackTranslator)
+
+    async def fake_audio(self, word_id, lemma):
+        return f"audio/std/w_{word_id}_std.mp3", f"audio/fast/w_{word_id}_fast.mp3"
+
+    monkeypatch.setattr(cpb.CorePackBuilder, "_generate_word_audio", fake_audio)
+
+    builder = CorePackBuilder(source_db_path=tmp_path / "source.db", output_dir=tmp_path / "pack")
+
+    report1 = builder.build(freq_dict={"cat": 1, "dog": 2, "run": 3, "bird": 4}, ngsl_path=ngsl, target=3)
+    violations1 = cpb.build_report_invariants(builder.db_path, report1)
+    assert violations1 == []
+
+    report2 = builder.build(freq_dict={"cat": 1, "dog": 2, "bird": 3, "run": 4}, ngsl_path=ngsl, target=3)
+    violations2 = cpb.build_report_invariants(builder.db_path, report2)
+    assert violations2 == []
+
+    pack_conn = sqlite3.connect(builder.db_path)
+    lemmas = set(r[0] for r in pack_conn.execute("SELECT lemma FROM words").fetchall())
+    assert "run" not in lemmas
+    assert "bird" in lemmas
+    pack_conn.close()

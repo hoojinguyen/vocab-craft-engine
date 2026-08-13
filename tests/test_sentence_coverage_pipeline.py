@@ -85,69 +85,75 @@ def _make_seeded_db(tmp_path: Path):
 
 
 def test_read_checkpoint_missing_returns_zero(tmp_path):
-    import main as main_module
+    import importlib
+    step_04 = importlib.import_module("src.pipeline.steps.04_sentence_linking")
 
-    assert main_module._read_sentence_link_checkpoint(tmp_path / "missing.json") == 0
+    assert step_04._read_sentence_link_checkpoint(tmp_path / "missing.json") == 0
 
 
 def test_read_checkpoint_corrupt_returns_zero(tmp_path):
-    import main as main_module
+    import importlib
+    step_04 = importlib.import_module("src.pipeline.steps.04_sentence_linking")
 
     cp = tmp_path / "corrupt.json"
     cp.write_text("{not-json", encoding="utf-8")
-    assert main_module._read_sentence_link_checkpoint(cp) == 0
+    assert step_04._read_sentence_link_checkpoint(cp) == 0
 
 
 def test_read_checkpoint_valid_returns_id(tmp_path):
-    import main as main_module
+    import importlib
+    step_04 = importlib.import_module("src.pipeline.steps.04_sentence_linking")
 
     cp = tmp_path / "valid.json"
     cp.write_text(json.dumps({"last_id": 42}), encoding="utf-8")
-    assert main_module._read_sentence_link_checkpoint(cp) == 42
+    assert step_04._read_sentence_link_checkpoint(cp) == 42
 
 
 def test_write_checkpoint_round_trip(tmp_path):
-    import main as main_module
+    import importlib
+    step_04 = importlib.import_module("src.pipeline.steps.04_sentence_linking")
 
     cp = tmp_path / "roundtrip.json"
-    main_module._write_sentence_link_checkpoint(cp, 7)
+    step_04._write_sentence_link_checkpoint(cp, 7)
     assert cp.exists()
-    assert main_module._read_sentence_link_checkpoint(cp) == 7
+    assert step_04._read_sentence_link_checkpoint(cp) == 7
 
 
 def test_force_reset_clears_stale_link_checkpoint(tmp_path, monkeypatch):
     """--force-reset must drop the checkpoint; a stale last_id would skip
     re-ingested sentences whose AUTOINCREMENT ids restart at 1."""
-    import main as main_module
+    import importlib
+    step_04 = importlib.import_module("src.pipeline.steps.04_sentence_linking")
 
     cp = tmp_path / "sentence_link_checkpoint.json"
     cp.write_text(json.dumps({"last_id": 100}), encoding="utf-8")
-    monkeypatch.setattr(main_module, "SENTENCE_LINK_CHECKPOINT", cp)
+    monkeypatch.setattr(step_04, "SENTENCE_LINK_CHECKPOINT", cp)
 
-    main_module._clear_sentence_link_checkpoint()
+    step_04._clear_sentence_link_checkpoint()
 
     assert not cp.exists()
-    assert main_module._read_sentence_link_checkpoint(cp) == 0
+    assert step_04._read_sentence_link_checkpoint(cp) == 0
 
 
 def test_incremental_linking_resumes_and_recovers_after_reset(tmp_path, monkeypatch):
     """4B linking: first run links + advances checkpoint, re-run is a no-op,
     and after a force-reset (wiped tables + cleared checkpoint) the recycled
     sentence ids are re-linked instead of skipped by the stale checkpoint."""
-    import main as main_module
+    import importlib
+    step_04 = importlib.import_module("src.pipeline.steps.04_sentence_linking")
 
     db_manager = _make_seeded_db(tmp_path)
     cp = tmp_path / "link_cp.json"
-    monkeypatch.setattr(main_module, "SENTENCE_LINK_CHECKPOINT", cp)
+    monkeypatch.setattr(step_04, "SENTENCE_LINK_CHECKPOINT", cp)
     conn = db_manager.get_connection()
 
-    main_module._link_sentences_incrementally(db_manager, cp)
+    step_04._link_sentences_incrementally(db_manager, cp)
     first_count = conn.execute("SELECT count(*) FROM word_sentence_map").fetchone()[0]
     assert first_count >= 1
-    assert main_module._read_sentence_link_checkpoint(cp) == 2
+    assert step_04._read_sentence_link_checkpoint(cp) == 2
 
     # Idempotent: nothing new to link, checkpoint unchanged
-    main_module._link_sentences_incrementally(db_manager, cp)
+    step_04._link_sentences_incrementally(db_manager, cp)
     assert conn.execute("SELECT count(*) FROM word_sentence_map").fetchone()[0] == first_count
 
     # Force reset: wipe tables (mirroring the production wipe block), clear
@@ -168,9 +174,9 @@ def test_incremental_linking_resumes_and_recovers_after_reset(tmp_path, monkeypa
     assert recycled_ids == [1, 2]
 
     # The fix: the checkpoint was cleared, so re-linking covers recycled ids
-    main_module._clear_sentence_link_checkpoint()
-    assert main_module._read_sentence_link_checkpoint(cp) == 0
-    main_module._link_sentences_incrementally(db_manager, cp)
+    step_04._clear_sentence_link_checkpoint()
+    assert step_04._read_sentence_link_checkpoint(cp) == 0
+    step_04._link_sentences_incrementally(db_manager, cp)
     assert conn.execute("SELECT count(*) FROM word_sentence_map").fetchone()[0] >= 1
 
     db_manager.close()
@@ -180,10 +186,10 @@ def test_required_raw_files_includes_corpus_files():
     """The raw-data completeness gate used by `make run` must require the
     parallel corpora too — otherwise a fresh box that has kaikki/tatoeba but
     not OpenSubtitles/EnViCorpora would silently skip sentence coverage."""
-    import main as main_module
+    from src.pipeline.cli import REQUIRED_RAW_FILES
     import config.settings as settings
 
-    required = set(main_module.REQUIRED_RAW_FILES)
+    required = set(REQUIRED_RAW_FILES)
     for path in (
         settings.OPENSUBTITLES_EN,
         settings.OPENSUBTITLES_VI,
@@ -197,20 +203,21 @@ def test_required_raw_files_includes_corpus_files():
 
 def test_get_missing_raw_files_reports_only_absent(tmp_path):
     """Helper returns only files that are missing or empty in the given set."""
-    import main as main_module
+    from src.pipeline.cli import get_missing_raw_files
 
     present = tmp_path / "present.dat"
     present.write_text("x", encoding="utf-8")
     absent = tmp_path / "absent.dat"
 
-    missing = main_module.get_missing_raw_files([present, absent])
+    missing = get_missing_raw_files([present, absent])
     assert missing == [absent]
 
 
 def test_corpus_ingest_respects_max_sentences_cap(tmp_path, monkeypatch):
     """Per-corpus cap: a giant corpus must stop at MAX_SENTENCES_PER_CORPUS
     instead of ingesting everything (guards disk space on 37M-line corpora)."""
-    import main as main_module
+    import importlib
+    step_14 = importlib.import_module("src.pipeline.steps.14_sentence_coverage")
     import config.settings as settings
     from src.db.staging_db import DatabaseManager
 
@@ -231,7 +238,7 @@ def test_corpus_ingest_respects_max_sentences_cap(tmp_path, monkeypatch):
     db_manager.init_schema()
     args = SimpleNamespace(force_reset=False)
 
-    stats = main_module.run_sentence_coverage_step(db_manager, args)
+    stats = step_14.run_sentence_coverage_step(db_manager, args)
 
     assert stats["inserted"] == 5
     conn = db_manager.get_connection()

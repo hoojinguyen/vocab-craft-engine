@@ -44,3 +44,6 @@ data/output/*
 .idea/
 .vscode/
 *.swp
+.pipeline_state.json
+
+logs/
