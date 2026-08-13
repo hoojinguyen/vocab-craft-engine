@@ -7,6 +7,7 @@ class StepStatus(Enum):
     SUCCESS = "SUCCESS"
     SKIPPED = "SKIPPED"
     FAILED = "FAILED"
+    RETRYING = "RETRYING"
 
 
 @dataclass
@@ -18,6 +19,9 @@ class StepResult:
     message: str = ""
     error: Optional[Exception] = None
     metrics: Dict[str, Any] = field(default_factory=dict)
+    retry_count: int = 0
+    error_traceback: Optional[str] = None
+    data_metrics: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
