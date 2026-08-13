@@ -220,6 +220,7 @@ class DatabaseManager:
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_definitions_word_id ON definitions(word_id);")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_definitions_unique ON definitions(word_id, definition_en);")
 
         conn.commit()
         logger.info("Database schema initialized successfully at %s", self.db_path)
@@ -240,19 +241,20 @@ class DatabaseManager:
         return cursor.rowcount
 
     def insert_definitions_batch(self, definitions_data: List[Dict[str, Any]]) -> int:
-        """Batch insert definitions into `definitions` table."""
+        """Batch insert definitions into `definitions` table with IGNORE on duplicates."""
         if not definitions_data:
             return 0
 
         conn = self.get_connection()
         query = """
-            INSERT INTO definitions (word_id, definition_en, definition_vi, example, source)
+            INSERT OR IGNORE INTO definitions (word_id, definition_en, definition_vi, example, source)
             VALUES (:word_id, :definition_en, :definition_vi, :example, :source);
         """
         cursor = conn.cursor()
         cursor.executemany(query, definitions_data)
         conn.commit()
         return cursor.rowcount
+
 
     def insert_sentences_batch(self, sentences_data: List[Dict[str, Any]]) -> int:
         """Batch insert sentences into `sentences` table."""

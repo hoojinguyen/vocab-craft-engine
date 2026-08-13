@@ -91,14 +91,19 @@ def test_run_relations_step_checkpoint_skips(relation_environment, monkeypatch):
     monkeypatch.setattr(main_module, "TOPIC_CHECKPOINT", 10)
 
     dog_id = db_manager.get_word_id_by_lemma("dog")
+    animal_id = db_manager.get_word_id_by_lemma("animal")
     db_manager.insert_word_relations_batch([
         {"word_id": dog_id, "relation_type": "synonym", "target_text": f"seed{i}",
          "target_word_id": None, "inverted": 0, "source": "synonyms"}
-        for i in range(12)
+        for i in range(11)
     ])
     db_manager.insert_word_relations_batch([
-        {"word_id": dog_id, "relation_type": "hyponym", "target_text": "seedinv",
-         "target_word_id": None, "inverted": 1, "source": "hypernyms"}
+        {"word_id": dog_id, "relation_type": "hypernym", "target_text": "animal",
+         "target_word_id": animal_id, "inverted": 0, "source": "hypernyms"}
+    ])
+    db_manager.insert_word_relations_batch([
+        {"word_id": animal_id, "relation_type": "hyponym", "target_text": "dog",
+         "target_word_id": dog_id, "inverted": 1, "source": "hypernyms"}
     ])
     db_manager.insert_word_topics_batch([
         {"word_id": dog_id, "topic": f"Seed{i}", "raw_topic": "seed"} for i in range(12)

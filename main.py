@@ -30,15 +30,18 @@ def main():
         download_all_raw_data()
 
     db_manager = DatabaseManager(db_path=EXPORT_SQLITE_PATH)
-    context = PipelineContext(db_manager=db_manager, args=args)
+    try:
+        context = PipelineContext(db_manager=db_manager, args=args)
 
-    registry = get_default_registry()
-    orchestrator = PipelineOrchestrator(registry=registry)
+        registry = get_default_registry()
+        orchestrator = PipelineOrchestrator(registry=registry)
 
-    summary = orchestrator.run(context)
-    if summary.has_failures:
-        logger.error("Pipeline failed with error(s).")
-        sys.exit(1)
+        summary = orchestrator.run(context)
+        if summary.has_failures:
+            logger.error("Pipeline failed with error(s).")
+            sys.exit(1)
+    finally:
+        db_manager.close()
 
 if __name__ == "__main__":
     main()

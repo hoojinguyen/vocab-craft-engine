@@ -3,7 +3,7 @@ from typing import Tuple
 from src.pipeline.core.base_step import BaseStep
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.result import StepResult, StepStatus
-from config.settings import KAIKKI_JSON_PATH, SUBTLEX_FREQ_PATH
+from config.settings import KAIKKI_JSON_PATH, SUBTLEX_FREQ_PATH, KAIKKI_INGEST_CHECKPOINT
 from src.ingestion.kaikki_parser import KaikkiParser
 from src.nlp.cefr_grader import CEFRGrader
 from src.media.ipa_mapper import IPAMapper
@@ -20,18 +20,8 @@ class KaikkiIngestionStep(BaseStep):
         if getattr(context.args, "force_reset", False):
             return False, ""
 
-        try:
-            conn = context.db_manager.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT count(*) FROM words;")
-            existing_words = cursor.fetchone()[0]
-            cursor.execute("SELECT count(*) FROM definitions;")
-            existing_defs = cursor.fetchone()[0]
-
-            if existing_words > 10000 and existing_defs > 10000:
-                return True, f"CHECKPOINT DETECTED: {existing_words:,} words & {existing_defs:,} definitions exist."
-        except Exception:
-            pass
+        if KAIKKI_INGEST_CHECKPOINT.exists():
+            return True, "CHECKPOINT DETECTED: Kaikki Wiktionary ingestion previously completed."
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
@@ -41,6 +31,7 @@ class KaikkiIngestionStep(BaseStep):
         kaikki_parser = KaikkiParser(KAIKKI_JSON_PATH)
 
         words_batch = []
+        pending_items_batch = []
         definitions_batch = []
         count = 0
         words_count = 0
@@ -65,45 +56,66 @@ class KaikkiIngestionStep(BaseStep):
                 "frequency_rank": freq_rank,
                 "cefr_level": cefr_lvl
             })
+            pending_items_batch.append(item)
 
             if len(words_batch) >= 5000:
-                context.db_manager.insert_words_batch(words_batch)
-                words_count += len(words_batch)
+                words_inserted = context.db_manager.insert_words_batch(words_batch)
+                words_count += words_inserted if isinstance(words_inserted, int) else len(words_batch)
                 words_batch = []
 
+                for p_item in pending_items_batch:
+                    word_id = context.db_manager.get_word_id_by_lemma(p_item["lemma"])
+                    if word_id:
+                        for def_item in p_item.get("definitions", []):
+                            definitions_batch.append({
+                                "word_id": word_id,
+                                "definition_en": def_item["definition_en"],
+                                "definition_vi": def_item.get("definition_vi"),
+                                "example": def_item.get("example"),
+                                "source": def_item["source"]
+                            })
+
+                            if len(definitions_batch) >= 5000:
+                                defs_inserted = context.db_manager.insert_definitions_batch(definitions_batch)
+                                definitions_count += defs_inserted if isinstance(defs_inserted, int) else len(definitions_batch)
+                                definitions_batch = []
+                pending_items_batch = []
+
             if count % 50000 == 0:
-                logger.info("   -> Processed %s dictionary entries (%s words staged)...", f"{count:,}", f"{words_count:,}")
+                logger.info("   -> Processed %s dictionary entries (%s words, %s defs stored)...",
+                            f"{count:,}", f"{words_count:,}", f"{definitions_count:,}")
 
         if words_batch:
-            context.db_manager.insert_words_batch(words_batch)
-            words_count += len(words_batch)
+            words_inserted = context.db_manager.insert_words_batch(words_batch)
+            words_count += words_inserted if isinstance(words_inserted, int) else len(words_batch)
+            words_batch = []
 
-        logger.info("   -> Extracting definitions...")
-        def_stream_count = 0
-        for item in kaikki_parser.parse_stream():
-            def_stream_count += 1
-            word_id = context.db_manager.get_word_id_by_lemma(item["lemma"])
-            if word_id:
-                for def_item in item["definitions"]:
-                    definitions_batch.append({
-                        "word_id": word_id,
-                        "definition_en": def_item["definition_en"],
-                        "definition_vi": def_item.get("definition_vi"),
-                        "example": def_item.get("example"),
-                        "source": def_item["source"]
-                    })
+            for p_item in pending_items_batch:
+                word_id = context.db_manager.get_word_id_by_lemma(p_item["lemma"])
+                if word_id:
+                    for def_item in p_item.get("definitions", []):
+                        definitions_batch.append({
+                            "word_id": word_id,
+                            "definition_en": def_item["definition_en"],
+                            "definition_vi": def_item.get("definition_vi"),
+                            "example": def_item.get("example"),
+                            "source": def_item["source"]
+                        })
 
-                    if len(definitions_batch) >= 5000:
-                        context.db_manager.insert_definitions_batch(definitions_batch)
-                        definitions_count += len(definitions_batch)
-                        definitions_batch = []
-
-            if def_stream_count % 100000 == 0:
-                logger.info("   -> Staged %s definitions...", f"{definitions_count:,}")
+                        if len(definitions_batch) >= 5000:
+                            defs_inserted = context.db_manager.insert_definitions_batch(definitions_batch)
+                            definitions_count += defs_inserted if isinstance(defs_inserted, int) else len(definitions_batch)
+                            definitions_batch = []
+            pending_items_batch = []
 
         if definitions_batch:
-            context.db_manager.insert_definitions_batch(definitions_batch)
-            definitions_count += len(definitions_batch)
+            defs_inserted = context.db_manager.insert_definitions_batch(definitions_batch)
+            definitions_count += defs_inserted if isinstance(defs_inserted, int) else len(definitions_batch)
+            definitions_batch = []
 
+        KAIKKI_INGEST_CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+        KAIKKI_INGEST_CHECKPOINT.touch()
+
+        total_items = words_count + definitions_count
         logger.info("[Step 2] Completed: %s words, %s definitions stored.", f"{words_count:,}", f"{definitions_count:,}")
-        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=words_count + definitions_count)
+        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=total_items)

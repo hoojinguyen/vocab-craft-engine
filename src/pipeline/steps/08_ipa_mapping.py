@@ -18,7 +18,7 @@ class IPAMappingStep(BaseStep):
         try:
             conn = context.db_manager.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT count(*) FROM words WHERE ipa_us IS NULL OR ipa_uk IS NULL;")
+            cursor.execute("SELECT count(*) FROM words WHERE COALESCE(TRIM(ipa_us), '') = '' OR COALESCE(TRIM(ipa_uk), '') = '';")
             missing = cursor.fetchone()[0]
             if missing == 0:
                 return True, "100% of words already have IPA transcriptions."
@@ -30,7 +30,7 @@ class IPAMappingStep(BaseStep):
         logger.info("[Step 8] Mapping UK/US IPA transcriptions...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, lemma, ipa_uk, ipa_us FROM words WHERE ipa_us IS NULL OR ipa_uk IS NULL;")
+        cursor.execute("SELECT id, lemma, ipa_uk, ipa_us FROM words WHERE COALESCE(TRIM(ipa_us), '') = '' OR COALESCE(TRIM(ipa_uk), '') = '';")
         rows = cursor.fetchall()
 
         ipa_mapper = IPAMapper()

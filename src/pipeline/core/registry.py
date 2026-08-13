@@ -7,6 +7,8 @@ class StepRegistry:
         self._step_map: Dict[str, BaseStep] = {}
 
     def register(self, step: BaseStep) -> None:
+        if step.name in self._step_map:
+            raise ValueError(f"Step with name '{step.name}' is already registered.")
         self._steps.append(step)
         self._step_map[step.name] = step
 
@@ -23,9 +25,15 @@ class StepRegistry:
     ) -> List[BaseStep]:
         steps = list(self._steps)
         if include_steps:
+            unknown = [s for s in include_steps if s not in self._step_map]
+            if unknown:
+                raise ValueError(f"Unknown step name(s): {', '.join(unknown)}")
             inc_set = set(include_steps)
             steps = [s for s in steps if s.name in inc_set]
         if skip_steps:
+            unknown = [s for s in skip_steps if s not in self._step_map]
+            if unknown:
+                raise ValueError(f"Unknown step name(s): {', '.join(unknown)}")
             skip_set = set(skip_steps)
             steps = [s for s in steps if s.name not in skip_set]
         return steps
@@ -54,6 +62,7 @@ def get_default_registry() -> StepRegistry:
     registry.register(SchemaInitStep())
     registry.register(KaikkiIngestionStep())
     registry.register(TatoebaIngestionStep())
+    registry.register(SentenceCoverageStep())
     registry.register(SentenceLinkingStep())
     registry.register(NLPEnrichmentStep())
     registry.register(ReflexDrillsStep())
@@ -64,7 +73,6 @@ def get_default_registry() -> StepRegistry:
     registry.register(RelationsTopicsStep())
     registry.register(VietnameseBackfillStep())
     registry.register(CorePackStep())
-    registry.register(SentenceCoverageStep())
     registry.register(SQLiteExportStep())
     return registry
 

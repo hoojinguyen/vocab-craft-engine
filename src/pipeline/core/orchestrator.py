@@ -20,6 +20,10 @@ class PipelineOrchestrator:
         start_time = time.time()
         results: List[StepResult] = []
 
+        dry_run = getattr(context.args, "dry_run", False)
+        if not dry_run:
+            self.state_manager.clear_state()
+
         include_steps = getattr(context.args, "steps", None)
         if isinstance(include_steps, str):
             include_steps = [s.strip() for s in include_steps.split(",") if s.strip()]
@@ -29,7 +33,7 @@ class PipelineOrchestrator:
             skip_steps = [s.strip() for s in skip_steps.split(",") if s.strip()]
 
         steps_to_run = self.registry.filter_steps(include_steps=include_steps, skip_steps=skip_steps)
-        dry_run = getattr(context.args, "dry_run", False)
+
 
         logger.info("==========================================================")
         logger.info("   STARTING VOCAB CRAFT ENGINE PIPELINE EXECUTION        ")
@@ -38,40 +42,43 @@ class PipelineOrchestrator:
         has_failures = False
         for step in steps_to_run:
             step_start = time.time()
-            skip, reason = step.should_skip(context)
-
-            if dry_run:
-                msg = f"[DRY-RUN] Would run '{step.name}' ({step.description}). Dry-run mode. Skip status: {skip} ({reason})"
-                logger.info(msg)
-                res = StepResult(
-                    step_name=step.name,
-                    status=StepStatus.SKIPPED,
-                    execution_time_seconds=0.0,
-                    message=msg
-                )
-                results.append(res)
-                self.state_manager.save_step_status(step.name, "SKIPPED", 0.0, 0)
-                continue
-
-            if skip:
-                logger.info("[%s] SKIPPED: %s", step.name, reason)
-                res = StepResult(
-                    step_name=step.name,
-                    status=StepStatus.SKIPPED,
-                    execution_time_seconds=0.0,
-                    message=reason
-                )
-                results.append(res)
-                self.state_manager.save_step_status(step.name, "SKIPPED", 0.0, 0)
-                continue
-
-            logger.info("[%s] Running: %s...", step.name, step.description)
             try:
+                skip, reason = step.should_skip(context)
+
+                if dry_run:
+                    msg = f"[DRY-RUN] Would run '{step.name}' ({step.description}). Dry-run mode. Skip status: {skip} ({reason})"
+                    logger.info(msg)
+                    res = StepResult(
+                        step_name=step.name,
+                        status=StepStatus.SKIPPED,
+                        execution_time_seconds=0.0,
+                        message=msg
+                    )
+                    results.append(res)
+                    continue
+
+                if skip:
+                    logger.info("[%s] SKIPPED: %s", step.name, reason)
+                    res = StepResult(
+                        step_name=step.name,
+                        status=StepStatus.SKIPPED,
+                        execution_time_seconds=0.0,
+                        message=reason
+                    )
+                    results.append(res)
+                    continue
+
+                logger.info("[%s] Running: %s...", step.name, step.description)
                 res = step.run(context)
                 duration = round(time.time() - step_start, 2)
                 res.execution_time_seconds = duration
                 results.append(res)
-                self.state_manager.save_step_status(step.name, res.status.value, duration, res.items_processed)
+
+                try:
+                    self.state_manager.save_step_status(step.name, res.status.value, duration, res.items_processed)
+                except Exception as save_err:
+                    logger.warning("[%s] Warning: Failed to save step status to state manager: %s", step.name, save_err)
+
                 if res.status == StepStatus.FAILED:
                     has_failures = True
                     try:
@@ -79,6 +86,7 @@ class PipelineOrchestrator:
                     except Exception as rollback_err:
                         logger.warning("[%s] Rollback warning: %s", step.name, rollback_err)
                     break
+
             except Exception as e:
                 duration = round(time.time() - step_start, 2)
                 logger.error("[%s] FAILED after %ss: %s", step.name, duration, e, exc_info=True)
@@ -94,7 +102,10 @@ class PipelineOrchestrator:
                     error=e
                 )
                 results.append(res)
-                self.state_manager.save_step_status(step.name, "FAILED", duration, 0)
+                try:
+                    self.state_manager.save_step_status(step.name, "FAILED", duration, 0)
+                except Exception as save_err:
+                    logger.warning("[%s] Warning: Failed to save step status to state manager: %s", step.name, save_err)
                 has_failures = True
                 break
 

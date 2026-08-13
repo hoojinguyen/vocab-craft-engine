@@ -47,27 +47,19 @@ def test_schema_init_step_force_reset(tmp_path):
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
     step = SchemaInitStep()
 
-    with patch.object(mod_01, "EXPORT_SQLITE_PATH") as mock_sqlite_path, \
-         patch.object(mod_01, "SENTENCE_LINK_CHECKPOINT") as mock_ckpt:
-        mock_sqlite_path.exists.return_value = True
+    with patch.object(mod_01, "SENTENCE_LINK_CHECKPOINT") as mock_ckpt, \
+         patch.object(mod_01, "KAIKKI_INGEST_CHECKPOINT") as mock_kaikki_ckpt:
         res = step.run(ctx)
 
         assert res.status == StepStatus.SUCCESS
         assert mock_cursor.execute.call_count >= 11
         mock_ckpt.unlink.assert_called_once_with(missing_ok=True)
+        mock_kaikki_ckpt.unlink.assert_called_once_with(missing_ok=True)
         mock_db.init_schema.assert_called_once()
 
 
 def test_kaikki_ingestion_skip_condition():
     mock_db = MagicMock()
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_db.get_connection.return_value = mock_conn
-    mock_conn.cursor.return_value = mock_cursor
-
-    # Simulate >10000 words and defs
-    mock_cursor.fetchone.side_effect = [(15000,), (20000,)]
-
     mock_args = MagicMock()
     mock_args.force_reset = False
     mock_args.skip_dict = False
@@ -75,9 +67,11 @@ def test_kaikki_ingestion_skip_condition():
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
     step = KaikkiIngestionStep()
 
-    skip, reason = step.should_skip(ctx)
-    assert skip
-    assert "CHECKPOINT DETECTED" in reason
+    with patch.object(mod_02, "KAIKKI_INGEST_CHECKPOINT") as mock_ckpt:
+        mock_ckpt.exists.return_value = True
+        skip, reason = step.should_skip(ctx)
+        assert skip
+        assert "CHECKPOINT DETECTED" in reason
 
 
 def test_kaikki_ingestion_skip_dict_flag():
@@ -93,7 +87,7 @@ def test_kaikki_ingestion_skip_dict_flag():
     assert "--skip-dict flag active" in reason
 
 
-def test_kaikki_ingestion_run():
+def test_kaikki_ingestion_run(tmp_path):
     mock_db = MagicMock()
     mock_args = MagicMock()
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
@@ -114,9 +108,12 @@ def test_kaikki_ingestion_run():
         ]
     }
 
+    ckpt_file = tmp_path / ".kaikki_ingest_done"
+
     with patch.object(mod_02, "CEFRGrader") as mock_grader_cls, \
          patch.object(mod_02, "IPAMapper") as mock_ipa_cls, \
-         patch.object(mod_02, "KaikkiParser") as mock_parser_cls:
+         patch.object(mod_02, "KaikkiParser") as mock_parser_cls, \
+         patch.object(mod_02, "KAIKKI_INGEST_CHECKPOINT", ckpt_file):
         
         mock_grader = mock_grader_cls.return_value
         mock_grader.grade_word.return_value = ("A1", 100)
@@ -125,7 +122,7 @@ def test_kaikki_ingestion_run():
         mock_ipa.get_ipa.side_effect = lambda lemma, existing_ipa: existing_ipa
 
         mock_parser = mock_parser_cls.return_value
-        mock_parser.parse_stream.side_effect = [[mock_item], [mock_item]]
+        mock_parser.parse_stream.return_value = [mock_item]
 
         mock_db.get_word_id_by_lemma.return_value = 42
 
@@ -135,6 +132,7 @@ def test_kaikki_ingestion_run():
         assert res.items_processed == 2
         mock_db.insert_words_batch.assert_called_once()
         mock_db.insert_definitions_batch.assert_called_once()
+        assert ckpt_file.exists()
 
 
 def test_tatoeba_ingestion_skip_condition():
@@ -166,7 +164,7 @@ def test_tatoeba_ingestion_run():
     mock_pair = {
         "text_en": "Hello world.",
         "text_vi": "Xin chào thế giới.",
-        "source": "tatoeba"
+        "source": "Tatoeba"
     }
 
     with patch.object(mod_03, "CEFRGrader") as mock_grader_cls, \
@@ -214,3 +212,34 @@ def test_sentence_linking_step_run(tmp_path):
         mock_db.insert_word_sentence_map_batch.assert_called_once_with([{"word_id": 10, "sentence_id": 1}])
         assert ckpt_file.exists()
         assert json.loads(ckpt_file.read_text()) == {"last_id": 1}
+
+
+def test_sentence_linking_deduplication(tmp_path):
+    mock_db = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_db.get_connection.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_cursor.fetchall.return_value = [(1, "Hello hello world.")]
+    mock_db.get_word_id_by_lemma.side_effect = lambda lemma: 10 if lemma == "hello" else None
+
+    mock_args = MagicMock()
+    ctx = PipelineContext(db_manager=mock_db, args=mock_args)
+    step = SentenceLinkingStep()
+
+    ckpt_file = tmp_path / "sentence_link.json"
+
+    with patch.object(mod_04, "SENTENCE_LINK_CHECKPOINT", ckpt_file), \
+         patch.object(mod_04, "Lemmatizer") as mock_lem_cls:
+        
+        mock_lem = mock_lem_cls.return_value
+        mock_lem.lemmatize_text.return_value = [{"lemma": "hello"}, {"lemma": "hello"}]
+
+        res = step.run(ctx)
+
+        assert res.status == StepStatus.SUCCESS
+        assert res.items_processed == 1
+        mock_db.insert_word_sentence_map_batch.assert_called_once_with([{"word_id": 10, "sentence_id": 1}])
+
+

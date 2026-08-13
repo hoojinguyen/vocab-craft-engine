@@ -22,4 +22,10 @@ class StateManager:
             "duration": duration,
             "items": items,
         }
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    def clear_state(self) -> None:
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps({}, indent=2), encoding="utf-8")
+

@@ -17,17 +17,31 @@ class VietnameseBackfillStep(BaseStep):
     name = "vietnamese_backfill"
     description = "Validate & backfill Vietnamese translations with budget capping"
 
+    def _cleanup_passthrough(self, context: PipelineContext) -> None:
+        conn = context.db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE definitions SET definition_vi = NULL WHERE definition_vi = definition_en;")
+        cursor.execute("UPDATE phrases SET definition_vi = NULL WHERE definition_vi = definition_en;")
+        cursor.execute("UPDATE collocations SET meaning_vi = NULL WHERE meaning_vi = phrase;")
+        conn.commit()
+
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
         try:
             conn = context.db_manager.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT count(*) FROM definitions WHERE definition_vi IS NULL OR definition_vi = '';")
+            cursor.execute(
+                "SELECT count(*) FROM definitions WHERE definition_vi IS NULL OR definition_vi = '' OR definition_vi = definition_en;"
+            )
             def_missing = cursor.fetchone()[0]
-            cursor.execute("SELECT count(*) FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '';")
+            cursor.execute(
+                "SELECT count(*) FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '' OR meaning_vi = phrase;"
+            )
             col_missing = cursor.fetchone()[0]
-            cursor.execute("SELECT count(*) FROM phrases WHERE definition_vi IS NULL OR definition_vi = '';")
+            cursor.execute(
+                "SELECT count(*) FROM phrases WHERE definition_vi IS NULL OR definition_vi = '' OR definition_vi = definition_en;"
+            )
             phrase_missing = cursor.fetchone()[0]
 
             if (def_missing + col_missing + phrase_missing) == 0:
@@ -41,10 +55,7 @@ class VietnameseBackfillStep(BaseStep):
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("UPDATE definitions SET definition_vi = NULL WHERE definition_vi = definition_en;")
-        cursor.execute("UPDATE phrases SET definition_vi = NULL WHERE definition_vi = definition_en;")
-        cursor.execute("UPDATE collocations SET meaning_vi = NULL WHERE meaning_vi = phrase;")
-        conn.commit()
+        self._cleanup_passthrough(context)
 
         cursor.execute("""
             SELECT d.id, d.definition_en FROM definitions d
@@ -91,12 +102,20 @@ class VietnameseBackfillStep(BaseStep):
                     cursor.executemany(f"UPDATE {table} SET {target_col} = ? WHERE {id_col} = ?;", updates)
                     conn.commit()
                     updated += len(updates)
+                if hasattr(translator, "save_cache"):
+                    translator.save_cache()
                 time.sleep(VI_BATCH_SLEEP_SECONDS)
             return updated, remaining_budget
 
         translated_defs, _ = _backfill(priority_definitions, "definitions", "id", "definition_vi", defs_budget)
+        if hasattr(translator, "save_cache"):
+            translator.save_cache()
         translated_colls, _ = _backfill(priority_collocations, "collocations", "id", "meaning_vi", colloc_budget)
+        if hasattr(translator, "save_cache"):
+            translator.save_cache()
         translated_phrases, _ = _backfill(priority_phrases, "phrases", "id", "definition_vi", phrase_budget)
+        if hasattr(translator, "save_cache"):
+            translator.save_cache()
 
         logger.info("[Step 12] Completed: translated %s defs, %s colls, %s phrases.", f"{translated_defs:,}", f"{translated_colls:,}", f"{translated_phrases:,}")
         return StepResult(

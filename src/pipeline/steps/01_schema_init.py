@@ -3,7 +3,7 @@ from typing import Tuple
 from src.pipeline.core.base_step import BaseStep
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.result import StepResult, StepStatus
-from config.settings import EXPORT_SQLITE_PATH, SENTENCE_LINK_CHECKPOINT
+from config.settings import SENTENCE_LINK_CHECKPOINT, KAIKKI_INGEST_CHECKPOINT
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class SchemaInitStep(BaseStep):
 
     def run(self, context: PipelineContext) -> StepResult:
         logger.info("[Step 1] Initializing SQLite Database Schema...")
-        if getattr(context.args, "force_reset", False) and EXPORT_SQLITE_PATH.exists():
+        if getattr(context.args, "force_reset", False) and context.db_manager.db_path.exists():
             logger.info("   -> Force-reset flag active. Wiping existing database tables...")
             conn = context.db_manager.get_connection()
             cursor = conn.cursor()
@@ -31,7 +31,9 @@ class SchemaInitStep(BaseStep):
             conn.commit()
             conn.execute("PRAGMA foreign_keys = ON;")
             SENTENCE_LINK_CHECKPOINT.unlink(missing_ok=True)
-            logger.info("   -> Cleared stale sentence-link checkpoint for fresh re-link.")
+            KAIKKI_INGEST_CHECKPOINT.unlink(missing_ok=True)
+            logger.info("   -> Cleared stale checkpoints for fresh re-link and ingestion.")
+
 
         context.db_manager.init_schema()
         logger.info("[Step 1] Schema initialized successfully.")

@@ -23,6 +23,8 @@ class CorePackStep(BaseStep):
         logger.info("[Step 13] Building Core 3000 Word Pack...")
         grader = CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH)
         freq_dict = dict(grader.freq_dict)
+        if not freq_dict:
+            raise RuntimeError("SUBTLEX frequency dictionary is empty or unavailable")
 
         pack_dir = OUTPUT_DIR / "core_pack"
         builder = CorePackBuilder(source_db_path=EXPORT_SQLITE_PATH, output_dir=pack_dir)

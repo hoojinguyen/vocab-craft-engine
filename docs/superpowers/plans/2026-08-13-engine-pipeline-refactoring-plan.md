@@ -339,7 +339,7 @@ def test_orchestrator_dry_run(tmp_path):
 
     assert not summary.has_failures
     assert summary.results[0].status == StepStatus.SKIPPED
-    assert "Dry-run mode" in summary.results[0].message
+    assert "[DRY-RUN]" in summary.results[0].message
 ```
 
 - [ ] **Step 2: Run test to verify it fails**

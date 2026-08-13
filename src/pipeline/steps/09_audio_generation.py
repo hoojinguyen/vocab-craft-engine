@@ -24,19 +24,44 @@ class AudioGenerationStep(BaseStep):
 
         generated_count = 0
 
-        async def generate_sample_audio_files():
+        async def generate_sentence_audio_files():
             nonlocal generated_count
             audio_gen = AudioGenerator()
-            cursor.execute("SELECT id, text_en FROM sentences LIMIT 100;")
-            sents = cursor.fetchall()
-            generated_count = len(sents)
-            tasks = [audio_gen.generate_dual_speed_sentence(s_id, t_en) for s_id, t_en in sents]
-            await asyncio.gather(*tasks)
+            cursor.execute("SELECT id, text_en, audio_path FROM sentences;")
+            all_sents = cursor.fetchall()
+
+            sents_needing_audio = []
+            for s_id, t_en, audio_path in all_sents:
+                if not audio_path:
+                    sents_needing_audio.append((s_id, t_en))
+                else:
+                    file_path = audio_gen.output_dir / audio_path
+                    if not file_path.exists() or file_path.stat().st_size == 0:
+                        sents_needing_audio.append((s_id, t_en))
+
+            if not sents_needing_audio:
+                return
+
+            tasks = [audio_gen.generate_dual_speed_sentence(s_id, t_en) for s_id, t_en in sents_needing_audio]
+            results = await asyncio.gather(*tasks)
+
+            for (s_id, t_en), res in zip(sents_needing_audio, results):
+                std_path = res.get("standard_path") if isinstance(res, dict) else None
+                fast_path = res.get("fast_path") if isinstance(res, dict) else None
+                if not std_path or not fast_path:
+                    logger.warning("   [Step 9] Audio generation missing standard or fast path for sentence %s", s_id)
+                    raise RuntimeError(f"Audio generation missing standard or fast path for sentence {s_id}")
+
+                rel_audio_path = f"sent_{s_id}_std.mp3"
+                cursor.execute("UPDATE sentences SET audio_path = ? WHERE id = ?;", (rel_audio_path, s_id))
+                generated_count += 1
+
+            conn.commit()
 
         try:
-            asyncio.run(generate_sample_audio_files())
+            asyncio.run(generate_sentence_audio_files())
             logger.info("   [Step 9] Generated physical MP3 audio files in data/audio/")
             return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=generated_count)
         except Exception as e:
-            logger.warning("   [Step 9] Audio generation warning: %s", e)
-            return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=0, message=str(e))
+            logger.error("   [Step 9] Audio generation error: %s", e)
+            raise e

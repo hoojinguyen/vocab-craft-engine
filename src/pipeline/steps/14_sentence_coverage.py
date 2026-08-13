@@ -16,7 +16,27 @@ class SentenceCoverageStep(BaseStep):
     description = "Ingest OPUS & EnViCorpora parallel sentence coverage"
 
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
-        # Step handles corpus-by-corpus skipping internally
+        if getattr(context.args, "force_reset", False):
+            return False, ""
+        corpora = [
+            (settings.OPENSUBTITLES_EN, settings.OPENSUBTITLES_VI, "OpenSubtitles"),
+            (settings.ENVICORPORA_TED_LIKE_EN, settings.ENVICORPORA_TED_LIKE_VI, "TED-EnVi"),
+            (settings.ENVICORPORA_BASIC_EN, settings.ENVICORPORA_BASIC_VI, "Basic-EnVi"),
+        ]
+        max_sentences = settings.MAX_SENTENCES_PER_CORPUS
+        all_skipped = True
+        try:
+            for en_path, vi_path, source in corpora:
+                if not en_path.exists() or not vi_path.exists():
+                    continue
+                existing = context.db_manager.count_sentences_by_source(source)
+                if existing < max_sentences:
+                    all_skipped = False
+                    break
+            if all_skipped:
+                return True, "All parallel sentence corpora already ingested."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
@@ -35,8 +55,15 @@ class SentenceCoverageStep(BaseStep):
             if not en_path.exists() or not vi_path.exists():
                 logger.info("   [SentenceCoverage] %s corpus missing — skipping.", source)
                 continue
+
+            if getattr(context.args, "force_reset", False):
+                conn = context.db_manager.get_connection()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM sentences WHERE source = ?;", (source,))
+                conn.commit()
+
             existing = context.db_manager.count_sentences_by_source(source)
-            if existing > 0 and not getattr(context.args, "force_reset", False):
+            if existing >= max_sentences and not getattr(context.args, "force_reset", False):
                 logger.info(
                     "   [SentenceCoverage] %s already ingested (%s rows) — skipping.",
                     source,
@@ -44,9 +71,11 @@ class SentenceCoverageStep(BaseStep):
                 )
                 continue
 
-            batch, inserted = [], 0
+            batch = []
+            accepted_candidates = 0
+            corpus_inserted = 0
             for pair in ParallelCorpusParser(en_path, vi_path, source=source).parse_pairs():
-                if inserted + len(batch) >= max_sentences:
+                if accepted_candidates + len(batch) >= max_sentences:
                     break
                 if not sf.is_clean_pair(pair["text_en"], pair["text_vi"]):
                     continue
@@ -60,13 +89,22 @@ class SentenceCoverageStep(BaseStep):
                     "source": source,
                 })
                 if len(batch) >= 5000:
-                    context.db_manager.insert_sentences_batch(batch)
-                    inserted += len(batch)
+                    rows_inserted = context.db_manager.insert_sentences_batch(batch)
+                    if isinstance(rows_inserted, int) and not isinstance(rows_inserted, bool):
+                        corpus_inserted += rows_inserted
+                    else:
+                        corpus_inserted += len(batch)
+                    accepted_candidates += len(batch)
                     batch = []
             if batch:
-                context.db_manager.insert_sentences_batch(batch)
-                inserted += len(batch)
-            inserted_total += inserted
+                rows_inserted = context.db_manager.insert_sentences_batch(batch)
+                if isinstance(rows_inserted, int) and not isinstance(rows_inserted, bool):
+                    corpus_inserted += rows_inserted
+                else:
+                    corpus_inserted += len(batch)
+                accepted_candidates += len(batch)
+                batch = []
+            inserted_total += corpus_inserted
 
         logger.info("[Step 14] Completed: %s new sentences inserted.", f"{inserted_total:,}")
         return StepResult(

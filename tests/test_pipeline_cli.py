@@ -18,6 +18,15 @@ def test_default_registry_loading():
     assert names[0] == "schema_init"
     assert names[-1] == "sqlite_export"
 
+    coverage_idx = names.index("sentence_coverage")
+    linking_idx = names.index("sentence_linking")
+    enrichment_idx = names.index("nlp_enrichment")
+    core_pack_idx = names.index("core_pack")
+
+    assert coverage_idx < linking_idx, "sentence_coverage must run before sentence_linking"
+    assert coverage_idx < enrichment_idx, "sentence_coverage must run before nlp_enrichment"
+    assert core_pack_idx > coverage_idx, "core_pack must run after sentence_coverage"
+
 
 def test_get_missing_raw_files_handles_empty_file(tmp_path):
     from src.pipeline.cli import get_missing_raw_files
@@ -40,7 +49,7 @@ def test_main_triggers_download_when_raw_files_missing():
     with patch("main.parse_arguments"), \
          patch("main.get_missing_raw_files", return_value=["dummy_missing.txt"]) as mock_get_missing, \
          patch("main.download_all_raw_data") as mock_download, \
-         patch("main.DatabaseManager"), \
+         patch("main.DatabaseManager") as mock_db_cls, \
          patch("main.PipelineContext"), \
          patch("main.get_default_registry"), \
          patch("main.PipelineOrchestrator") as mock_orch_cls:
@@ -53,6 +62,7 @@ def test_main_triggers_download_when_raw_files_missing():
 
         mock_get_missing.assert_called_once()
         mock_download.assert_called_once()
+        mock_db_cls.return_value.close.assert_called_once()
 
 
 def test_main_skips_download_when_no_raw_files_missing():
@@ -62,7 +72,7 @@ def test_main_skips_download_when_no_raw_files_missing():
     with patch("main.parse_arguments"), \
          patch("main.get_missing_raw_files", return_value=[]) as mock_get_missing, \
          patch("main.download_all_raw_data") as mock_download, \
-         patch("main.DatabaseManager"), \
+         patch("main.DatabaseManager") as mock_db_cls, \
          patch("main.PipelineContext"), \
          patch("main.get_default_registry"), \
          patch("main.PipelineOrchestrator") as mock_orch_cls:
@@ -75,4 +85,26 @@ def test_main_skips_download_when_no_raw_files_missing():
 
         mock_get_missing.assert_called_once()
         mock_download.assert_not_called()
+        mock_db_cls.return_value.close.assert_called_once()
+
+
+def test_main_closes_db_manager_in_finally_on_exception():
+    from unittest.mock import patch, MagicMock
+    from main import main
+
+    with patch("main.parse_arguments"), \
+         patch("main.get_missing_raw_files", return_value=[]), \
+         patch("main.download_all_raw_data"), \
+         patch("main.DatabaseManager") as mock_db_cls, \
+         patch("main.PipelineContext"), \
+         patch("main.get_default_registry"), \
+         patch("main.PipelineOrchestrator") as mock_orch_cls:
+
+        mock_orch_cls.return_value.run.side_effect = RuntimeError("Orchestration error")
+
+        with pytest.raises(RuntimeError, match="Orchestration error"):
+            main()
+
+        mock_db_cls.return_value.close.assert_called_once()
+
 

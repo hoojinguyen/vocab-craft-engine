@@ -65,3 +65,8 @@ def test_state_manager(tmp_path):
     assert saved["step1"]["status"] == "SUCCESS"
     assert saved["step1"]["duration"] == 2.5
     assert saved["step1"]["items"] == 100
+
+    sm.clear_state()
+    cleared = sm.load_state()
+    assert cleared == {}
+

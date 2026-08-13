@@ -26,10 +26,17 @@ class RelationsTopicsStep(BaseStep):
             existing_relations = cursor.fetchone()[0]
             cursor.execute("SELECT count(*) FROM word_topics;")
             existing_topics = cursor.fetchone()[0]
-            cursor.execute("SELECT count(*) FROM word_relations WHERE inverted = 1;")
+            cursor.execute("SELECT count(*) FROM word_relations WHERE relation_type = 'hyponym' AND inverted = 1;")
             existing_inverse = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM word_relations WHERE relation_type = 'hypernym' AND inverted = 0 AND target_word_id IS NOT NULL;")
+            natural_hypernyms = cursor.fetchone()[0]
 
-            if existing_relations > RELATION_CHECKPOINT and existing_topics > TOPIC_CHECKPOINT and existing_inverse > 0:
+            if (
+                existing_relations > RELATION_CHECKPOINT
+                and existing_topics > TOPIC_CHECKPOINT
+                and natural_hypernyms > 0
+                and existing_inverse >= natural_hypernyms
+            ):
                 return True, f"CHECKPOINT DETECTED: {existing_relations:,} relations, {existing_topics:,} topics exist."
         except Exception:
             pass
@@ -63,22 +70,22 @@ class RelationsTopicsStep(BaseStep):
                     "source": rel["source"]
                 })
                 if len(relations_batch) >= 1000:
-                    context.db_manager.insert_word_relations_batch(relations_batch)
-                    relation_count += len(relations_batch)
+                    inserted = context.db_manager.insert_word_relations_batch(relations_batch)
+                    relation_count += inserted if isinstance(inserted, int) and inserted >= 0 else 0
                     relations_batch = []
             for top in item["topics"]:
                 topics_batch.append({"word_id": word_id, "topic": top["topic"], "raw_topic": top["raw_topic"]})
                 if len(topics_batch) >= 1000:
-                    context.db_manager.insert_word_topics_batch(topics_batch)
-                    topics_count += len(topics_batch)
+                    inserted = context.db_manager.insert_word_topics_batch(topics_batch)
+                    topics_count += inserted if isinstance(inserted, int) and inserted >= 0 else 0
                     topics_batch = []
 
         if relations_batch:
-            context.db_manager.insert_word_relations_batch(relations_batch)
-            relation_count += len(relations_batch)
+            inserted = context.db_manager.insert_word_relations_batch(relations_batch)
+            relation_count += inserted if isinstance(inserted, int) and inserted >= 0 else 0
         if topics_batch:
-            context.db_manager.insert_word_topics_batch(topics_batch)
-            topics_count += len(topics_batch)
+            inserted = context.db_manager.insert_word_topics_batch(topics_batch)
+            topics_count += inserted if isinstance(inserted, int) and inserted >= 0 else 0
 
         cursor.execute("""
             SELECT wr.word_id, w.lemma, wr.target_word_id, wr.source
@@ -99,12 +106,12 @@ class RelationsTopicsStep(BaseStep):
                 "source": source
             })
             if len(inverse_batch) >= 5000:
-                context.db_manager.insert_word_relations_batch(inverse_batch)
-                link_count += len(inverse_batch)
+                inserted = context.db_manager.insert_word_relations_batch(inverse_batch)
+                link_count += inserted if isinstance(inserted, int) and inserted >= 0 else 0
                 inverse_batch = []
         if inverse_batch:
-            context.db_manager.insert_word_relations_batch(inverse_batch)
-            link_count += len(inverse_batch)
+            inserted = context.db_manager.insert_word_relations_batch(inverse_batch)
+            link_count += inserted if isinstance(inserted, int) and inserted >= 0 else 0
 
         logger.info("[Step 11] Completed: %s relations, %s inverse links, %s topics.", f"{relation_count:,}", f"{link_count:,}", f"{topics_count:,}")
         return StepResult(

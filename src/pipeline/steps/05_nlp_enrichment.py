@@ -24,7 +24,9 @@ class NLPEnrichmentStep(BaseStep):
             cursor = conn.cursor()
             cursor.execute("SELECT count(*) FROM collocations;")
             existing_collocs = cursor.fetchone()[0]
-            if existing_collocs > 500:
+            cursor.execute("SELECT count(*) FROM sentence_patterns;")
+            existing_patterns = cursor.fetchone()[0]
+            if existing_collocs > 500 and existing_patterns > 0:
                 return True, f"CHECKPOINT DETECTED: {existing_collocs:,} collocations exist."
         except Exception:
             pass
@@ -63,6 +65,9 @@ class NLPEnrichmentStep(BaseStep):
 
         if colloc_batch:
             context.db_manager.insert_collocations_batch(colloc_batch)
+
+        if hasattr(translator, "save_cache"):
+            translator.save_cache()
 
         cursor.execute("SELECT count(*) FROM collocations;")
         colloc_count = cursor.fetchone()[0]

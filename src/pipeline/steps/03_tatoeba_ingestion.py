@@ -19,10 +19,10 @@ class TatoebaIngestionStep(BaseStep):
         try:
             conn = context.db_manager.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT count(*) FROM sentences;")
+            cursor.execute("SELECT count(*) FROM sentences WHERE source = 'Tatoeba';")
             existing_sentences = cursor.fetchone()[0]
             if existing_sentences > 1000:
-                return True, f"CHECKPOINT DETECTED: {existing_sentences:,} sentence pairs exist."
+                return True, f"CHECKPOINT DETECTED: {existing_sentences:,} Tatoeba sentence pairs exist."
         except Exception:
             pass
         return False, ""
@@ -41,19 +41,21 @@ class TatoebaIngestionStep(BaseStep):
                 "text_vi": pair["text_vi"],
                 "difficulty_score": graded["difficulty_score"],
                 "cefr_level": graded["cefr_level"],
-                "audio_path": f"sent_{sent_count + len(sentences_batch)}_std.mp3",
+                "audio_path": None,
                 "source": pair["source"]
             })
 
             if len(sentences_batch) >= 5000:
-                context.db_manager.insert_sentences_batch(sentences_batch)
-                sent_count += len(sentences_batch)
+                inserted = context.db_manager.insert_sentences_batch(sentences_batch)
+                sent_count += inserted if isinstance(inserted, int) else len(sentences_batch)
                 sentences_batch = []
                 logger.info("   -> Staged %s aligned sentence pairs...", f"{sent_count:,}")
 
         if sentences_batch:
-            context.db_manager.insert_sentences_batch(sentences_batch)
-            sent_count += len(sentences_batch)
+            inserted = context.db_manager.insert_sentences_batch(sentences_batch)
+            sent_count += inserted if isinstance(inserted, int) else len(sentences_batch)
+            sentences_batch = []
 
         logger.info("[Step 3] Completed: %s sentence pairs stored.", f"{sent_count:,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=sent_count)
+

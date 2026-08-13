@@ -21,6 +21,10 @@ IPAMappingStep = mod_08.IPAMappingStep
 # NLPEnrichmentStep (05)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# NLPEnrichmentStep (05)
+# ---------------------------------------------------------------------------
+
 def test_nlp_enrichment_skip_condition():
     mock_db = MagicMock()
     mock_conn = MagicMock()
@@ -28,7 +32,8 @@ def test_nlp_enrichment_skip_condition():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    mock_cursor.fetchone.return_value = (600,)
+    # existing_collocs = 600, existing_patterns = 3
+    mock_cursor.fetchone.side_effect = [(600,), (3,)]
 
     mock_args = MagicMock()
     mock_args.force_reset = False
@@ -38,6 +43,11 @@ def test_nlp_enrichment_skip_condition():
     skip, reason = step.should_skip(ctx)
     assert skip
     assert "CHECKPOINT DETECTED" in reason
+
+    # Test when sentence patterns are missing (0)
+    mock_cursor.fetchone.side_effect = [(600,), (0,)]
+    skip, _ = step.should_skip(ctx)
+    assert not skip
 
     mock_args.force_reset = True
     skip, _ = step.should_skip(ctx)
@@ -81,6 +91,7 @@ def test_nlp_enrichment_run():
         assert res.items_processed == 4  # 1 collocation + 3 patterns
         mock_db.insert_collocations_batch.assert_called_once()
         mock_db.insert_sentence_patterns_batch.assert_called_once()
+        mock_translator.save_cache.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +125,12 @@ def test_reflex_drills_run():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    mock_cursor.fetchall.return_value = [(1, "Hello.", "Xin chào.", "A1")]
+    # Return valid sentence and one sentence with blank text_vi to verify filtering
+    mock_cursor.fetchall.return_value = [
+        (1, "Hello.", "Xin chào.", "A1"),
+        (2, "Invalid.", "", "A1"),
+        (3, "Null sentence.", None, "A1")
+    ]
     mock_cursor.fetchone.return_value = (0,)  # existing drills = 0
 
     mock_args = MagicMock()
@@ -137,8 +153,32 @@ def test_reflex_drills_run():
         res = step.run(ctx)
 
         assert res.status == StepStatus.SUCCESS
-        assert res.items_processed == 1
+        assert res.items_processed == 1  # Only 1 valid sentence processed
         mock_conn.commit.assert_called()
+
+
+def test_reflex_drills_rollback_on_failure():
+    mock_db = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_db.get_connection.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_cursor.fetchall.return_value = [(1, "Hello.", "Xin chào.", "A1")]
+    mock_cursor.fetchone.return_value = (0,)
+
+    mock_args = MagicMock()
+    ctx = PipelineContext(db_manager=mock_db, args=mock_args)
+    step = ReflexDrillsStep()
+
+    with patch.object(mod_06, "ReflexBuilder") as mock_builder_cls:
+        mock_builder = mock_builder_cls.return_value
+        mock_builder.build_drill.side_effect = RuntimeError("Drill error")
+
+        with pytest.raises(RuntimeError):
+            step.run(ctx)
+
+        mock_conn.rollback.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +242,10 @@ def test_scenario_trees_run():
         assert res.status == StepStatus.SUCCESS
         assert res.items_processed == 1
         mock_conn.commit.assert_called()
+        # Verify update sentence audio_path and update dialogue_trees root_node_id
+        executed_sqls = [call[0][0] for call in mock_cursor.execute.call_args_list]
+        assert any("UPDATE sentences SET audio_path" in sql for sql in executed_sqls)
+        assert any("UPDATE dialogue_trees SET root_node_id" in sql for sql in executed_sqls)
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +269,8 @@ def test_ipa_mapping_skip_condition():
     skip, reason = step.should_skip(ctx)
     assert skip
     assert "100% of words already have IPA" in reason
+    executed_sql = mock_cursor.execute.call_args[0][0]
+    assert "COALESCE(TRIM(ipa_us)" in executed_sql
 
 
 def test_ipa_mapping_run():
@@ -234,7 +280,7 @@ def test_ipa_mapping_run():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    mock_cursor.fetchall.return_value = [(1, "cat", None, None)]
+    mock_cursor.fetchall.return_value = [(1, "cat", " ", None)]
 
     mock_args = MagicMock()
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
@@ -249,3 +295,5 @@ def test_ipa_mapping_run():
         assert res.status == StepStatus.SUCCESS
         assert res.items_processed == 1
         mock_conn.commit.assert_called()
+        executed_sql = mock_cursor.execute.call_args_list[0][0][0]
+        assert "COALESCE(TRIM(ipa_us)" in executed_sql
