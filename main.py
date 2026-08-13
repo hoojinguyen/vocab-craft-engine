@@ -48,6 +48,21 @@ def handle_reset(db_manager: DuckDBManager, step_name: str | None = None, reset_
         logger.info("Invalidated step '%s' and downstream dependencies.", step_name)
 
 
+def handle_export(db_manager: DuckDBManager, export_format: str):
+    format_map = {
+        "sqlite": "export_sqlite",
+        "json": "export_json",
+        "core3000": "export_core3000",
+    }
+    step_name = format_map.get(export_format, "export_sqlite")
+    registry = get_default_registry()
+    step = registry.get_step(step_name)
+    if step:
+        context = PipelineContext(db_manager=db_manager)
+        step.run(context)
+        logger.info("Executed export format '%s' (%s).", export_format, step_name)
+
+
 def main():
     args = parse_arguments()
 
@@ -61,6 +76,10 @@ def main():
 
         if getattr(args, "command", None) == "reset":
             handle_reset(db_manager, step_name=getattr(args, "step", None), reset_all=getattr(args, "all", False))
+            return
+
+        if getattr(args, "command", None) == "export":
+            handle_export(db_manager, export_format=getattr(args, "format", "sqlite"))
             return
 
         missing_raw = get_missing_raw_files(REQUIRED_RAW_FILES)
