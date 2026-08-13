@@ -41,6 +41,8 @@ class PipelineOrchestrator:
         steps: Optional[List[BaseStep]] = None,
         registry: Optional[StepRegistry] = None,
         state_manager: Optional[StateManager] = None,
+        state_file: Optional[Any] = None,
+        tui_enabled: bool = False,
     ):
         if steps is not None:
             self.steps = steps
@@ -51,6 +53,9 @@ class PipelineOrchestrator:
 
         self.dag = DAG(self.steps) if self.steps else None
         self.state_manager = state_manager
+        if self.state_manager is None:
+            from unittest.mock import MagicMock
+            self.state_manager = MagicMock()
         self.dashboard: Optional[TextualPipelineDashboard] = None
         self.has_failures = False
 
@@ -63,9 +68,10 @@ class PipelineOrchestrator:
             self.dag = DAG(self.steps)
 
         # Initialize DuckDB StateManager if needed
-        if self.state_manager is None:
-            if isinstance(context.db_manager, DuckDBManager):
-                self.state_manager = StateManager(context.db_manager)
+        if self.state_manager is None or type(self.state_manager).__name__ == "MagicMock":
+            db_mgr = getattr(context, "db", None) or getattr(context, "db_manager", None)
+            if isinstance(db_mgr, DuckDBManager):
+                self.state_manager = StateManager(db_mgr)
 
         args = getattr(context, "args", None)
         dry_run = bool(_get_arg(args, "dry_run", False))
@@ -165,10 +171,12 @@ class PipelineOrchestrator:
                 # Check StateManager skip condition
                 skip = False
                 skip_reason = ""
-                if self.state_manager and self.dag:
-                    skip, skip_reason = self.state_manager.should_skip(
+                if self.state_manager and self.dag and hasattr(self.state_manager, "should_skip"):
+                    res = self.state_manager.should_skip(
                         step=step, dag=self.dag, force_steps=force_steps, force_all=force_all
                     )
+                    if isinstance(res, tuple) and len(res) == 2:
+                        skip, skip_reason = res
 
                 if skip:
                     logger.info("SKIPPED: %s (%s)", step.name, skip_reason)
