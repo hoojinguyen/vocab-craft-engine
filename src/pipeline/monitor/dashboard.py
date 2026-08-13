@@ -109,9 +109,10 @@ class RichPipelineDashboard:
             self.live.update(self._generate_layout())
 
     def add_log(self, log_line: str) -> None:
-        """Append a log line to the live log stream buffer (max 10 lines)."""
+        """Append a log line to the live log stream buffer."""
         self.logs_buffer.append(log_line)
-        if len(self.logs_buffer) > 10:
+        # Keep the latest 50 logs (adjust based on max terminal height)
+        if len(self.logs_buffer) > 50:
             self.logs_buffer.pop(0)
         if self.live and self.is_active:
             self.live.update(self._generate_layout())
@@ -119,10 +120,15 @@ class RichPipelineDashboard:
     def _generate_layout(self) -> Layout:
         """Construct a 3-part layout (Header Panel, Steps Table, Live Logs Stream)."""
         layout = Layout()
+        
+        # Calculate dynamic size for the steps table to avoid empty whitespace
+        # Minimum size 8, or table rows + header/borders (approx 6)
+        steps_height = max(8, len(self.steps_data) + 6)
+        
         layout.split(
             Layout(name="header", size=3),
-            Layout(name="body", ratio=2),
-            Layout(name="footer", size=8)
+            Layout(name="body", size=steps_height),
+            Layout(name="footer", ratio=1)
         )
 
         elapsed = round(time.time() - self.start_time, 1)
