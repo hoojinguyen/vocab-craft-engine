@@ -46,3 +46,4 @@ data/output/*
 *.swp
 .pipeline_state.json
 
+logs/
