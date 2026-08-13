@@ -74,10 +74,18 @@ class PipelineOrchestrator:
                 self.state_manager.save_step_status(step.name, res.status.value, duration, res.items_processed)
                 if res.status == StepStatus.FAILED:
                     has_failures = True
+                    try:
+                        step.rollback(context)
+                    except Exception as rollback_err:
+                        logger.warning("[%s] Rollback warning: %s", step.name, rollback_err)
+                    break
             except Exception as e:
                 duration = round(time.time() - step_start, 2)
                 logger.error("[%s] FAILED after %ss: %s", step.name, duration, e, exc_info=True)
-                step.rollback(context)
+                try:
+                    step.rollback(context)
+                except Exception as rollback_err:
+                    logger.warning("[%s] Rollback warning: %s", step.name, rollback_err)
                 res = StepResult(
                     step_name=step.name,
                     status=StepStatus.FAILED,

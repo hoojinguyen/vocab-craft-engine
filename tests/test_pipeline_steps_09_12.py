@@ -56,7 +56,7 @@ def test_audio_generation_run_success():
 
         res = step.run(ctx)
         assert res.status == StepStatus.SUCCESS
-        assert res.items_processed == 100
+        assert res.items_processed == 2
 
 
 def test_audio_generation_run_exception_handled():

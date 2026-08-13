@@ -22,8 +22,8 @@ class SchemaInitStep(BaseStep):
             cursor = conn.cursor()
             conn.execute("PRAGMA foreign_keys = OFF;")
             tables_to_drop = [
-                "word_relations", "word_topics", "word_sentence_map", "reflex_drills", "dialogue_nodes",
-                "dialogue_trees", "sentences", "sentence_patterns",
+                "phrase_sentences", "phrases", "word_relations", "word_topics", "word_sentence_map",
+                "reflex_drills", "dialogue_nodes", "dialogue_trees", "sentences", "sentence_patterns",
                 "collocations", "definitions", "words"
             ]
             for tbl in tables_to_drop:

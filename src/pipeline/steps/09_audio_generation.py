@@ -22,17 +22,21 @@ class AudioGenerationStep(BaseStep):
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
+        generated_count = 0
+
         async def generate_sample_audio_files():
+            nonlocal generated_count
             audio_gen = AudioGenerator()
             cursor.execute("SELECT id, text_en FROM sentences LIMIT 100;")
             sents = cursor.fetchall()
+            generated_count = len(sents)
             tasks = [audio_gen.generate_dual_speed_sentence(s_id, t_en) for s_id, t_en in sents]
             await asyncio.gather(*tasks)
 
         try:
             asyncio.run(generate_sample_audio_files())
             logger.info("   [Step 9] Generated physical MP3 audio files in data/audio/")
-            return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=100)
+            return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=generated_count)
         except Exception as e:
             logger.warning("   [Step 9] Audio generation warning: %s", e)
             return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=0, message=str(e))

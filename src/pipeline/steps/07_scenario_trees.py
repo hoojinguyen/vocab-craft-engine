@@ -51,7 +51,9 @@ class ScenarioTreesStep(BaseStep):
 
                 cursor.execute("SELECT id FROM sentences WHERE text_en = ?;", (node["text_en"],))
                 s_row = cursor.fetchone()
-                sent_id = s_row[0] if s_row else 1
+                if not s_row:
+                    raise RuntimeError(f"Failed to find or insert sentence for dialogue node: {node['text_en']}")
+                sent_id = s_row[0]
 
                 parent_db_id = local_node_map.get(node.get("parent_index"))
 
