@@ -1,19 +1,17 @@
 import logging
-import sys
 import time
-from typing import Dict, Any, List, Optional
-from rich.console import Console
-from rich.live import Live
-from rich.table import Table
-from rich.panel import Panel
-from rich.layout import Layout
-from rich.text import Text
+from collections.abc import Callable
+from typing import Any
+
+from textual.app import App, ComposeResult
+from textual.widgets import DataTable, Header, RichLog
+from textual.worker import work
 
 
 class DashboardLoggingHandler(logging.Handler):
-    """Custom logging handler to redirect log records to the RichPipelineDashboard."""
+    """Custom logging handler to redirect log records to the TextualPipelineDashboard."""
 
-    def __init__(self, dashboard: "RichPipelineDashboard"):
+    def __init__(self, dashboard: "TextualPipelineDashboard"):
         super().__init__()
         self.dashboard = dashboard
         self.setFormatter(
@@ -31,22 +29,34 @@ class DashboardLoggingHandler(logging.Handler):
             self.handleError(record)
 
 
-class RichPipelineDashboard:
-    """Real-time Terminal UI dashboard for monitoring pipeline execution using Rich."""
+class TextualPipelineDashboard(App):
+    """Real-time Terminal UI dashboard for monitoring pipeline execution using Textual."""
+
+    TITLE = "VOCAB CRAFT ENGINE - PIPELINE MONITOR"
+    CSS = """
+    DataTable {
+        height: auto;
+        min-height: 8;
+        max-height: 50%;
+    }
+    RichLog {
+        height: 1fr;
+    }
+    """
 
     def __init__(self, enabled: bool = True, title: str = "VOCAB CRAFT ENGINE - PIPELINE MONITOR"):
-        self.console = Console()
-        self.enabled = enabled and self.console.is_terminal
-        self.title = title
-        self.is_active = False
-        self.live: Optional[Live] = None
-        self.steps_data: Dict[str, Dict[str, Any]] = {}
-        self.logs_buffer: List[str] = []
+        super().__init__()
+        self.enabled = enabled
+        self.title_str = title
+        self.steps_data: dict[str, dict[str, Any]] = {}
+        self.original_handlers: list[logging.Handler] = []
+        self.dashboard_handler: DashboardLoggingHandler | None = None
+        self._worker_func: Callable[[], None] | None = None
         self.start_time = time.time()
-        self.original_handlers: List[logging.Handler] = []
-        self.dashboard_handler: Optional[DashboardLoggingHandler] = None
+        # Ensure title reflects the parameter
+        self.title = self.title_str
 
-    def set_steps(self, step_names: List[str]) -> None:
+    def set_steps(self, step_names: list[str]) -> None:
         """Initialize the map of pipeline steps to track."""
         for name in step_names:
             self.steps_data[name] = {
@@ -57,20 +67,48 @@ class RichPipelineDashboard:
                 "metrics": ""
             }
 
-    def start(self) -> None:
-        """Begin live rendering if enabled and attached to a TTY."""
-        if not self.enabled:
-            return
-        self.is_active = True
-        self.start_time = time.time()
+    def set_worker(self, worker_func: Callable[[], None]) -> None:
+        """Set the pipeline execution function to run in the background."""
+        self._worker_func = worker_func
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets for the app."""
+        yield Header(show_clock=True)
+        yield DataTable(id="steps_table")
+        yield RichLog(id="logs", highlight=True, markup=True)
+
+    def on_mount(self) -> None:
+        """Called when app starts."""
+        table = self.query_one(DataTable)
+        self.col_keys = table.add_columns("#", "Step Name", "Status", "Time (s)", "Items", "Retries", "Metrics")
+        
+        # Populate initial rows
+        for idx, (name, data) in enumerate(self.steps_data.items(), 1):
+            table.add_row(
+                str(idx),
+                name,
+                "PENDING ⏸",
+                "0.00s",
+                "0",
+                "0",
+                "",
+                key=name
+            )
+            
         self._setup_logging_redirection()
-        self.live = Live(
-            self._generate_layout(),
-            console=self.console,
-            refresh_per_second=8,
-            auto_refresh=True
-        )
-        self.live.start()
+        
+        if self._worker_func:
+            self.run_pipeline_worker()
+
+    @work(thread=True)
+    def run_pipeline_worker(self) -> None:
+        """Execute the pipeline in a background thread."""
+        try:
+            if self._worker_func:
+                self._worker_func()
+        finally:
+            self.call_from_thread(self._restore_logging)
+            self.call_from_thread(self.add_log, "[bold green]Pipeline execution completed. Press Ctrl+C to exit.[/bold green]")
 
     def _setup_logging_redirection(self) -> None:
         """Temporarily suspend stdout/stderr StreamHandlers and route logs to dashboard."""
@@ -85,6 +123,16 @@ class RichPipelineDashboard:
 
         root_logger.addHandler(self.dashboard_handler)
 
+    def _restore_logging(self) -> None:
+        """Gracefully restore original logging handlers."""
+        root_logger = logging.getLogger()
+        if self.dashboard_handler and self.dashboard_handler in root_logger.handlers:
+            root_logger.removeHandler(self.dashboard_handler)
+        if self.original_handlers:
+            for handler in self.original_handlers:
+                root_logger.addHandler(handler)
+            self.original_handlers = []
+
     def update_step(
         self,
         step_name: str,
@@ -94,101 +142,65 @@ class RichPipelineDashboard:
         retries: int = 0,
         metrics_str: str = ""
     ) -> None:
-        """Update step progress, execution state, and metrics."""
-        if step_name not in self.steps_data:
-            self.steps_data[step_name] = {}
+        """Update step progress, execution state, and metrics. Safe to call from threads."""
+        
+        def do_update():
+            if step_name not in self.steps_data:
+                self.steps_data[step_name] = {}
 
-        self.steps_data[step_name].update({
-            "status": status,
-            "duration": duration,
-            "items": items,
-            "retries": retries,
-            "metrics": metrics_str
-        })
-        if self.live and self.is_active:
-            self.live.update(self._generate_layout())
+            self.steps_data[step_name].update({
+                "status": status,
+                "duration": duration,
+                "items": items,
+                "retries": retries,
+                "metrics": metrics_str
+            })
+            
+            st = status
+            if st == "SUCCESS":
+                status_cell = "[bold green]SUCCESS[/bold green]"
+            elif st == "FAILED":
+                status_cell = "[bold red]FAILED ✖[/bold red]"
+            elif st == "RUNNING":
+                status_cell = "[bold cyan]RUNNING ⏳[/bold cyan]"
+            elif "RETRY" in st:
+                status_cell = f"[bold yellow]{st}[/bold yellow]"
+            elif st == "SKIPPED":
+                status_cell = "[dim white]SKIPPED ⏭[/dim white]"
+            else:
+                status_cell = "[dim]PENDING ⏸[/dim]"
+                
+            try:
+                table = self.query_one(DataTable)
+                table.update_cell(step_name, self.col_keys[2], status_cell, update_width=True)
+                table.update_cell(step_name, self.col_keys[3], f"{duration:.2f}s", update_width=True)
+                table.update_cell(step_name, self.col_keys[4], f"{items:,}", update_width=True)
+                table.update_cell(step_name, self.col_keys[5], str(retries), update_width=True)
+                table.update_cell(step_name, self.col_keys[6], str(metrics_str), update_width=True)
+            except Exception:
+                pass
+                
+        try:
+            self.call_from_thread(do_update)
+        except Exception:
+            pass
 
     def add_log(self, log_line: str) -> None:
-        """Append a log line to the live log stream buffer."""
-        self.logs_buffer.append(log_line)
-        # Keep the latest 50 logs (adjust based on max terminal height)
-        if len(self.logs_buffer) > 50:
-            self.logs_buffer.pop(0)
-        if self.live and self.is_active:
-            self.live.update(self._generate_layout())
+        """Append a log line to the live log stream buffer. Safe to call from threads."""
+        def do_log():
+            try:
+                logs = self.query_one(RichLog)
+                logs.write(log_line)
+            except Exception:
+                pass
+                
+        try:
+            self.call_from_thread(do_log)
+        except Exception:
+            pass
 
-    def _generate_layout(self) -> Layout:
-        """Construct a 3-part layout (Header Panel, Steps Table, Live Logs Stream)."""
-        layout = Layout()
-        
-        # Calculate dynamic size for the steps table to avoid empty whitespace
-        # Minimum size 8, or table rows + header/borders (approx 6)
-        steps_height = max(8, len(self.steps_data) + 6)
-        
-        layout.split(
-            Layout(name="header", size=3),
-            Layout(name="body", size=steps_height),
-            Layout(name="footer", ratio=1)
-        )
-
-        elapsed = round(time.time() - self.start_time, 1)
-        completed = sum(1 for s in self.steps_data.values() if s.get("status") in ("SUCCESS", "SKIPPED"))
-        total = len(self.steps_data)
-
-        header_text = f"🚀 {self.title} | Elapsed: {elapsed}s | Completed: {completed}/{total}"
-        layout["header"].update(Panel(Text(header_text, style="bold cyan"), style="blue"))
-
-        table = Table(expand=True, box=None)
-        table.add_column("#", style="dim", width=4)
-        table.add_column("Step Name", style="bold white", width=25)
-        table.add_column("Status", width=15)
-        table.add_column("Time (s)", justify="right", width=10)
-        table.add_column("Items", justify="right", width=10)
-        table.add_column("Retries", justify="right", width=8)
-        table.add_column("Metrics", style="dim", width=20)
-
-        for idx, (name, data) in enumerate(self.steps_data.items(), 1):
-            st = data.get("status", "PENDING")
-            if st == "SUCCESS":
-                status_cell = Text("SUCCESS", style="bold green")
-            elif st == "FAILED":
-                status_cell = Text("FAILED ✖", style="bold red")
-            elif st == "RUNNING":
-                status_cell = Text("RUNNING ⏳", style="bold cyan")
-            elif "RETRY" in st:
-                status_cell = Text(st, style="bold yellow")
-            elif st == "SKIPPED":
-                status_cell = Text("SKIPPED ⏭", style="dim white")
-            else:
-                status_cell = Text("PENDING ⏸", style="dim")
-
-            table.add_row(
-                str(idx),
-                name,
-                status_cell,
-                f"{data.get('duration', 0.0):.2f}s",
-                f"{data.get('items', 0):,}",
-                str(data.get('retries', 0)),
-                str(data.get('metrics', ""))
-            )
-
-        layout["body"].update(Panel(table, title="Pipeline Steps Overview", style="white"))
-
-        log_text = "\n".join(self.logs_buffer) if self.logs_buffer else "Initializing pipeline..."
-        layout["footer"].update(Panel(log_text, title="📜 Live Logs Stream", style="grey70"))
-
-        return layout
+    def start(self) -> None:
+        pass
 
     def stop(self) -> None:
-        """Gracefully stop the Live renderer and restore original logging handlers."""
-        root_logger = logging.getLogger()
-        if self.dashboard_handler and self.dashboard_handler in root_logger.handlers:
-            root_logger.removeHandler(self.dashboard_handler)
-        if self.original_handlers:
-            for handler in self.original_handlers:
-                root_logger.addHandler(handler)
-            self.original_handlers = []
-
-        if self.live and self.is_active:
-            self.live.stop()
-        self.is_active = False
+        self._restore_logging()
