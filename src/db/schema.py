@@ -27,8 +27,9 @@ INTERNAL_TABLES = [
 ]
 
 STAGING_SCHEMA = """
+CREATE SEQUENCE IF NOT EXISTS seq_words_id START 1;
 CREATE TABLE IF NOT EXISTS words (
-    id             INTEGER PRIMARY KEY,
+    id             INTEGER PRIMARY KEY DEFAULT nextval('seq_words_id'),
     lemma          TEXT NOT NULL,
     pos            TEXT NOT NULL,
     ipa_uk         TEXT,
@@ -39,8 +40,9 @@ CREATE TABLE IF NOT EXISTS words (
     UNIQUE(lemma, pos)
 );
 
+CREATE SEQUENCE IF NOT EXISTS seq_definitions_id START 1;
 CREATE TABLE IF NOT EXISTS definitions (
-    id             INTEGER PRIMARY KEY,
+    id             INTEGER PRIMARY KEY DEFAULT nextval('seq_definitions_id'),
     word_id        INTEGER NOT NULL REFERENCES words(id),
     definition_en  TEXT,
     definition_vi  TEXT,
@@ -49,8 +51,9 @@ CREATE TABLE IF NOT EXISTS definitions (
     UNIQUE(word_id, definition_en)
 );
 
+CREATE SEQUENCE IF NOT EXISTS seq_sentences_id START 1;
 CREATE TABLE IF NOT EXISTS sentences (
-    id               INTEGER PRIMARY KEY,
+    id               INTEGER PRIMARY KEY DEFAULT nextval('seq_sentences_id'),
     text_en          TEXT UNIQUE NOT NULL,
     text_vi          TEXT,
     difficulty_score REAL,
@@ -65,8 +68,9 @@ CREATE TABLE IF NOT EXISTS word_sentences (
     PRIMARY KEY (word_id, sentence_id)
 );
 
+CREATE SEQUENCE IF NOT EXISTS seq_phrases_id START 1;
 CREATE TABLE IF NOT EXISTS phrases (
-    id               INTEGER PRIMARY KEY,
+    id               INTEGER PRIMARY KEY DEFAULT nextval('seq_phrases_id'),
     phrase           TEXT UNIQUE NOT NULL,
     phrase_type      TEXT NOT NULL,
     pos              TEXT,
@@ -87,8 +91,9 @@ CREATE TABLE IF NOT EXISTS phrase_sentences (
     PRIMARY KEY (phrase_id, sentence_id)
 );
 
+CREATE SEQUENCE IF NOT EXISTS seq_word_relations_id START 1;
 CREATE TABLE IF NOT EXISTS word_relations (
-    id             INTEGER PRIMARY KEY,
+    id             INTEGER PRIMARY KEY DEFAULT nextval('seq_word_relations_id'),
     word_id        INTEGER NOT NULL REFERENCES words(id),
     relation_type  TEXT NOT NULL,
     target_text    TEXT NOT NULL,
@@ -105,8 +110,9 @@ CREATE TABLE IF NOT EXISTS word_topics (
     UNIQUE(word_id, topic)
 );
 
+CREATE SEQUENCE IF NOT EXISTS seq_reflex_drills_id START 1;
 CREATE TABLE IF NOT EXISTS reflex_drills (
-    id               INTEGER PRIMARY KEY,
+    id               INTEGER PRIMARY KEY DEFAULT nextval('seq_reflex_drills_id'),
     sentence_id      INTEGER NOT NULL REFERENCES sentences(id),
     drill_type       TEXT NOT NULL,
     prompt_text      TEXT,
@@ -115,16 +121,18 @@ CREATE TABLE IF NOT EXISTS reflex_drills (
     target_time_ms   INTEGER DEFAULT 2500
 );
 
+CREATE SEQUENCE IF NOT EXISTS seq_dialogue_trees_id START 1;
 CREATE TABLE IF NOT EXISTS dialogue_trees (
-    id           INTEGER PRIMARY KEY,
+    id           INTEGER PRIMARY KEY DEFAULT nextval('seq_dialogue_trees_id'),
     title        TEXT NOT NULL,
     topic        TEXT,
     cefr_level   TEXT,
     root_node_id INTEGER
 );
 
+CREATE SEQUENCE IF NOT EXISTS seq_dialogue_nodes_id START 1;
 CREATE TABLE IF NOT EXISTS dialogue_nodes (
-    id             INTEGER PRIMARY KEY,
+    id             INTEGER PRIMARY KEY DEFAULT nextval('seq_dialogue_nodes_id'),
     tree_id        INTEGER NOT NULL REFERENCES dialogue_trees(id),
     parent_node_id INTEGER REFERENCES dialogue_nodes(id),
     choice_label   TEXT,
