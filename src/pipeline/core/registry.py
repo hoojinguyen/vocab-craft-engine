@@ -29,3 +29,42 @@ class StepRegistry:
             skip_set = set(skip_steps)
             steps = [s for s in steps if s.name not in skip_set]
         return steps
+
+
+def get_default_registry() -> StepRegistry:
+    from src.pipeline.steps import (
+        SchemaInitStep,
+        KaikkiIngestionStep,
+        TatoebaIngestionStep,
+        SentenceLinkingStep,
+        NLPEnrichmentStep,
+        ReflexDrillsStep,
+        ScenarioTreesStep,
+        IPAMappingStep,
+        AudioGenerationStep,
+        PhraseMWEStep,
+        RelationsTopicsStep,
+        VietnameseBackfillStep,
+        CorePackStep,
+        SentenceCoverageStep,
+        SQLiteExportStep
+    )
+
+    registry = StepRegistry()
+    registry.register(SchemaInitStep())
+    registry.register(KaikkiIngestionStep())
+    registry.register(TatoebaIngestionStep())
+    registry.register(SentenceLinkingStep())
+    registry.register(NLPEnrichmentStep())
+    registry.register(ReflexDrillsStep())
+    registry.register(ScenarioTreesStep())
+    registry.register(IPAMappingStep())
+    registry.register(AudioGenerationStep())
+    registry.register(PhraseMWEStep())
+    registry.register(RelationsTopicsStep())
+    registry.register(VietnameseBackfillStep())
+    registry.register(CorePackStep())
+    registry.register(SentenceCoverageStep())
+    registry.register(SQLiteExportStep())
+    return registry
+
