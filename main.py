@@ -1,25 +1,26 @@
 """
 Main Execution Pipeline for English Dataset System Engine.
-Orchestrates Ingestion, NLP Enrichment, Collocation Extraction, Dialogue Trees, Reflex Drill Generation, and SQLite Export.
-Now modularized via src.pipeline steps & orchestrator.
+Orchestrates DAG-based Parallel Execution with DuckDB Staging.
 """
 
-import sys
 import logging
-from src.pipeline.cli import parse_arguments, REQUIRED_RAW_FILES, get_missing_raw_files
+import sys
+
+from config.settings import STAGING_DUCKDB_PATH
 from scripts.download_raw_data import download_all_raw_data
+from src.db.duckdb_manager import DuckDBManager
+from src.pipeline.cli import REQUIRED_RAW_FILES, get_missing_raw_files, parse_arguments
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.orchestrator import PipelineOrchestrator
 from src.pipeline.core.registry import get_default_registry
-from src.db.staging_db import DatabaseManager
-from config.settings import EXPORT_SQLITE_PATH
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S"
+    datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
 
 def main():
     args = parse_arguments()
@@ -29,10 +30,11 @@ def main():
         logger.info("Raw data files check/download in progress...")
         download_all_raw_data()
 
-    db_manager = DatabaseManager(db_path=EXPORT_SQLITE_PATH)
+    db_manager = DuckDBManager(db_path=STAGING_DUCKDB_PATH)
+    db_manager.init_schema()
+
     try:
         context = PipelineContext(db_manager=db_manager, args=args)
-
         registry = get_default_registry()
         orchestrator = PipelineOrchestrator(registry=registry)
 
@@ -42,6 +44,7 @@ def main():
             sys.exit(1)
     finally:
         db_manager.close()
+
 
 if __name__ == "__main__":
     main()
