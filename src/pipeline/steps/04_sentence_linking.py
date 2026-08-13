@@ -30,7 +30,7 @@ def _clear_sentence_link_checkpoint() -> None:
 
 def _link_sentences_incrementally(db_manager, checkpoint: Path, batch_size: int = 5000) -> int:
     last_linked = _read_sentence_link_checkpoint(checkpoint)
-    lemmatizer = Lemmatizer()
+    lemmatizer = None
     map_batch = []
     new_max = last_linked
     total_inserted = 0
@@ -48,6 +48,9 @@ def _link_sentences_incrementally(db_manager, checkpoint: Path, batch_size: int 
 
         if not rows:
             break
+
+        if lemmatizer is None:
+            lemmatizer = Lemmatizer()
 
         for s_id, text_en in rows:
             lemmas = lemmatizer.lemmatize_text(text_en)

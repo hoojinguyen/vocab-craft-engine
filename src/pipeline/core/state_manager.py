@@ -8,12 +8,19 @@ class StateManager:
         self.state_file = state_file
 
     def load_state(self) -> Dict[str, Any]:
-        if self.state_file.exists():
-            try:
-                return json.loads(self.state_file.read_text(encoding="utf-8"))
-            except Exception:
-                return {}
-        return {}
+        if not self.state_file.exists():
+            return {}
+        try:
+            content = self.state_file.read_text(encoding="utf-8")
+            data = json.loads(content)
+        except Exception as e:
+            raise ValueError(f"Failed to parse state file {self.state_file}: {e}") from e
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"State file {self.state_file} top-level element must be a dict/mapping, got {type(data).__name__}"
+            )
+        return data
 
     def save_step_status(self, step_name: str, status: str, duration: float, items: int) -> None:
         state = self.load_state()

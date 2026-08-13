@@ -437,7 +437,6 @@ class PipelineOrchestrator:
                     message=msg
                 )
                 results.append(res)
-                self.state_manager.save_step_status(step.name, "SKIPPED", 0.0, 0)
                 continue
 
             if skip:
@@ -780,7 +779,7 @@ class TatoebaIngestionStep(BaseStep):
                 "text_vi": pair["text_vi"],
                 "difficulty_score": graded["difficulty_score"],
                 "cefr_level": graded["cefr_level"],
-                "audio_path": f"sent_{sent_count + len(sentences_batch)}_std.mp3",
+                "audio_path": None,
                 "source": pair["source"]
             })
 
@@ -1293,8 +1292,8 @@ class AudioGenerationStep(BaseStep):
             logger.info("   [Step 9] Generated physical MP3 audio files in data/audio/")
             return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=100)
         except Exception as e:
-            logger.warning("   [Step 9] Audio generation warning: %s", e)
-            return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=0, message=str(e))
+            logger.error("   [Step 9] Audio generation failed: %s", e)
+            raise
 ```
 
 Create `src/pipeline/steps/10_phrase_mwe.py`:

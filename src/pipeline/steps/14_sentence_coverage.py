@@ -30,13 +30,15 @@ class SentenceCoverageStep(BaseStep):
                 if not en_path.exists() or not vi_path.exists():
                     continue
                 existing = context.db_manager.count_sentences_by_source(source)
-                if existing < max_sentences:
+                existing_count = existing if isinstance(existing, int) and not isinstance(existing, bool) else 0
+                if existing_count < max_sentences:
                     all_skipped = False
                     break
             if all_skipped:
                 return True, "All parallel sentence corpora already ingested."
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("[SentenceCoverage] Error checking sentence count in should_skip: %s", e)
+            raise
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
@@ -75,7 +77,7 @@ class SentenceCoverageStep(BaseStep):
             accepted_candidates = 0
             corpus_inserted = 0
             for pair in ParallelCorpusParser(en_path, vi_path, source=source).parse_pairs():
-                if accepted_candidates + len(batch) >= max_sentences:
+                if existing + accepted_candidates + len(batch) >= max_sentences:
                     break
                 if not sf.is_clean_pair(pair["text_en"], pair["text_vi"]):
                     continue

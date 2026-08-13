@@ -131,17 +131,17 @@ The 15 steps decomposed from `main.py` are executed in the following strict orde
 | Step Name | Module File | Primary Purpose | Skip Condition (`should_skip`) |
 |---|---|---|---|
 | `schema_init` | `01_schema_init.py` | Init SQLite DB schema & handle `--force-reset` wipe | Never skipped |
-| `kaikki_ingestion` | `02_kaikki_ingestion.py` | Ingest 3.18GB Kaikki Wiktionary dump | `words > 10,000` & `defs > 10,000` OR `--skip-dict` |
+| `kaikki_ingestion` | `02_kaikki_ingestion.py` | Ingest 3.18GB Kaikki Wiktionary dump | `KAIKKI_INGEST_CHECKPOINT` file present OR `--skip-dict` |
 | `tatoeba_ingestion` | `03_tatoeba_ingestion.py` | Ingest Tatoeba parallel sentences | `sentences > 1,000` |
-| `sentence_linking` | `04_sentence_linking.py` | Link words to sentences | `.sentence_link_checkpoint.json` present |
+| `sentence_linking` | `04_sentence_linking.py` | Link words to sentences | Never skipped |
 | `nlp_enrichment` | `05_nlp_enrichment.py` | Extract collocations & sentence patterns | Collocations & patterns exist in DB |
 | `reflex_drills` | `06_reflex_drills.py` | Generate speed reflex cards (< 2.5s) | `reflex_drills > 0` |
 | `scenario_trees` | `07_scenario_trees.py` | Build branching dialogue trees | `dialogue_trees > 0` |
 | `ipa_mapping` | `08_ipa_mapping.py` | Populate UK/US IPA transcriptions | 100% words populated |
-| `audio_generation` | `09_audio_generation.py` | Synthesize Edge-TTS 1.0x/1.2x MP3 audio | Complete audio files exist |
+| `audio_generation` | `09_audio_generation.py` | Synthesize Edge-TTS 1.0x/1.2x MP3 audio | Never skipped |
 | `phrase_mwe` | `10_phrase_mwe.py` | Ingest Idioms, Phrasal Verbs, Proverbs | `phrases > 500` & audio complete |
 | `relations_topics` | `11_relations_topics.py` | Extract Synonyms, Antonyms, 18 Themes | Checkpoint record count > target |
-| `vietnamese_backfill` | `12_vietnamese_backfill.py` | Validate & backfill VI translations | No missing defs OR `--vi-budget` met |
+| `vietnamese_backfill` | `12_vietnamese_backfill.py` | Validate & backfill VI translations | No missing translations remain |
 | `core_pack` | `13_core_pack.py` | Curate Core 3000 Pack (`core_3000.db`) | Flag `--build-core-pack` NOT set |
 | `sentence_coverage` | `14_sentence_coverage.py` | Ingest OPUS & EnViCorpora dialogues | Extended sentence threshold met |
 | `sqlite_export` | `15_sqlite_export.py` | Build composite indexes, WAL mode, export DB | Target `english_dataset.db` optimized |

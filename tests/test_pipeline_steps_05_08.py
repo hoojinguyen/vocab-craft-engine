@@ -21,10 +21,6 @@ IPAMappingStep = mod_08.IPAMappingStep
 # NLPEnrichmentStep (05)
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# NLPEnrichmentStep (05)
-# ---------------------------------------------------------------------------
-
 def test_nlp_enrichment_skip_condition():
     mock_db = MagicMock()
     mock_conn = MagicMock()
@@ -32,8 +28,12 @@ def test_nlp_enrichment_skip_condition():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    # existing_collocs = 600, existing_patterns = 3
-    mock_cursor.fetchone.side_effect = [(600,), (3,)]
+    mock_cursor.fetchone.return_value = (600,)
+    mock_cursor.fetchall.return_value = [
+        ("Subject + Verb + Object",),
+        ("Subject + Verb + Prepositional Phrase",),
+        ("Subject + Auxiliary + Verb + Object",)
+    ]
 
     mock_args = MagicMock()
     mock_args.force_reset = False
@@ -44,8 +44,8 @@ def test_nlp_enrichment_skip_condition():
     assert skip
     assert "CHECKPOINT DETECTED" in reason
 
-    # Test when sentence patterns are missing (0)
-    mock_cursor.fetchone.side_effect = [(600,), (0,)]
+    # Test when sentence patterns are missing some patterns
+    mock_cursor.fetchall.return_value = [("Subject + Verb + Object",)]
     skip, _ = step.should_skip(ctx)
     assert not skip
 
@@ -62,7 +62,8 @@ def test_nlp_enrichment_run():
     mock_conn.cursor.return_value = mock_cursor
 
     mock_cursor.fetchall.return_value = [(1, "She drinks hot coffee.")]
-    mock_cursor.fetchone.return_value = (1,)
+    mock_db.insert_collocations_batch.return_value = 1
+    mock_db.insert_sentence_patterns_batch.return_value = 3
 
     mock_args = MagicMock()
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
@@ -73,7 +74,7 @@ def test_nlp_enrichment_run():
          patch.object(mod_05, "Translator") as mock_translator_cls:
         
         mock_grader = mock_grader_cls.return_value
-        mock_grader.grade_word.return_value = ("A1", 100)
+        mock_grader.grade_word.return_value = ("C1", 15000)
 
         mock_extractor = mock_extractor_cls.return_value
         mock_extractor.extract_collocations.return_value = [
@@ -83,13 +84,13 @@ def test_nlp_enrichment_run():
         mock_translator = mock_translator_cls.return_value
         mock_translator.translate_text.return_value = "cà phê nóng"
 
-        mock_db.insert_sentence_patterns_batch.return_value = 3
-
         res = step.run(ctx)
 
         assert res.status == StepStatus.SUCCESS
-        assert res.items_processed == 4  # 1 collocation + 3 patterns
+        assert res.items_processed == 4  # 1 inserted collocation + 3 patterns
         mock_db.insert_collocations_batch.assert_called_once()
+        inserted_batch = mock_db.insert_collocations_batch.call_args[0][0]
+        assert inserted_batch[0]["cefr_level"] == "C1"  # C1 preserved
         mock_db.insert_sentence_patterns_batch.assert_called_once()
         mock_translator.save_cache.assert_called_once()
 
@@ -105,7 +106,6 @@ def test_reflex_drills_skip_condition():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    # total_sentences = 100, existing_drills = 100
     mock_cursor.fetchone.side_effect = [(100,), (100,)]
 
     mock_args = MagicMock()
@@ -117,6 +117,9 @@ def test_reflex_drills_skip_condition():
     assert skip
     assert "already exist" in reason
 
+    executed_sql = mock_cursor.execute.call_args_list[1][0][0]
+    assert "JOIN sentences" in executed_sql
+
 
 def test_reflex_drills_run():
     mock_db = MagicMock()
@@ -125,13 +128,12 @@ def test_reflex_drills_run():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    # Return valid sentence and one sentence with blank text_vi to verify filtering
     mock_cursor.fetchall.return_value = [
         (1, "Hello.", "Xin chào.", "A1"),
         (2, "Invalid.", "", "A1"),
         (3, "Null sentence.", None, "A1")
     ]
-    mock_cursor.fetchone.return_value = (0,)  # existing drills = 0
+    mock_cursor.fetchone.return_value = (0,)
 
     mock_args = MagicMock()
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
@@ -153,7 +155,7 @@ def test_reflex_drills_run():
         res = step.run(ctx)
 
         assert res.status == StepStatus.SUCCESS
-        assert res.items_processed == 1  # Only 1 valid sentence processed
+        assert res.items_processed == 1
         mock_conn.commit.assert_called()
 
 
@@ -211,7 +213,7 @@ def test_scenario_trees_run():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
     mock_cursor.lastrowid = 1
-    mock_cursor.fetchone.return_value = (10,)  # sent_id
+    mock_cursor.fetchone.return_value = (10,)
 
     mock_args = MagicMock()
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
@@ -242,10 +244,30 @@ def test_scenario_trees_run():
         assert res.status == StepStatus.SUCCESS
         assert res.items_processed == 1
         mock_conn.commit.assert_called()
-        # Verify update sentence audio_path and update dialogue_trees root_node_id
         executed_sqls = [call[0][0] for call in mock_cursor.execute.call_args_list]
-        assert any("UPDATE sentences SET audio_path" in sql for sql in executed_sqls)
-        assert any("UPDATE dialogue_trees SET root_node_id" in sql for sql in executed_sqls)
+        assert any("DELETE FROM dialogue_nodes" in sql for sql in executed_sqls)
+        assert any("DELETE FROM dialogue_trees" in sql for sql in executed_sqls)
+
+
+def test_scenario_trees_rollback_on_failure():
+    mock_db = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_db.get_connection.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_args = MagicMock()
+    ctx = PipelineContext(db_manager=mock_db, args=mock_args)
+    step = ScenarioTreesStep()
+
+    with patch.object(mod_07, "ScenarioBuilder") as mock_builder_cls:
+        mock_builder = mock_builder_cls.return_value
+        mock_builder.build_sample_scenarios.side_effect = RuntimeError("Scenario error")
+
+        with pytest.raises(RuntimeError):
+            step.run(ctx)
+
+        mock_conn.rollback.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +281,7 @@ def test_ipa_mapping_skip_condition():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    mock_cursor.fetchone.return_value = (0,)  # missing = 0
+    mock_cursor.fetchone.return_value = (0,)
 
     mock_args = MagicMock()
     mock_args.force_reset = False
@@ -269,11 +291,9 @@ def test_ipa_mapping_skip_condition():
     skip, reason = step.should_skip(ctx)
     assert skip
     assert "100% of words already have IPA" in reason
-    executed_sql = mock_cursor.execute.call_args[0][0]
-    assert "COALESCE(TRIM(ipa_us)" in executed_sql
 
 
-def test_ipa_mapping_run():
+def test_ipa_mapping_run_normal():
     mock_db = MagicMock()
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -282,7 +302,7 @@ def test_ipa_mapping_run():
 
     mock_cursor.fetchall.return_value = [(1, "cat", " ", None)]
 
-    mock_args = MagicMock()
+    mock_args = MagicMock(force_reset=False)
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
     step = IPAMappingStep()
 
@@ -296,4 +316,32 @@ def test_ipa_mapping_run():
         assert res.items_processed == 1
         mock_conn.commit.assert_called()
         executed_sql = mock_cursor.execute.call_args_list[0][0][0]
-        assert "COALESCE(TRIM(ipa_us)" in executed_sql
+        assert "WHERE COALESCE(TRIM(ipa_us)" in executed_sql
+        assert mock_mapper.get_ipa.call_args_list[0][1]["existing_ipa"] == " "
+
+
+def test_ipa_mapping_run_force_reset():
+    mock_db = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_db.get_connection.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_cursor.fetchall.return_value = [(1, "cat", "kæt", "kæt")]
+
+    mock_args = MagicMock(force_reset=True)
+    ctx = PipelineContext(db_manager=mock_db, args=mock_args)
+    step = IPAMappingStep()
+
+    with patch.object(mod_08, "IPAMapper") as mock_mapper_cls:
+        mock_mapper = mock_mapper_cls.return_value
+        mock_mapper.get_ipa.return_value = "kæt"
+
+        res = step.run(ctx)
+
+        assert res.status == StepStatus.SUCCESS
+        assert res.items_processed == 1
+        mock_conn.commit.assert_called()
+        executed_sql = mock_cursor.execute.call_args_list[0][0][0]
+        assert "WHERE" not in executed_sql
+        assert mock_mapper.get_ipa.call_args_list[0][1]["existing_ipa"] is None

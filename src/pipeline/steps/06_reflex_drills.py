@@ -20,7 +20,14 @@ class ReflexDrillsStep(BaseStep):
             cursor = conn.cursor()
             cursor.execute("SELECT count(*) FROM sentences WHERE text_vi IS NOT NULL AND TRIM(text_vi) != '';")
             total_sentences = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(DISTINCT sentence_id) FROM reflex_drills WHERE drill_type = 'speed_translation';")
+            cursor.execute("""
+                SELECT COUNT(DISTINCT r.sentence_id)
+                FROM reflex_drills r
+                JOIN sentences s ON r.sentence_id = s.id
+                WHERE r.drill_type = 'speed_translation'
+                  AND s.text_vi IS NOT NULL
+                  AND TRIM(s.text_vi) != '';
+            """)
             existing_drills = cursor.fetchone()[0]
 
             if existing_drills >= total_sentences and total_sentences > 0:

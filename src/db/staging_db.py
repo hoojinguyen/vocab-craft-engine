@@ -220,6 +220,46 @@ class DatabaseManager:
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_topics_unique ON word_topics(word_id, topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_definitions_word_id ON definitions(word_id);")
+
+        cursor.execute("""
+            UPDATE definitions
+            SET 
+                definition_vi = COALESCE(definition_vi, (
+                    SELECT d2.definition_vi FROM definitions d2 
+                    WHERE d2.word_id = definitions.word_id 
+                      AND d2.definition_en IS definitions.definition_en 
+                      AND d2.definition_vi IS NOT NULL 
+                    LIMIT 1
+                )),
+                example = COALESCE(example, (
+                    SELECT d2.example FROM definitions d2 
+                    WHERE d2.word_id = definitions.word_id 
+                      AND d2.definition_en IS definitions.definition_en 
+                      AND d2.example IS NOT NULL 
+                    LIMIT 1
+                )),
+                source = COALESCE(source, (
+                    SELECT d2.source FROM definitions d2 
+                    WHERE d2.word_id = definitions.word_id 
+                      AND d2.definition_en IS definitions.definition_en 
+                      AND d2.source IS NOT NULL 
+                    LIMIT 1
+                ))
+            WHERE id IN (
+                SELECT MIN(id) 
+                FROM definitions 
+                GROUP BY word_id, definition_en 
+                HAVING COUNT(*) > 1
+            );
+        """)
+        cursor.execute("""
+            DELETE FROM definitions
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM definitions
+                GROUP BY word_id, definition_en
+            );
+        """)
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_definitions_unique ON definitions(word_id, definition_en);")
 
         conn.commit()

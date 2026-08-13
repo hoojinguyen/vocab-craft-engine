@@ -221,8 +221,36 @@ class CorePackBuilder:
         tmp.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, self.checkpoint_path)
 
-    def _is_done(self, word_id: int) -> bool:
-        return str(word_id) in self._cp.get("done", {})
+    def reset(self):
+        """Clears checkpoint and deletes stale pack database and audio files if needed."""
+        if self.checkpoint_path.exists():
+            try:
+                self.checkpoint_path.unlink()
+            except Exception as e:
+                logger.warning("Failed to remove checkpoint %s: %s", self.checkpoint_path, e)
+        if self.db_path.exists():
+            try:
+                self.db_path.unlink()
+            except Exception as e:
+                logger.warning("Failed to remove DB %s: %s", self.db_path, e)
+        for suffix in ("-wal", "-shm"):
+            p = self.db_path.with_name(self.db_path.name + suffix)
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+        self._cp = {"done": {}}
+
+    def _is_done(self, word_id: int, pack_conn: Optional[sqlite3.Connection] = None) -> bool:
+        if str(word_id) not in self._cp.get("done", {}):
+            return False
+        if pack_conn is not None:
+            row = pack_conn.execute("SELECT 1 FROM words WHERE id = ?", (word_id,)).fetchone()
+            if row is None:
+                self._cp["done"].pop(str(word_id), None)
+                return False
+        return True
 
     # ---- audio ---------------------------------------------------------
 
@@ -464,11 +492,36 @@ class CorePackBuilder:
         selected, metrics = select_core_words_with_gates(
             source, freq_dict, ngsl_path=ngsl_path, target=target
         )
+
+        current_selected_ids = {w["id"] for w in selected}
+        prev_selected_ids = set(self._cp.get("selected_ids", []))
+        if prev_selected_ids and prev_selected_ids != current_selected_ids:
+            logger.info("Selection changed between runs; resetting pack DB and checkpoint.")
+            self.reset()
+        self._cp["selected_ids"] = list(current_selected_ids)
+
         topics_by_word = self._topics_by_word(source)
         definitions_by_word = self._definitions_by_word(source)
 
         translator = Translator()
         pack_conn = self._init_pack_db()
+
+        # Remove stale words outside current selection if any exist in pack DB
+        existing_words = pack_conn.execute("SELECT id FROM words").fetchall()
+        existing_word_ids = {row[0] for row in existing_words}
+        stale_ids = existing_word_ids - current_selected_ids
+        if stale_ids:
+            stale_list = list(stale_ids)
+            placeholders = ",".join("?" for _ in stale_list)
+            pack_conn.execute(f"DELETE FROM words WHERE id IN ({placeholders})", tuple(stale_list))
+            pack_conn.execute(f"DELETE FROM word_topics WHERE word_id IN ({placeholders})", tuple(stale_list))
+            pack_conn.execute(f"DELETE FROM definitions WHERE word_id IN ({placeholders})", tuple(stale_list))
+            pack_conn.execute(f"DELETE FROM word_sentences WHERE word_id IN ({placeholders})", tuple(stale_list))
+            pack_conn.execute("DELETE FROM sentences WHERE id NOT IN (SELECT sentence_id FROM word_sentences)")
+            pack_conn.commit()
+            for sid in stale_ids:
+                self._cp["done"].pop(str(sid), None)
+
         sent_id_map: Dict[str, int] = {}
         max_sent_row = pack_conn.execute("SELECT MAX(id) FROM sentences").fetchone()
         next_sent_id = (max_sent_row[0] + 1) if (max_sent_row and max_sent_row[0] is not None) else 1
@@ -477,7 +530,7 @@ class CorePackBuilder:
         quarantined = []
         pending = []
         for word in selected:
-            if self._is_done(word["id"]):
+            if self._is_done(word["id"], pack_conn=pack_conn):
                 continue
             result = self._enrich_word(source, (
                 word["id"], word["lemma"], word["pos"], word["ipa_uk"],
@@ -514,10 +567,8 @@ class CorePackBuilder:
                     result["audio_fast"] = fast_path
                     enriched.append(result)
                     self._cp["done"][str(word["id"])] = True
-                if enriched:
-                    self._save_checkpoint(self._cp)
-
         # -- write words + definitions + topics --------------------------
+        newly_committed_ids = []
         for r in enriched:
             pack_conn.execute(
                 "INSERT OR REPLACE INTO words (id, lemma, pos, cefr_level, frequency_rank, "
@@ -551,6 +602,7 @@ class CorePackBuilder:
             )
             sent_id_map[r["word"]["id"]] = next_sent_id
             next_sent_id += 1
+            newly_committed_ids.append(r["word"]["id"])
 
         # -- collocations & phrases rooted in the pack --------------------
         all_pack_words = pack_conn.execute("SELECT id, lemma FROM words").fetchall()
@@ -610,12 +662,15 @@ class CorePackBuilder:
             """
         )
         pack_conn.commit()
+
+        for w_id in newly_committed_ids:
+            self._cp["done"][str(w_id)] = True
+        self._save_checkpoint(self._cp)
+
         pack_conn.execute("VACUUM;")
         pack_conn.execute("PRAGMA journal_mode = WAL;")
         pack_conn.execute("PRAGMA synchronous = NORMAL;")
         pack_conn.commit()
-
-        self._save_checkpoint(self._cp)
         report = self._write_report(metrics, enriched, quarantined, pack_collocs, pack_phrases, pack_conn)
         pack_conn.close()
         source.close()

@@ -21,7 +21,16 @@ class KaikkiIngestionStep(BaseStep):
             return False, ""
 
         if KAIKKI_INGEST_CHECKPOINT.exists():
-            return True, "CHECKPOINT DETECTED: Kaikki Wiktionary ingestion previously completed."
+            try:
+                conn = context.db_manager.get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT count(*) FROM words;")
+                row = cursor.fetchone()
+                words_count = row[0] if row else 0
+                if words_count > 0:
+                    return True, "CHECKPOINT DETECTED: Kaikki Wiktionary ingestion previously completed."
+            except Exception:
+                pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:

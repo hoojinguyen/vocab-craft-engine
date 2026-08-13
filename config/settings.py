@@ -31,6 +31,7 @@ ENVICORPORA_BASIC_EN = ENVICORPORA_DIR / "basic" / "data.en"
 ENVICORPORA_BASIC_VI = ENVICORPORA_DIR / "basic" / "data.vi"
 SENTENCE_LINK_CHECKPOINT = PROCESSED_DATA_DIR / "sentence_link_checkpoint.json"
 KAIKKI_INGEST_CHECKPOINT = PROCESSED_DATA_DIR / ".kaikki_ingest_done"
+TATOEBA_INGEST_CHECKPOINT = PROCESSED_DATA_DIR / ".tatoeba_ingest_done"
 
 # Per-corpus ingest cap: huge parallel corpora (e.g. OpenSubtitles 37M lines)
 # would blow past the plan's >=100K goal and fill the disk. Stop after this many

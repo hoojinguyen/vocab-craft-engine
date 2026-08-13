@@ -1,3 +1,4 @@
+from pathlib import Path
 import importlib
 import pytest
 from unittest.mock import MagicMock, patch
@@ -66,10 +67,13 @@ def test_core_pack_run():
         )
 
 
+from types import SimpleNamespace
+
 def test_sentence_coverage_should_skip():
-    ctx = PipelineContext(db_manager=MagicMock(), args=MagicMock())
+    ctx = PipelineContext(db_manager=MagicMock(), args=SimpleNamespace(force_reset=False))
     step = SentenceCoverageStep()
-    skip, reason = step.should_skip(ctx)
+    with patch("pathlib.Path.exists", return_value=True):
+        skip, reason = step.should_skip(ctx)
     assert not skip
 
 
@@ -93,7 +97,7 @@ def test_sentence_coverage_run():
 
         mock_db = MagicMock()
         mock_db.count_sentences_by_source.return_value = 0
-        ctx = PipelineContext(db_manager=mock_db, args=MagicMock())
+        ctx = PipelineContext(db_manager=mock_db, args=SimpleNamespace(force_reset=False))
 
         with patch("pathlib.Path.exists", return_value=True):
             step = SentenceCoverageStep()
@@ -150,3 +154,76 @@ def test_all_15_steps_exported():
     for step_name in expected_steps:
         assert hasattr(steps, step_name)
     assert len(steps.__all__) == 15
+
+
+def test_core_pack_uses_context_db_path_and_resets_on_force_reset():
+    with patch.object(mod_13, "CEFRGrader") as mock_grader_cls, \
+         patch.object(mod_13, "CorePackBuilder") as mock_builder_cls:
+        mock_grader = MagicMock()
+        mock_grader.freq_dict = {"test": 100}
+        mock_grader_cls.return_value = mock_grader
+
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = {"selected": 100, "pass_rate": 1.0}
+        mock_builder_cls.return_value = mock_builder
+
+        mock_db = MagicMock()
+        custom_path = Path("/tmp/custom_english.db")
+        mock_db.db_path = custom_path
+
+        mock_args = MagicMock()
+        mock_args.force_reset = True
+        mock_args.vi_budget = 500
+        ctx = PipelineContext(db_manager=mock_db, args=mock_args)
+
+        step = CorePackStep()
+        res = step.run(ctx)
+
+        mock_builder_cls.assert_called_once_with(
+            source_db_path=custom_path,
+            output_dir=Path(mod_13.OUTPUT_DIR) / "core_pack",
+        )
+        mock_builder.reset.assert_called_once()
+        assert res.status == StepStatus.SUCCESS
+
+
+def test_sentence_coverage_should_skip_raises_on_db_exception():
+    mock_db = MagicMock()
+    mock_db.count_sentences_by_source.side_effect = RuntimeError("DB Table Missing")
+    ctx = PipelineContext(db_manager=mock_db, args=MagicMock(force_reset=False))
+    step = SentenceCoverageStep()
+    with pytest.raises(RuntimeError, match="DB Table Missing"):
+        with patch("pathlib.Path.exists", return_value=True):
+            step.should_skip(ctx)
+
+
+def test_sentence_coverage_cap_includes_existing_count():
+    with patch.object(mod_14, "CEFRGrader") as mock_grader_cls, \
+         patch.object(mod_14, "SentenceFilter") as mock_filter_cls, \
+         patch.object(mod_14, "ParallelCorpusParser") as mock_parser_cls:
+        mock_filter = MagicMock()
+        mock_filter.is_clean_pair.return_value = True
+        mock_filter_cls.return_value = mock_filter
+
+        mock_grader = MagicMock()
+        mock_grader.grade_sentence.return_value = {"difficulty_score": 0.5, "cefr_level": "A1"}
+        mock_grader_cls.return_value = mock_grader
+
+        # Simulate 100 pairs available in parser
+        pairs = [{"text_en": f"En {i}", "text_vi": f"Vi {i}"} for i in range(100)]
+        mock_parser = MagicMock()
+        mock_parser.parse_pairs.return_value = pairs
+        mock_parser_cls.return_value = mock_parser
+
+        mock_db = MagicMock()
+        # Suppose MAX_SENTENCES_PER_CORPUS is 1000, and existing is 995
+        mock_db.count_sentences_by_source.return_value = 995
+        ctx = PipelineContext(db_manager=mock_db, args=MagicMock(force_reset=False))
+
+        with patch("pathlib.Path.exists", return_value=True), \
+             patch.object(mod_14.settings, "MAX_SENTENCES_PER_CORPUS", 1000):
+            step = SentenceCoverageStep()
+            res = step.run(ctx)
+
+        # Since existing=995 and max=1000, only 5 pairs should be processed/inserted before breaking
+        assert res.items_processed == 15

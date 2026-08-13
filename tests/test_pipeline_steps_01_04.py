@@ -60,6 +60,12 @@ def test_schema_init_step_force_reset(tmp_path):
 
 def test_kaikki_ingestion_skip_condition():
     mock_db = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_db.get_connection.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchone.return_value = (1000,)
+
     mock_args = MagicMock()
     mock_args.force_reset = False
     mock_args.skip_dict = False
@@ -150,9 +156,11 @@ def test_tatoeba_ingestion_skip_condition():
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
     step = TatoebaIngestionStep()
 
-    skip, reason = step.should_skip(ctx)
-    assert skip
-    assert "CHECKPOINT DETECTED" in reason
+    with patch.object(mod_03, "TATOEBA_INGEST_CHECKPOINT") as mock_ckpt:
+        mock_ckpt.exists.return_value = True
+        skip, reason = step.should_skip(ctx)
+        assert skip
+        assert "CHECKPOINT DETECTED" in reason
 
 
 def test_tatoeba_ingestion_run():

@@ -25,10 +25,30 @@ class VietnameseBackfillStep(BaseStep):
         cursor.execute("UPDATE collocations SET meaning_vi = NULL WHERE meaning_vi = phrase;")
         conn.commit()
 
+        validator = VietnameseTextValidator()
+
+        cursor.execute("SELECT id, definition_vi FROM definitions WHERE definition_vi IS NOT NULL AND definition_vi != '';")
+        bad_defs = [r[0] for r in cursor.fetchall() if not validator.is_vietnamese(r[1])]
+        if bad_defs:
+            cursor.executemany("UPDATE definitions SET definition_vi = NULL WHERE id = ?;", [(i,) for i in bad_defs])
+
+        cursor.execute("SELECT id, meaning_vi FROM collocations WHERE meaning_vi IS NOT NULL AND meaning_vi != '';")
+        bad_colls = [r[0] for r in cursor.fetchall() if not validator.is_vietnamese(r[1])]
+        if bad_colls:
+            cursor.executemany("UPDATE collocations SET meaning_vi = NULL WHERE id = ?;", [(i,) for i in bad_colls])
+
+        cursor.execute("SELECT id, definition_vi FROM phrases WHERE definition_vi IS NOT NULL AND definition_vi != '';")
+        bad_phrases = [r[0] for r in cursor.fetchall() if not validator.is_vietnamese(r[1])]
+        if bad_phrases:
+            cursor.executemany("UPDATE phrases SET definition_vi = NULL WHERE id = ?;", [(i,) for i in bad_phrases])
+
+        conn.commit()
+
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
         try:
+            self._cleanup_passthrough(context)
             conn = context.db_manager.get_connection()
             cursor = conn.cursor()
             cursor.execute(
@@ -58,19 +78,21 @@ class VietnameseBackfillStep(BaseStep):
         self._cleanup_passthrough(context)
 
         cursor.execute("""
-            SELECT d.id, d.definition_en FROM definitions d
+            SELECT count(*) FROM definitions d
             JOIN words w ON w.id = d.word_id
-            WHERE d.definition_vi IS NULL OR d.definition_vi = ''
-            ORDER BY (w.cefr_level IS NULL), d.id;
+            WHERE d.definition_vi IS NULL OR d.definition_vi = '';
         """)
-        priority_definitions = cursor.fetchall()
-        cursor.execute("SELECT id, phrase FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '';")
-        priority_collocations = cursor.fetchall()
-        cursor.execute("SELECT id, definition_en FROM phrases WHERE definition_vi IS NULL OR definition_vi = '';")
-        priority_phrases = cursor.fetchall()
+        row = cursor.fetchone()
+        defs_count = row[0] if isinstance(row, (list, tuple)) and row else (row if isinstance(row, int) and not isinstance(row, bool) else 0)
 
-        translator = Translator()
-        validator = VietnameseTextValidator()
+        cursor.execute("SELECT count(*) FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '';")
+        row = cursor.fetchone()
+        colloc_count = row[0] if isinstance(row, (list, tuple)) and row else (row if isinstance(row, int) and not isinstance(row, bool) else 0)
+
+        cursor.execute("SELECT count(*) FROM phrases WHERE definition_vi IS NULL OR definition_vi = '';")
+        row = cursor.fetchone()
+        phrase_count = row[0] if isinstance(row, (list, tuple)) and row else (row if isinstance(row, int) and not isinstance(row, bool) else 0)
+
         budget = getattr(context.args, "vi_budget", VI_TRANSLATION_BUDGET)
 
         colloc_budget = 0
@@ -78,11 +100,43 @@ class VietnameseBackfillStep(BaseStep):
         defs_budget = 0
         if budget >= 3:
             small_table_slice = max(1, budget // 10)
-            colloc_budget = min(len(priority_collocations), small_table_slice)
-            phrase_budget = min(len(priority_phrases), small_table_slice)
+            colloc_budget = min(colloc_count, small_table_slice)
+            phrase_budget = min(phrase_count, small_table_slice)
             defs_budget = max(0, budget - colloc_budget - phrase_budget)
         elif budget > 0:
-            colloc_budget = min(len(priority_collocations), budget)
+            colloc_budget = min(colloc_count, budget)
+
+        priority_definitions = []
+        if defs_budget > 0:
+            cursor.execute("""
+                SELECT d.id, d.definition_en FROM definitions d
+                JOIN words w ON w.id = d.word_id
+                WHERE d.definition_vi IS NULL OR d.definition_vi = ''
+                ORDER BY (w.cefr_level IS NULL), d.id
+                LIMIT ?;
+            """, (defs_budget,))
+            priority_definitions = cursor.fetchall()
+
+        priority_collocations = []
+        if colloc_budget > 0:
+            cursor.execute("""
+                SELECT id, phrase FROM collocations
+                WHERE meaning_vi IS NULL OR meaning_vi = ''
+                LIMIT ?;
+            """, (colloc_budget,))
+            priority_collocations = cursor.fetchall()
+
+        priority_phrases = []
+        if phrase_budget > 0:
+            cursor.execute("""
+                SELECT id, definition_en FROM phrases
+                WHERE definition_vi IS NULL OR definition_vi = ''
+                LIMIT ?;
+            """, (phrase_budget,))
+            priority_phrases = cursor.fetchall()
+
+        translator = Translator()
+        validator = VietnameseTextValidator()
 
         def _backfill(rows, table, id_col, target_col, remaining_budget):
             updated = 0

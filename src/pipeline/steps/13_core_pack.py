@@ -27,7 +27,10 @@ class CorePackStep(BaseStep):
             raise RuntimeError("SUBTLEX frequency dictionary is empty or unavailable")
 
         pack_dir = OUTPUT_DIR / "core_pack"
-        builder = CorePackBuilder(source_db_path=EXPORT_SQLITE_PATH, output_dir=pack_dir)
+        source_db = context.db_manager.db_path if (context and getattr(context, "db_manager", None) and hasattr(context.db_manager, "db_path")) else EXPORT_SQLITE_PATH
+        builder = CorePackBuilder(source_db_path=source_db, output_dir=pack_dir)
+        if getattr(context.args, "force_reset", False):
+            builder.reset()
         vi_budget = getattr(context.args, "vi_budget", 1000)
         report = builder.build(freq_dict=freq_dict, ngsl_path=NGSL_PATH, vi_budget=vi_budget)
 

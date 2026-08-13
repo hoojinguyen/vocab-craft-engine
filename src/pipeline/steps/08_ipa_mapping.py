@@ -30,14 +30,19 @@ class IPAMappingStep(BaseStep):
         logger.info("[Step 8] Mapping UK/US IPA transcriptions...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, lemma, ipa_uk, ipa_us FROM words WHERE COALESCE(TRIM(ipa_us), '') = '' OR COALESCE(TRIM(ipa_uk), '') = '';")
+        force_reset = getattr(context.args, "force_reset", False)
+
+        if force_reset:
+            cursor.execute("SELECT id, lemma, ipa_uk, ipa_us FROM words;")
+        else:
+            cursor.execute("SELECT id, lemma, ipa_uk, ipa_us FROM words WHERE COALESCE(TRIM(ipa_us), '') = '' OR COALESCE(TRIM(ipa_uk), '') = '';")
         rows = cursor.fetchall()
 
         ipa_mapper = IPAMapper()
         updated = 0
         for w_id, lemma, existing_uk, existing_us in rows:
-            uk = ipa_mapper.get_ipa(lemma, existing_ipa=existing_uk)
-            us = ipa_mapper.get_ipa(lemma, existing_ipa=existing_us)
+            uk = ipa_mapper.get_ipa(lemma, existing_ipa=None if force_reset else existing_uk)
+            us = ipa_mapper.get_ipa(lemma, existing_ipa=None if force_reset else existing_us)
             cursor.execute("UPDATE words SET ipa_uk = ?, ipa_us = ? WHERE id = ?;", (uk, us, w_id))
             updated += 1
 

@@ -5,7 +5,7 @@ from typing import Tuple
 from src.pipeline.core.base_step import BaseStep
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.result import StepResult, StepStatus
-from config.settings import KAIKKI_JSON_PATH, SUBTLEX_FREQ_PATH, AUDIO_DIR
+from config.settings import KAIKKI_JSON_PATH, SUBTLEX_FREQ_PATH, AUDIO_DIR, PROCESSED_DATA_DIR
 from src.ingestion.phrase_parser import PhraseParser
 from src.nlp.cefr_grader import CEFRGrader
 from src.nlp.phrase_grader import PhraseGrader
@@ -31,6 +31,10 @@ def _audio_file_valid(path_str) -> bool:
     return False
 
 
+CEFR_ORDER = {"A1": 1, "A2": 2, "B1": 3, "B2": 4, "C1": 5, "C2": 6}
+MAX_EXAMPLES_PER_PHRASE = 5
+
+
 class PhraseMWEStep(BaseStep):
     name = "phrase_mwe"
     description = "Ingest Multi-Word Expressions (idioms, phrasal verbs, proverbs)"
@@ -39,6 +43,9 @@ class PhraseMWEStep(BaseStep):
         if getattr(context.args, "force_reset", False):
             return False, ""
         try:
+            phrase_ingest_checkpoint = PROCESSED_DATA_DIR / ".phrase_ingest_done"
+            if not phrase_ingest_checkpoint.exists():
+                return False, ""
             conn = context.db_manager.get_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT count(*) FROM phrases;")
@@ -67,8 +74,15 @@ class PhraseMWEStep(BaseStep):
         row = cursor.fetchone()
         existing_phrases = row[0] if (row and isinstance(row[0], (int, float))) else 0
 
-        if existing_phrases > 500:
-            logger.info("   [Step 10] Found %d existing phrases (>500), skipping Kaikki file parsing.", existing_phrases)
+        phrase_ingest_checkpoint = PROCESSED_DATA_DIR / ".phrase_ingest_done"
+        if getattr(context.args, "force_reset", False) and phrase_ingest_checkpoint.exists():
+            try:
+                phrase_ingest_checkpoint.unlink()
+            except Exception:
+                pass
+
+        if phrase_ingest_checkpoint.exists() and existing_phrases > 0:
+            logger.info("   [Step 10] Found phrase ingestion checkpoint (%d phrases), skipping Kaikki file parsing.", existing_phrases)
             phrase_count = existing_phrases
         else:
             phrase_parser = PhraseParser(KAIKKI_JSON_PATH)
@@ -104,25 +118,45 @@ class PhraseMWEStep(BaseStep):
 
             if hasattr(translator, "save_cache"):
                 translator.save_cache()
-
-        cursor.execute("SELECT id, text_en, cefr_level FROM sentences;")
-        sentence_pool = []
-        while True:
-            rows = cursor.fetchmany(10000)
-            if not isinstance(rows, (list, tuple)):
-                rows = cursor.fetchall()
-                if isinstance(rows, (list, tuple)):
-                    sentence_pool.extend([{"id": r[0], "text_en": r[1], "cefr_level": r[2]} for r in rows])
-                break
-            if not rows:
-                break
-            sentence_pool.extend([{"id": r[0], "text_en": r[1], "cefr_level": r[2]} for r in rows])
-
-        matcher = PhraseExampleMatcher(sentence_pool)
+            try:
+                phrase_ingest_checkpoint.touch()
+            except Exception:
+                pass
 
         cursor.execute("SELECT id, phrase FROM phrases;")
         stored_phrases = [{"id": r[0], "phrase": r[1]} for r in cursor.fetchall()]
-        link_batch = matcher.match_phrases(stored_phrases)
+
+        phrase_candidates = {p["id"]: [] for p in stored_phrases}
+
+        cursor.execute("SELECT id, text_en, cefr_level FROM sentences;")
+        while True:
+            rows = cursor.fetchmany(10000)
+            if not isinstance(rows, (list, tuple)) or not rows:
+                break
+            sentence_batch = [{"id": r[0], "text_en": r[1], "cefr_level": r[2]} for r in rows]
+            matcher = PhraseExampleMatcher(sentence_batch)
+            batch_links = matcher.match_phrases(stored_phrases)
+            if batch_links:
+                for link in batch_links:
+                    p_id = link["phrase_id"]
+                    s_id = link["sentence_id"]
+                    sent_item = next((s for s in sentence_batch if s["id"] == s_id), None)
+                    if sent_item and p_id in phrase_candidates:
+                        phrase_candidates[p_id].append(sent_item)
+
+        link_batch = []
+        for p_id, candidates in phrase_candidates.items():
+            candidates.sort(key=lambda s: CEFR_ORDER.get(s.get("cefr_level"), 2))
+            seen = set()
+            rank = 1
+            for s in candidates:
+                if s["id"] not in seen:
+                    seen.add(s["id"])
+                    link_batch.append({"phrase_id": p_id, "sentence_id": s["id"], "rank": rank})
+                    rank += 1
+                    if rank > MAX_EXAMPLES_PER_PHRASE:
+                        break
+
         for i in range(0, len(link_batch), 5000):
             context.db_manager.insert_phrase_sentences_batch(link_batch[i:i + 5000])
 

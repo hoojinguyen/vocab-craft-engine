@@ -48,18 +48,19 @@ def test_audio_generation_run_success():
 
     with patch.object(mod_09, "AudioGenerator") as mock_gen_cls:
         mock_gen = mock_gen_cls.return_value
-        
+        mock_file = MagicMock()
+        mock_file.exists.return_value = False
+        mock_gen.output_dir.__truediv__.return_value = mock_file
+
         async def dummy_gen(s_id, t_en):
             return {"standard_path": f"std_{s_id}.mp3", "fast_path": f"fast_{s_id}.mp3"}
-        
+
         mock_gen.generate_dual_speed_sentence.side_effect = dummy_gen
 
         res = step.run(ctx)
         assert res.status == StepStatus.SUCCESS
         assert res.items_processed == 2
-        # Verify sentences.audio_path was updated
-        executed_sqls = [call[0][0] for call in mock_cursor.execute.call_args_list]
-        assert any("UPDATE sentences SET audio_path" in sql for sql in executed_sqls)
+        mock_cursor.executemany.assert_called_once()
 
 
 def test_audio_generation_run_missing_dual_path():
@@ -77,10 +78,13 @@ def test_audio_generation_run_missing_dual_path():
 
     with patch.object(mod_09, "AudioGenerator") as mock_gen_cls:
         mock_gen = mock_gen_cls.return_value
-        
+        mock_file = MagicMock()
+        mock_file.exists.return_value = False
+        mock_gen.output_dir.__truediv__.return_value = mock_file
+
         async def dummy_gen_missing(s_id, t_en):
             return {"standard_path": f"std_{s_id}.mp3", "fast_path": None}
-        
+
         mock_gen.generate_dual_speed_sentence.side_effect = dummy_gen_missing
 
         with pytest.raises(RuntimeError, match="Audio generation missing standard or fast path"):
@@ -115,22 +119,27 @@ def test_phrase_mwe_skip_condition():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    # existing_phrases = 600, missing_audio = 0
-    mock_cursor.fetchone.side_effect = [(600,), (0,)]
+    mock_cursor.fetchone.side_effect = [(600,)]
+    mock_cursor.fetchall.return_value = [("std.mp3", "fast.mp3")]
 
     mock_args = MagicMock()
     mock_args.force_reset = False
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
     step = PhraseMWEStep()
 
-    skip, reason = step.should_skip(ctx)
-    assert skip
-    assert "CHECKPOINT DETECTED" in reason
+    with patch.object(mod_10, "PROCESSED_DATA_DIR") as mock_dir, \
+         patch.object(mod_10, "_audio_file_valid", return_value=True):
+        mock_chk = MagicMock()
+        mock_chk.exists.return_value = True
+        mock_dir.__truediv__.return_value = mock_chk
 
-    # Force reset overrides skip
-    mock_args.force_reset = True
-    skip, _ = step.should_skip(ctx)
-    assert not skip
+        skip, reason = step.should_skip(ctx)
+        assert skip
+        assert "CHECKPOINT DETECTED" in reason
+
+        mock_args.force_reset = True
+        skip, _ = step.should_skip(ctx)
+        assert not skip
 
 
 def test_phrase_mwe_run():
@@ -140,17 +149,15 @@ def test_phrase_mwe_run():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
     mock_cursor.fetchone.return_value = (0,)
-    mock_cursor.fetchmany.return_value = []
+    mock_cursor.fetchmany.side_effect = [[(1, "Kick the bucket", "A1")], []]
     mock_db.insert_phrases_batch.return_value = 1
     mock_db.insert_phrase_sentences_batch.return_value = 1
 
-    # fetchall for sentences and phrases
-    mock_cursor.fetchall.side_effect = [
-        [(1, "Kick the bucket", "A1")],  # sentence pool
-        [(101, "kick the bucket")]       # stored phrases
-    ]
+    # fetchall for stored phrases
+    mock_cursor.fetchall.return_value = [(101, "kick the bucket")]
 
     mock_args = MagicMock()
+    mock_args.force_reset = False
     ctx = PipelineContext(db_manager=mock_db, args=mock_args)
     step = PhraseMWEStep()
 
@@ -168,7 +175,7 @@ def test_phrase_mwe_run():
          patch.object(mod_10, "Translator") as mock_translator_cls, \
          patch.object(mod_10, "PhraseExampleMatcher") as mock_matcher_cls, \
          patch.object(mod_10, "AudioGenerator") as mock_audio_cls:
-        
+
         mock_parser = mock_parser_cls.return_value
         mock_parser.parse_phrases.return_value = [mock_phrase_item]
 
@@ -179,8 +186,10 @@ def test_phrase_mwe_run():
         mock_matcher.match_phrases.return_value = [{"phrase_id": 101, "sentence_id": 1}]
 
         mock_audio = mock_audio_cls.return_value
+
         async def dummy_phrase_audio(p_id, text):
             return {"standard_path": "/tmp/std.mp3", "fast_path": "/tmp/fast.mp3"}
+
         mock_audio.generate_dual_speed_phrase.side_effect = dummy_phrase_audio
 
         res = step.run(ctx)
@@ -201,7 +210,6 @@ def test_relations_topics_skip_condition():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    # relations = 60000, topics = 1500, inverse = 5000, natural_hypernyms = 5000
     mock_cursor.fetchone.side_effect = [(60000,), (1500,), (5000,), (5000,)]
 
     mock_args = MagicMock()
@@ -227,10 +235,9 @@ def test_relations_topics_run():
     mock_db.insert_word_relations_batch.return_value = 1
     mock_db.insert_word_topics_batch.return_value = 1
 
-    # cursor.fetchall for lemma_map then natural_hypernyms
     mock_cursor.fetchall.side_effect = [
         [(1, "dog"), (2, "canine")],  # words
-        [(1, "dog", 2, "kaikki")]     # natural hypernyms (dog -> hypernym -> canine)
+        [(1, "dog", 2, "kaikki")]     # natural hypernyms
     ]
 
     mock_args = MagicMock()
@@ -250,7 +257,7 @@ def test_relations_topics_run():
         res = step.run(ctx)
 
         assert res.status == StepStatus.SUCCESS
-        assert res.items_processed == 3  # 1 relation + 1 topic + 1 inverse relation
+        assert res.items_processed == 3
         mock_db.insert_word_relations_batch.assert_called()
         mock_db.insert_word_topics_batch.assert_called()
 
@@ -266,8 +273,8 @@ def test_vietnamese_backfill_skip_condition():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    # def_missing = 0, col_missing = 0, phrase_missing = 0
     mock_cursor.fetchone.side_effect = [(0,), (0,), (0,)]
+    mock_cursor.fetchall.return_value = []
 
     mock_args = MagicMock()
     mock_args.force_reset = False
@@ -290,8 +297,9 @@ def test_vietnamese_backfill_run():
     mock_db.get_connection.return_value = mock_conn
     mock_conn.cursor.return_value = mock_cursor
 
-    # priority definitions, priority collocations, priority phrases
+    mock_cursor.fetchone.side_effect = [1, 1, 1]
     mock_cursor.fetchall.side_effect = [
+        [], [], [],  # _cleanup_passthrough queries (bad defs, bad colls, bad phrases)
         [(10, "a domesticated canine")],  # defs
         [(20, "barking dog")],            # colls
         [(30, "top dog")]                 # phrases
@@ -305,7 +313,7 @@ def test_vietnamese_backfill_run():
     with patch.object(mod_12, "Translator") as mock_trans_cls, \
          patch.object(mod_12, "VietnameseTextValidator") as mock_val_cls, \
          patch.object(mod_12, "time"):
-        
+
         mock_trans = mock_trans_cls.return_value
         mock_trans.translate_text.side_effect = lambda txt: f"Dịch: {txt}"
 

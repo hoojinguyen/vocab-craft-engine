@@ -11,6 +11,12 @@ from src.nlp.translator import Translator
 
 logger = logging.getLogger(__name__)
 
+EXPECTED_PATTERN_NAMES = {
+    "Subject + Verb + Object",
+    "Subject + Verb + Prepositional Phrase",
+    "Subject + Auxiliary + Verb + Object"
+}
+
 
 class NLPEnrichmentStep(BaseStep):
     name = "nlp_enrichment"
@@ -24,9 +30,9 @@ class NLPEnrichmentStep(BaseStep):
             cursor = conn.cursor()
             cursor.execute("SELECT count(*) FROM collocations;")
             existing_collocs = cursor.fetchone()[0]
-            cursor.execute("SELECT count(*) FROM sentence_patterns;")
-            existing_patterns = cursor.fetchone()[0]
-            if existing_collocs > 500 and existing_patterns > 0:
+            cursor.execute("SELECT pattern_name FROM sentence_patterns;")
+            existing_patterns = {row[0] for row in cursor.fetchall()}
+            if existing_collocs > 500 and EXPECTED_PATTERN_NAMES.issubset(existing_patterns):
                 return True, f"CHECKPOINT DETECTED: {existing_collocs:,} collocations exist."
         except Exception:
             pass
@@ -44,6 +50,7 @@ class NLPEnrichmentStep(BaseStep):
         translator = Translator()
 
         colloc_batch = []
+        colloc_inserted = 0
         seen_phrases = set()
         for s_id, text_en in all_sentences:
             chunks = chunk_extractor.extract_collocations(text_en)
@@ -56,21 +63,18 @@ class NLPEnrichmentStep(BaseStep):
                         "phrase": phrase,
                         "meaning_vi": translator.translate_text(phrase),
                         "pos_pattern": chunk["pos_pattern"],
-                        "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2") else "B1"
+                        "cefr_level": c_level if c_level in ("A1", "A2", "B1", "B2", "C1", "C2") else "B1"
                     })
 
                 if len(colloc_batch) >= 1000:
-                    context.db_manager.insert_collocations_batch(colloc_batch)
+                    colloc_inserted += context.db_manager.insert_collocations_batch(colloc_batch)
                     colloc_batch = []
 
         if colloc_batch:
-            context.db_manager.insert_collocations_batch(colloc_batch)
+            colloc_inserted += context.db_manager.insert_collocations_batch(colloc_batch)
 
         if hasattr(translator, "save_cache"):
             translator.save_cache()
-
-        cursor.execute("SELECT count(*) FROM collocations;")
-        colloc_count = cursor.fetchone()[0]
 
         patterns = [
             {"pattern_name": "Subject + Verb + Object", "structure_json": json.dumps(["NP", "VP", "NP"]), "example_en": "She drinks hot coffee.", "example_vi": "Cô ấy uống cà phê nóng.", "cefr_level": "A1"},
@@ -79,5 +83,5 @@ class NLPEnrichmentStep(BaseStep):
         ]
         patterns_count = context.db_manager.insert_sentence_patterns_batch(patterns)
 
-        logger.info("[Step 5] Completed: %s collocations, %s sentence patterns.", f"{colloc_count:,}", patterns_count)
-        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=colloc_count + patterns_count)
+        logger.info("[Step 5] Completed: %s collocations, %s sentence patterns.", f"{colloc_inserted:,}", patterns_count)
+        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=colloc_inserted + patterns_count)

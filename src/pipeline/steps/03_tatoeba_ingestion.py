@@ -3,7 +3,7 @@ from typing import Tuple
 from src.pipeline.core.base_step import BaseStep
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.result import StepResult, StepStatus
-from config.settings import TATOEBA_SENTENCES_PATH, TATOEBA_LINKS_PATH, SUBTLEX_FREQ_PATH
+from config.settings import TATOEBA_SENTENCES_PATH, TATOEBA_LINKS_PATH, SUBTLEX_FREQ_PATH, TATOEBA_INGEST_CHECKPOINT
 from src.ingestion.tatoeba_parser import TatoebaParser
 from src.nlp.cefr_grader import CEFRGrader
 
@@ -16,15 +16,17 @@ class TatoebaIngestionStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        try:
-            conn = context.db_manager.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT count(*) FROM sentences WHERE source = 'Tatoeba';")
-            existing_sentences = cursor.fetchone()[0]
-            if existing_sentences > 1000:
-                return True, f"CHECKPOINT DETECTED: {existing_sentences:,} Tatoeba sentence pairs exist."
-        except Exception:
-            pass
+        if TATOEBA_INGEST_CHECKPOINT.exists():
+            try:
+                conn = context.db_manager.get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT count(*) FROM sentences WHERE source = 'Tatoeba';")
+                row = cursor.fetchone()
+                existing_sentences = row[0] if row else 0
+                if existing_sentences > 1000:
+                    return True, f"CHECKPOINT DETECTED: {existing_sentences:,} Tatoeba sentence pairs exist."
+            except Exception:
+                pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
@@ -55,6 +57,9 @@ class TatoebaIngestionStep(BaseStep):
             inserted = context.db_manager.insert_sentences_batch(sentences_batch)
             sent_count += inserted if isinstance(inserted, int) else len(sentences_batch)
             sentences_batch = []
+
+        TATOEBA_INGEST_CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+        TATOEBA_INGEST_CHECKPOINT.touch()
 
         logger.info("[Step 3] Completed: %s sentence pairs stored.", f"{sent_count:,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=sent_count)

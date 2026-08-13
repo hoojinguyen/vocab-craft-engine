@@ -17,12 +17,10 @@ class PipelineOrchestrator:
         self.state_manager = StateManager(state_file=state_file)
 
     def run(self, context: PipelineContext) -> PipelineSummary:
-        start_time = time.time()
+        start_time = time.monotonic()
         results: List[StepResult] = []
 
         dry_run = getattr(context.args, "dry_run", False)
-        if not dry_run:
-            self.state_manager.clear_state()
 
         include_steps = getattr(context.args, "steps", None)
         if isinstance(include_steps, str):
@@ -34,6 +32,8 @@ class PipelineOrchestrator:
 
         steps_to_run = self.registry.filter_steps(include_steps=include_steps, skip_steps=skip_steps)
 
+        if not dry_run:
+            self.state_manager.clear_state()
 
         logger.info("==========================================================")
         logger.info("   STARTING VOCAB CRAFT ENGINE PIPELINE EXECUTION        ")
@@ -41,11 +41,14 @@ class PipelineOrchestrator:
 
         has_failures = False
         for step in steps_to_run:
-            step_start = time.time()
+            step_start = time.monotonic()
             try:
-                skip, reason = step.should_skip(context)
-
                 if dry_run:
+                    if not context.db_manager.db_path.exists():
+                        skip, reason = False, "Database does not exist"
+                    else:
+                        skip, reason = step.should_skip(context)
+
                     msg = f"[DRY-RUN] Would run '{step.name}' ({step.description}). Dry-run mode. Skip status: {skip} ({reason})"
                     logger.info(msg)
                     res = StepResult(
@@ -56,6 +59,8 @@ class PipelineOrchestrator:
                     )
                     results.append(res)
                     continue
+
+                skip, reason = step.should_skip(context)
 
                 if skip:
                     logger.info("[%s] SKIPPED: %s", step.name, reason)
@@ -70,7 +75,7 @@ class PipelineOrchestrator:
 
                 logger.info("[%s] Running: %s...", step.name, step.description)
                 res = step.run(context)
-                duration = round(time.time() - step_start, 2)
+                duration = round(time.monotonic() - step_start, 2)
                 res.execution_time_seconds = duration
                 results.append(res)
 
@@ -88,7 +93,7 @@ class PipelineOrchestrator:
                     break
 
             except Exception as e:
-                duration = round(time.time() - step_start, 2)
+                duration = round(time.monotonic() - step_start, 2)
                 logger.error("[%s] FAILED after %ss: %s", step.name, duration, e, exc_info=True)
                 try:
                     step.rollback(context)
@@ -109,7 +114,7 @@ class PipelineOrchestrator:
                 has_failures = True
                 break
 
-        total_time = round(time.time() - start_time, 2)
+        total_time = round(time.monotonic() - start_time, 2)
         self._print_summary(results, total_time)
         return PipelineSummary(total_time_seconds=total_time, results=results, has_failures=has_failures)
 
