@@ -1,5 +1,5 @@
-"""
-Main Execution Pipeline for English Dataset System Engine.
+"""Main Execution Pipeline for English Dataset System Engine.
+
 Orchestrates DAG-based Parallel Execution with DuckDB Staging.
 """
 
@@ -13,6 +13,7 @@ from src.pipeline.cli import REQUIRED_RAW_FILES, get_missing_raw_files, parse_ar
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.orchestrator import PipelineOrchestrator
 from src.pipeline.core.registry import get_default_registry
+from src.pipeline.core.state_manager import StateManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,18 +23,52 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def handle_status(db_manager: DuckDBManager):
+    conn = db_manager.get_connection()
+    rows = conn.execute("SELECT step_name, status, items_processed, execution_time_seconds, updated_at FROM _pipeline_meta").fetchall()
+    print("\n=== PIPELINE STEP STATUS ===")
+    print(f"{'STEP NAME':<25} {'STATUS':<12} {'ITEMS':<10} {'TIME (s)':<10} {'UPDATED AT'}")
+    print("-" * 75)
+    for r in rows:
+        print(f"{r[0]:<25} {r[1]:<12} {r[2]:<10} {r[3]:<10.2f} {r[4]}")
+    print()
+
+
+def handle_reset(db_manager: DuckDBManager, step_name: str | None = None, reset_all: bool = False):
+    state_mgr = StateManager(db_manager)
+    registry = get_default_registry()
+    dag = orchestrator = PipelineOrchestrator(registry=registry).dag
+
+    if reset_all:
+        conn = db_manager.get_connection()
+        conn.execute("DELETE FROM _pipeline_meta")
+        logger.info("Reset all step execution metadata.")
+    elif step_name and dag:
+        state_mgr.invalidate_step(step_name, dag)
+        logger.info("Invalidated step '%s' and downstream dependencies.", step_name)
+
+
 def main():
     args = parse_arguments()
-    missing_raw = get_missing_raw_files(REQUIRED_RAW_FILES)
-    if missing_raw:
-        logger.info("Raw data files missing: %s", [str(p) for p in missing_raw])
-        logger.info("Raw data files check/download in progress...")
-        download_all_raw_data()
 
     db_manager = DuckDBManager(db_path=STAGING_DUCKDB_PATH)
     db_manager.init_schema()
 
     try:
+        if getattr(args, "command", None) == "status":
+            handle_status(db_manager)
+            return
+
+        if getattr(args, "command", None) == "reset":
+            handle_reset(db_manager, step_name=getattr(args, "step", None), reset_all=getattr(args, "all", False))
+            return
+
+        missing_raw = get_missing_raw_files(REQUIRED_RAW_FILES)
+        if missing_raw:
+            logger.info("Raw data files missing: %s", [str(p) for p in missing_raw])
+            logger.info("Raw data files check/download in progress...")
+            download_all_raw_data()
+
         context = PipelineContext(db_manager=db_manager, args=args)
         registry = get_default_registry()
         orchestrator = PipelineOrchestrator(registry=registry)

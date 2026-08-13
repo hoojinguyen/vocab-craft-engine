@@ -37,6 +37,22 @@ def get_missing_raw_files(paths) -> list:
 
 def parse_arguments(args_list: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Vocab Craft Engine Pipeline Runner (DAG V2)")
+
+    subparsers = parser.add_subparsers(dest="command", help="Subcommands")
+
+    # status subcommand
+    subparsers.add_parser("status", help="Show pipeline steps execution status")
+
+    # reset subcommand
+    reset_parser = subparsers.add_parser("reset", help="Reset step execution state")
+    reset_parser.add_argument("--step", type=str, help="Specific step to reset")
+    reset_parser.add_argument("--all", action="store_true", help="Reset all steps")
+
+    # export subcommand
+    export_parser = subparsers.add_parser("export", help="Export dataset")
+    export_parser.add_argument("--format", type=str, choices=["sqlite", "json", "core3000"], default="sqlite", help="Target export format")
+
+    # Root flags
     parser.add_argument("--steps", type=str, help="Comma-separated step names to execute.")
     parser.add_argument("--skip-steps", type=str, help="Comma-separated step names to skip.")
     parser.add_argument("--force-step", type=str, help="Force re-execution of specific step(s).")
@@ -52,4 +68,5 @@ def parse_arguments(args_list: Optional[List[str]] = None):
     parser.add_argument("--no-tui", action="store_false", dest="tui", default=True, help="Disable Rich Terminal UI dashboard.")
     parser.add_argument("--max-retries", type=int, default=3, help="Maximum auto-retries per step (default: 3).")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store file logs and JSON reports.")
+
     return parser.parse_args(args_list)
