@@ -8,6 +8,9 @@ from src.db.duckdb_manager import DuckDBManager
 logger = logging.getLogger(__name__)
 
 
+OPUS_BATCH_SIZE = 20000
+
+
 class OpusIngestor:
     def ingest_pair(self, db_mgr: DuckDBManager, en_path: Path, vi_path: Path, source: str) -> int:
         if not en_path.exists() or not vi_path.exists():
@@ -29,7 +32,7 @@ class OpusIngestor:
                 batch.append({"text_en": en_text, "text_vi": vi_text, "source": source})
                 count += 1
 
-                if len(batch) >= 5000:
+                if len(batch) >= OPUS_BATCH_SIZE:
                     db_mgr.insert_batch("sentences", batch)
                     batch.clear()
 

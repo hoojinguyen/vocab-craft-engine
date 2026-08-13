@@ -10,6 +10,8 @@ from src.ingestion.base_ingestor import BaseIngestor
 
 logger = logging.getLogger(__name__)
 
+KAIKKI_BATCH_SIZE = 20000
+
 
 class KaikkiIngestor(BaseIngestor):
     def ingest(self, db_mgr: DuckDBManager, source_path: Path) -> int:
@@ -76,12 +78,12 @@ class KaikkiIngestor(BaseIngestor):
                         "source": "kaikki",
                     })
 
-                if len(words_batch) >= 2000:
+                if len(words_batch) >= KAIKKI_BATCH_SIZE:
                     db_mgr.insert_batch("words", words_batch)
                     word_count += len(words_batch)
                     words_batch.clear()
 
-                if len(defs_batch) >= 2000:
+                if len(defs_batch) >= KAIKKI_BATCH_SIZE:
                     db_mgr.insert_batch("definitions", defs_batch)
                     defs_batch.clear()
 
