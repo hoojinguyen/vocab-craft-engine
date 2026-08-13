@@ -12,6 +12,9 @@ AudioGenerationStep = importlib.import_module("src.pipeline.steps.09_audio_gener
 PhraseMWEStep = importlib.import_module("src.pipeline.steps.10_phrase_mwe").PhraseMWEStep
 RelationsTopicsStep = importlib.import_module("src.pipeline.steps.11_relations_topics").RelationsTopicsStep
 VietnameseBackfillStep = importlib.import_module("src.pipeline.steps.12_vietnamese_backfill").VietnameseBackfillStep
+CorePackStep = importlib.import_module("src.pipeline.steps.13_core_pack").CorePackStep
+SentenceCoverageStep = importlib.import_module("src.pipeline.steps.14_sentence_coverage").SentenceCoverageStep
+SQLiteExportStep = importlib.import_module("src.pipeline.steps.15_sqlite_export").SQLiteExportStep
 
 __all__ = [
     "SchemaInitStep",
@@ -26,5 +29,7 @@ __all__ = [
     "PhraseMWEStep",
     "RelationsTopicsStep",
     "VietnameseBackfillStep",
+    "CorePackStep",
+    "SentenceCoverageStep",
+    "SQLiteExportStep",
 ]
-
