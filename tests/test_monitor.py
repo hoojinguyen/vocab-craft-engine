@@ -191,3 +191,41 @@ def test_dashboard_start_and_stop_with_tty(monkeypatch):
     assert dash.is_active is False
 
 
+def test_dashboard_logging_redirection(monkeypatch):
+    import logging
+    from rich.console import Console
+    from src.pipeline.monitor.dashboard import RichPipelineDashboard
+
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    root_logger = logging.getLogger()
+    orig_level = root_logger.level
+    root_logger.setLevel(logging.INFO)
+
+    stream_handler = logging.StreamHandler()
+    root_logger.addHandler(stream_handler)
+
+    dash = RichPipelineDashboard(enabled=True)
+    dash.set_steps(["step_1"])
+    dash.start()
+
+    # Verify stream_handler was removed, and DashboardLoggingHandler was added
+    assert stream_handler not in root_logger.handlers
+    assert dash.dashboard_handler in root_logger.handlers
+
+    # Log a message and verify it was added to dashboard's buffer
+    logging.getLogger("test_logger").info("Hello dashboard log redirection!")
+    assert any("Hello dashboard log redirection!" in log for log in dash.logs_buffer)
+
+    # Stop dashboard and verify original state is restored
+    dash.stop()
+    assert stream_handler in root_logger.handlers
+    assert dash.dashboard_handler not in root_logger.handlers
+
+    # Cleanup the test-added stream_handler and restore level
+    root_logger.removeHandler(stream_handler)
+    root_logger.setLevel(orig_level)
+
+
+
+
