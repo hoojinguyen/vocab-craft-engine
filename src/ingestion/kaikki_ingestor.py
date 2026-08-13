@@ -78,14 +78,14 @@ class KaikkiIngestor(BaseIngestor):
                         "source": "kaikki",
                     })
 
-                if len(words_batch) >= KAIKKI_BATCH_SIZE:
-                    db_mgr.insert_batch("words", words_batch)
-                    word_count += len(words_batch)
-                    words_batch.clear()
-
-                if len(defs_batch) >= KAIKKI_BATCH_SIZE:
-                    db_mgr.insert_batch("definitions", defs_batch)
-                    defs_batch.clear()
+                if len(words_batch) >= KAIKKI_BATCH_SIZE or len(defs_batch) >= KAIKKI_BATCH_SIZE:
+                    if words_batch:
+                        db_mgr.insert_batch("words", words_batch)
+                        word_count += len(words_batch)
+                        words_batch.clear()
+                    if defs_batch:
+                        db_mgr.insert_batch("definitions", defs_batch)
+                        defs_batch.clear()
 
         if words_batch:
             db_mgr.insert_batch("words", words_batch)

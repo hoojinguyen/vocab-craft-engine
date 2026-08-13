@@ -41,6 +41,26 @@ def test_kaikki_ingestor_parses_json_lines(db_mgr, tmp_path):
     assert db_mgr.count_rows("definitions") == 2
 
 
+def test_kaikki_ingestor_foreign_key_batch_order(db_mgr, tmp_path, monkeypatch):
+    import src.ingestion.kaikki_ingestor as ka_module
+    monkeypatch.setattr(ka_module, "KAIKKI_BATCH_SIZE", 5)
+
+    sample_file = tmp_path / "kaikki_many_senses.json"
+    entry = {
+        "word": "test",
+        "pos": "noun",
+        "lang": "English",
+        "senses": [{"glosses": [f"sense {i}"]} for i in range(20)],
+    }
+    sample_file.write_text(json.dumps(entry) + "\n")
+
+    ingestor = KaikkiIngestor()
+    inserted = ingestor.ingest(db_mgr, sample_file)
+    assert inserted == 1
+    assert db_mgr.count_rows("words") == 1
+    assert db_mgr.count_rows("definitions") == 20
+
+
 def test_ingest_kaikki_step_attributes():
     step = IngestKaikkiStep()
     assert step.name == "ingest_kaikki"
