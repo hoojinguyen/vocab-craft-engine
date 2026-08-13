@@ -90,10 +90,10 @@ class PipelineOrchestrator:
 
                 try:
                     if dry_run:
-                        if hasattr(context, "db_manager") and hasattr(context.db_manager, "db_path") and not context.db_manager.db_path.exists():
-                            skip, reason = False, "Database does not exist"
-                        else:
+                        try:
                             skip, reason = step.should_skip(context)
+                        except Exception as skip_err:
+                            skip, reason = False, f"Table/DB check skipped in dry-run ({skip_err})"
 
                         msg = f"[DRY-RUN] Would run '{step.name}' ({getattr(step, 'description', '')}). Dry-run mode. Skip status: {skip} ({reason})"
                         logger.info(msg)
