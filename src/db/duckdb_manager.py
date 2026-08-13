@@ -28,6 +28,11 @@ class DuckDBManager:
     def get_connection(self) -> duckdb.DuckDBPyConnection:
         if self._conn is None:
             self._conn = duckdb.connect(str(self.db_path))
+            self._conn.execute("PRAGMA threads = 4;")
+            self._conn.execute("PRAGMA memory_limit = '4GB';")
+            temp_dir = self.db_path.parent / "duckdb_temp"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            self._conn.execute(f"PRAGMA temp_directory = '{temp_dir}';")
         return self._conn
 
     def close(self) -> None:
