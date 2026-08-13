@@ -183,6 +183,10 @@ class PipelineOrchestrator:
                     logger.info(f"=== END: {step.name}")
                     continue
 
+                # Step will run: invalidate downstream steps in state manager
+                if self.state_manager and self.dag:
+                    self.state_manager.invalidate_step(step.name, self.dag)
+
                 # Run step with retry
                 try:
                     logger.info("Running: %s...", getattr(step, "description", ""))
