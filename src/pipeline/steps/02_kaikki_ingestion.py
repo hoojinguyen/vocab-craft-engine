@@ -34,7 +34,7 @@ class KaikkiIngestionStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 2] Ingesting Kaikki Dictionary...")
+        logger.info("Ingesting Kaikki Dictionary...")
         grader = CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH)
         ipa_mapper = IPAMapper()
         kaikki_parser = KaikkiParser(KAIKKI_JSON_PATH)
@@ -126,5 +126,5 @@ class KaikkiIngestionStep(BaseStep):
         KAIKKI_INGEST_CHECKPOINT.touch()
 
         total_items = words_count + definitions_count
-        logger.info("[Step 2] Completed: %s words, %s definitions stored.", f"{words_count:,}", f"{definitions_count:,}")
+        logger.info("Completed: %s words, %s definitions stored.", f"{words_count:,}", f"{definitions_count:,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=total_items)

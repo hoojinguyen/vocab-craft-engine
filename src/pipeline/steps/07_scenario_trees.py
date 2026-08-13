@@ -27,7 +27,7 @@ class ScenarioTreesStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 7] Building Interactive Dialogue Trees...")
+        logger.info("Building Interactive Dialogue Trees...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -82,5 +82,5 @@ class ScenarioTreesStep(BaseStep):
             logger.error("Failed to build scenario trees: %s", e)
             raise e
 
-        logger.info("[Step 7] Completed: %s dialogue trees, %s nodes.", len(scenarios), nodes_count)
+        logger.info("Completed: %s dialogue trees, %s nodes.", len(scenarios), nodes_count)
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=len(scenarios))

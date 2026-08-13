@@ -21,7 +21,7 @@ class SchemaInitStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 1] Initializing SQLite Database Schema...")
+        logger.info("Initializing SQLite Database Schema...")
         if getattr(context.args, "force_reset", False):
             if context.db_manager.db_path.exists():
                 logger.info("   -> Force-reset flag active. Wiping existing database tables...")
@@ -50,5 +50,5 @@ class SchemaInitStep(BaseStep):
 
 
         context.db_manager.init_schema()
-        logger.info("[Step 1] Schema initialized successfully.")
+        logger.info("Schema initialized successfully.")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=1)

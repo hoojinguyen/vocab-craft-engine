@@ -95,8 +95,8 @@ class SentenceLinkingStep(BaseStep):
         _write_sentence_link_checkpoint(path, last_id)
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 4] Linking Word-Sentence Mappings (incremental)...")
+        logger.info("Linking Word-Sentence Mappings (incremental)...")
         linked_count = _link_sentences_incrementally(context.db_manager, SENTENCE_LINK_CHECKPOINT)
-        logger.info("[Step 4] Linked sentences to %s word links.", f"{linked_count:,}")
+        logger.info("Linked sentences to %s word links.", f"{linked_count:,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=linked_count)
 

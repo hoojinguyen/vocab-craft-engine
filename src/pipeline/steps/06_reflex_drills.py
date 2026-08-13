@@ -37,7 +37,7 @@ class ReflexDrillsStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 6] Generating Speed Reflex Drill Cards...")
+        logger.info("Generating Speed Reflex Drill Cards...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -79,5 +79,5 @@ class ReflexDrillsStep(BaseStep):
             logger.error("Failed to generate reflex drills: %s", e)
             raise e
 
-        logger.info("[Step 6] Completed: %s reflex drill cards.", f"{reflex_count:,}")
+        logger.info("Completed: %s reflex drill cards.", f"{reflex_count:,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=reflex_count)

@@ -71,7 +71,7 @@ class VietnameseBackfillStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 12] Backfilling Vietnamese translations...")
+        logger.info("Backfilling Vietnamese translations...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -171,7 +171,7 @@ class VietnameseBackfillStep(BaseStep):
         if hasattr(translator, "save_cache"):
             translator.save_cache()
 
-        logger.info("[Step 12] Completed: translated %s defs, %s colls, %s phrases.", f"{translated_defs:,}", f"{translated_colls:,}", f"{translated_phrases:,}")
+        logger.info("Completed: translated %s defs, %s colls, %s phrases.", f"{translated_defs:,}", f"{translated_colls:,}", f"{translated_phrases:,}")
         return StepResult(
             step_name=self.name,
             status=StepStatus.SUCCESS,

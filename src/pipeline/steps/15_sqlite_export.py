@@ -16,7 +16,7 @@ class SQLiteExportStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 15] Packaging & Optimizing SQLite Mobile Database...")
+        logger.info("Packaging & Optimizing SQLite Mobile Database...")
         exporter = SQLiteExporter(context.db_manager.db_path)
         export_info = exporter.optimize_and_package()
         avg_speed = exporter.benchmark_reflex_query_speed(iterations=20)

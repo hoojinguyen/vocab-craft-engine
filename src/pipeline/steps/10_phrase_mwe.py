@@ -66,7 +66,7 @@ class PhraseMWEStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 10] Ingesting Multi-Word Expressions...")
+        logger.info("Ingesting Multi-Word Expressions...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -82,7 +82,7 @@ class PhraseMWEStep(BaseStep):
                 pass
 
         if phrase_ingest_checkpoint.exists() and existing_phrases > 0:
-            logger.info("   [Step 10] Found phrase ingestion checkpoint (%d phrases), skipping Kaikki file parsing.", existing_phrases)
+            logger.info("   Found phrase ingestion checkpoint (%d phrases), skipping Kaikki file parsing.", existing_phrases)
             phrase_count = existing_phrases
         else:
             phrase_parser = PhraseParser(KAIKKI_JSON_PATH)
@@ -204,10 +204,10 @@ class PhraseMWEStep(BaseStep):
         try:
             asyncio.run(generate_phrase_audio())
         except Exception as e:
-            logger.error("   [Step 10] Phrase audio generation error: %s", e)
+            logger.error("   Phrase audio generation error: %s", e)
             return StepResult(step_name=self.name, status=StepStatus.FAILED, items_processed=phrase_count, error=e, message=str(e))
 
-        logger.info("[Step 10] Completed: %s phrases stored, %s links.", f"{phrase_count:,}", f"{len(link_batch):,}")
+        logger.info("Completed: %s phrases stored, %s links.", f"{phrase_count:,}", f"{len(link_batch):,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=phrase_count)
 
 

@@ -20,7 +20,7 @@ class CorePackStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 13] Building Core 3000 Word Pack...")
+        logger.info("Building Core 3000 Word Pack...")
         grader = CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH)
         freq_dict = dict(grader.freq_dict)
         if not freq_dict:
@@ -35,7 +35,7 @@ class CorePackStep(BaseStep):
         report = builder.build(freq_dict=freq_dict, ngsl_path=NGSL_PATH, vi_budget=vi_budget)
 
         logger.info(
-            "[Step 13] Core pack built: %s words, pass rate %.1f%%.",
+            "Core pack built: %s words, pass rate %.1f%%.",
             f"{report['selected']:,}",
             report["pass_rate"] * 100,
         )

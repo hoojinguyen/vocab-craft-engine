@@ -18,7 +18,7 @@ class AudioGenerationStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 9] Generating Physical MP3 Audio Files via Edge-TTS...")
+        logger.info("Generating Physical MP3 Audio Files via Edge-TTS...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -59,7 +59,7 @@ class AudioGenerationStep(BaseStep):
                     std_path = res.get("standard_path") if isinstance(res, dict) else None
                     fast_path = res.get("fast_path") if isinstance(res, dict) else None
                     if not std_path or not fast_path:
-                        logger.warning("   [Step 9] Audio generation missing standard or fast path for sentence %s", s_id)
+                        logger.warning("   Audio generation missing standard or fast path for sentence %s", s_id)
                         raise RuntimeError(f"Audio generation missing standard or fast path for sentence {s_id}")
 
                     rel_audio_path = f"sent_{s_id}_std.mp3"
@@ -71,8 +71,8 @@ class AudioGenerationStep(BaseStep):
 
         try:
             asyncio.run(generate_sentence_audio_files())
-            logger.info("   [Step 9] Generated physical MP3 audio files in data/audio/")
+            logger.info("   Generated physical MP3 audio files in data/audio/")
             return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=generated_count)
         except Exception as e:
-            logger.error("   [Step 9] Audio generation error: %s", e)
+            logger.error("   Audio generation error: %s", e)
             raise e

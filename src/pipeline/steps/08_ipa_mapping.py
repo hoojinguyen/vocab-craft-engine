@@ -27,7 +27,7 @@ class IPAMappingStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 8] Mapping UK/US IPA transcriptions...")
+        logger.info("Mapping UK/US IPA transcriptions...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
         force_reset = getattr(context.args, "force_reset", False)
@@ -47,5 +47,5 @@ class IPAMappingStep(BaseStep):
             updated += 1
 
         conn.commit()
-        logger.info("[Step 8] Completed: updated IPA for %s words.", f"{updated:,}")
+        logger.info("Completed: updated IPA for %s words.", f"{updated:,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=updated)

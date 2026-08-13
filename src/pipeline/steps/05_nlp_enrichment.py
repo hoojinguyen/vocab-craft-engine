@@ -39,7 +39,7 @@ class NLPEnrichmentStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 5] Running NLP Enrichment...")
+        logger.info("Running NLP Enrichment...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -83,5 +83,5 @@ class NLPEnrichmentStep(BaseStep):
         ]
         patterns_count = context.db_manager.insert_sentence_patterns_batch(patterns)
 
-        logger.info("[Step 5] Completed: %s collocations, %s sentence patterns.", f"{colloc_inserted:,}", patterns_count)
+        logger.info("Completed: %s collocations, %s sentence patterns.", f"{colloc_inserted:,}", patterns_count)
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=colloc_inserted + patterns_count)

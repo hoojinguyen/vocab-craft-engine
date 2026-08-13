@@ -42,7 +42,7 @@ class SentenceCoverageStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 14] Ingesting Sentence Coverage Parallel Corpora...")
+        logger.info("Ingesting Sentence Coverage Parallel Corpora...")
         corpora = [
             (settings.OPENSUBTITLES_EN, settings.OPENSUBTITLES_VI, "OpenSubtitles"),
             (settings.ENVICORPORA_TED_LIKE_EN, settings.ENVICORPORA_TED_LIKE_VI, "TED-EnVi"),
@@ -108,7 +108,7 @@ class SentenceCoverageStep(BaseStep):
                 batch = []
             inserted_total += corpus_inserted
 
-        logger.info("[Step 14] Completed: %s new sentences inserted.", f"{inserted_total:,}")
+        logger.info("Completed: %s new sentences inserted.", f"{inserted_total:,}")
         return StepResult(
             step_name=self.name,
             status=StepStatus.SUCCESS,

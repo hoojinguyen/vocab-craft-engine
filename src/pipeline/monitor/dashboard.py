@@ -14,17 +14,24 @@ class DashboardLoggingHandler(logging.Handler):
     def __init__(self, dashboard: "TextualPipelineDashboard"):
         super().__init__()
         self.dashboard = dashboard
-        self.setFormatter(
-            logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(message)s",
-                datefmt="%H:%M:%S"
-            )
-        )
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
-            self.dashboard.add_log(msg)
+            msg = record.getMessage()
+            time_str = time.strftime("%H:%M:%S", time.localtime(record.created))
+            level = record.levelname
+            step_idx = getattr(self.dashboard, 'current_step_idx', "?")
+            
+            if msg.startswith("=== START:"):
+                step_name = msg.replace("=== START:", "").strip()
+                formatted = f"[bold cyan]▶ STEP {step_idx}: {step_name.upper()}[/bold cyan]"
+            elif msg.startswith("=== END:"):
+                formatted = ""
+            else:
+                # Indent with spaces and remove redundant step index
+                formatted = f"   [dim]{time_str}[/dim] [{level}] {msg}"
+                
+            self.dashboard.add_log(formatted)
         except Exception:
             self.handleError(record)
 
@@ -41,6 +48,7 @@ class TextualPipelineDashboard(App):
     }
     RichLog {
         height: 1fr;
+        margin-top: 1;
     }
     """
 
@@ -54,6 +62,7 @@ class TextualPipelineDashboard(App):
         self._worker_func: Callable[[], None] | None = None
         self.start_time = time.time()
         self.logs_buffer: list[str] = []
+        self.current_step_idx: str | int = "?"
         # Ensure title reflects the parameter
         self.title = self.title_str
 

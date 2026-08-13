@@ -43,7 +43,7 @@ class RelationsTopicsStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 11] Building Lexical Relations & Topics...")
+        logger.info("Building Lexical Relations & Topics...")
         conn = context.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -113,7 +113,7 @@ class RelationsTopicsStep(BaseStep):
             inserted = context.db_manager.insert_word_relations_batch(inverse_batch)
             link_count += inserted if isinstance(inserted, int) and inserted >= 0 else 0
 
-        logger.info("[Step 11] Completed: %s relations, %s inverse links, %s topics.", f"{relation_count:,}", f"{link_count:,}", f"{topics_count:,}")
+        logger.info("Completed: %s relations, %s inverse links, %s topics.", f"{relation_count:,}", f"{link_count:,}", f"{topics_count:,}")
         return StepResult(
             step_name=self.name,
             status=StepStatus.SUCCESS,

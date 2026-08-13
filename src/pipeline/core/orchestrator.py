@@ -1,6 +1,7 @@
 import logging
 import time
 from pathlib import Path
+import re
 from typing import Any
 
 from src.pipeline.core.context import PipelineContext
@@ -96,13 +97,16 @@ class PipelineOrchestrator:
         retry_policy = RetryPolicy(max_retries=max_retries)
 
         try:
-            for step in steps_to_run:
+            for idx, step in enumerate(steps_to_run, 1):
+                self.dashboard.current_step_idx = idx
+                logger.info(f"=== START: {step.name}")
+                
                 step_start = time.monotonic()
                 self.dashboard.update_step(step.name, "RUNNING")
 
                 if resume and previous_state.get(step.name, {}).get("status") == "SUCCESS":
                     msg = "Skipped via --resume (already completed in previous run)"
-                    logger.info("[%s] %s", step.name, msg)
+                    logger.info("%s", msg)
                     prev = previous_state[step.name]
                     res = StepResult(
                         step_name=step.name,
@@ -113,6 +117,7 @@ class PipelineOrchestrator:
                     )
                     results.append(res)
                     self.dashboard.update_step(step.name, "SKIPPED", res.execution_time_seconds, res.items_processed, 0, "Resumed")
+                    logger.info(f"=== END: {step.name}")
                     continue
 
                 try:
@@ -132,23 +137,34 @@ class PipelineOrchestrator:
                         )
                         results.append(res)
                         self.dashboard.update_step(step.name, "SKIPPED", 0.0, 0, 0, "Dry-Run")
+                        logger.info(f"=== END: {step.name}")
                         continue
 
                     skip, reason = step.should_skip(context)
 
                     if skip:
-                        logger.info("[%s] SKIPPED: %s", step.name, reason)
+                        skipped_items = 0
+                        match = re.search(r'([0-9,]+)', reason)
+                        if match:
+                            try:
+                                skipped_items = int(match.group(1).replace(',', ''))
+                            except ValueError:
+                                pass
+                                
+                        logger.info("SKIPPED: %s", reason)
                         res = StepResult(
                             step_name=step.name,
                             status=StepStatus.SKIPPED,
                             execution_time_seconds=0.0,
+                            items_processed=skipped_items,
                             message=reason
                         )
                         results.append(res)
-                        self.dashboard.update_step(step.name, "SKIPPED", 0.0, 0, 0, reason)
+                        self.dashboard.update_step(step.name, "SKIPPED", 0.0, skipped_items, 0, reason)
+                        logger.info(f"=== END: {step.name}")
                         continue
 
-                    logger.info("[%s] Running: %s...", step.name, getattr(step, "description", ""))
+                    logger.info("Running: %s...", getattr(step, "description", ""))
 
                     def on_retry(attempt, total, exc):
                         self.dashboard.update_step(step.name, f"RETRY {attempt}/{total}", retries=attempt)
@@ -164,28 +180,30 @@ class PipelineOrchestrator:
                         try:
                             self.state_manager.save_step_status(step.name, "SUCCESS", res.execution_time_seconds, res.items_processed)
                         except Exception as save_err:
-                            logger.warning("[%s] Warning: Failed to save step status to state manager: %s", step.name, save_err)
+                            logger.warning("Warning: Failed to save step status to state manager: %s", save_err)
                         self.dashboard.update_step(
                             step.name, "SUCCESS", res.execution_time_seconds, res.items_processed, res.retry_count,
-                            f"valid: {res.items_processed}"
+                            f"processed: {res.items_processed}"
                         )
+                        logger.info(f"=== END: {step.name}")
                     else:
                         self.has_failures = True
                         try:
                             self.state_manager.save_step_status(step.name, "FAILED", res.execution_time_seconds, 0)
                         except Exception as save_err:
-                            logger.warning("[%s] Warning: Failed to save step status to state manager: %s", step.name, save_err)
+                            logger.warning("Warning: Failed to save step status to state manager: %s", save_err)
                         self.dashboard.update_step(step.name, "FAILED", res.execution_time_seconds, 0, res.retry_count, res.message[:20] if res.message else "")
                         if hasattr(step, "rollback"):
                             try:
                                 step.rollback(context)
                             except Exception as rb_err:
-                                logger.warning("[%s] Rollback warning: %s", step.name, rb_err)
+                                logger.warning("Rollback warning: %s", rb_err)
+                        logger.info(f"=== END: {step.name}")
                         break
 
                 except Exception as e:
                     duration = round(time.monotonic() - step_start, 2)
-                    logger.error("[%s] FAILED after %ss: %s", step.name, duration, e, exc_info=True)
+                    logger.error("FAILED after %ss: %s", duration, e, exc_info=True)
                     self.has_failures = True
                     res = StepResult(
                         step_name=step.name,
@@ -199,12 +217,13 @@ class PipelineOrchestrator:
                     try:
                         self.state_manager.save_step_status(step.name, "FAILED", duration, 0)
                     except Exception as save_err:
-                        logger.warning("[%s] Warning: Failed to save step status to state manager: %s", step.name, save_err)
+                        logger.warning("Warning: Failed to save step status to state manager: %s", save_err)
                     if hasattr(step, "rollback"):
                         try:
                             step.rollback(context)
                         except Exception as rollback_err:
-                            logger.warning("[%s] Rollback warning: %s", step.name, rollback_err)
+                            logger.warning("Rollback warning: %s", rollback_err)
+                    logger.info(f"=== END: {step.name}")
                     break
         finally:
             pass

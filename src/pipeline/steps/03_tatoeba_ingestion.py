@@ -30,7 +30,7 @@ class TatoebaIngestionStep(BaseStep):
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
-        logger.info("[Step 3] Ingesting Tatoeba Parallel Sentences...")
+        logger.info("Ingesting Tatoeba Parallel Sentences...")
         grader = CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH)
         tatoeba_parser = TatoebaParser(TATOEBA_SENTENCES_PATH, TATOEBA_LINKS_PATH)
         sentences_batch = []
@@ -61,6 +61,6 @@ class TatoebaIngestionStep(BaseStep):
         TATOEBA_INGEST_CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
         TATOEBA_INGEST_CHECKPOINT.touch()
 
-        logger.info("[Step 3] Completed: %s sentence pairs stored.", f"{sent_count:,}")
+        logger.info("Completed: %s sentence pairs stored.", f"{sent_count:,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=sent_count)
 
