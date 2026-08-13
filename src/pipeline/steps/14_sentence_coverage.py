@@ -3,16 +3,7 @@ from typing import Tuple
 from src.pipeline.core.base_step import BaseStep
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.result import StepResult, StepStatus
-from config.settings import (
-    ENVICORPORA_BASIC_EN,
-    ENVICORPORA_BASIC_VI,
-    ENVICORPORA_TED_LIKE_EN,
-    ENVICORPORA_TED_LIKE_VI,
-    MAX_SENTENCES_PER_CORPUS,
-    OPENSUBTITLES_EN,
-    OPENSUBTITLES_VI,
-    SUBTLEX_FREQ_PATH,
-)
+import config.settings as settings
 from src.ingestion.opus_parser import ParallelCorpusParser
 from src.ingestion.sentence_filter import SentenceFilter
 from src.nlp.cefr_grader import CEFRGrader
@@ -31,12 +22,13 @@ class SentenceCoverageStep(BaseStep):
     def run(self, context: PipelineContext) -> StepResult:
         logger.info("[Step 14] Ingesting Sentence Coverage Parallel Corpora...")
         corpora = [
-            (OPENSUBTITLES_EN, OPENSUBTITLES_VI, "OpenSubtitles"),
-            (ENVICORPORA_TED_LIKE_EN, ENVICORPORA_TED_LIKE_VI, "TED-EnVi"),
-            (ENVICORPORA_BASIC_EN, ENVICORPORA_BASIC_VI, "Basic-EnVi"),
+            (settings.OPENSUBTITLES_EN, settings.OPENSUBTITLES_VI, "OpenSubtitles"),
+            (settings.ENVICORPORA_TED_LIKE_EN, settings.ENVICORPORA_TED_LIKE_VI, "TED-EnVi"),
+            (settings.ENVICORPORA_BASIC_EN, settings.ENVICORPORA_BASIC_VI, "Basic-EnVi"),
         ]
         sf = SentenceFilter()
-        grader = CEFRGrader(subtlex_path=SUBTLEX_FREQ_PATH)
+        grader = CEFRGrader(subtlex_path=settings.SUBTLEX_FREQ_PATH)
+        max_sentences = settings.MAX_SENTENCES_PER_CORPUS
 
         inserted_total = 0
         for en_path, vi_path, source in corpora:
@@ -54,7 +46,7 @@ class SentenceCoverageStep(BaseStep):
 
             batch, inserted = [], 0
             for pair in ParallelCorpusParser(en_path, vi_path, source=source).parse_pairs():
-                if inserted + len(batch) >= MAX_SENTENCES_PER_CORPUS:
+                if inserted + len(batch) >= max_sentences:
                     break
                 if not sf.is_clean_pair(pair["text_en"], pair["text_vi"]):
                     continue
@@ -82,3 +74,10 @@ class SentenceCoverageStep(BaseStep):
             status=StepStatus.SUCCESS,
             items_processed=inserted_total,
         )
+
+
+def run_sentence_coverage_step(db_manager, args) -> dict:
+    step = SentenceCoverageStep()
+    context = PipelineContext(db_manager=db_manager, args=args)
+    res = step.run(context)
+    return {"inserted": res.items_processed}

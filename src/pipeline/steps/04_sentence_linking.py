@@ -60,3 +60,44 @@ class SentenceLinkingStep(BaseStep):
 
         logger.info("[Step 4] Linked sentences to %s word links.", f"{linked_count:,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=linked_count)
+
+
+def _read_sentence_link_checkpoint(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        return int(json.loads(path.read_text(encoding="utf-8"))["last_id"])
+    except Exception:
+        return 0
+
+
+def _write_sentence_link_checkpoint(path: Path, last_id: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"last_id": last_id}), encoding="utf-8")
+
+
+def _clear_sentence_link_checkpoint() -> None:
+    SENTENCE_LINK_CHECKPOINT.unlink(missing_ok=True)
+
+
+def _link_sentences_incrementally(db_manager, checkpoint: Path) -> None:
+    last_linked = _read_sentence_link_checkpoint(checkpoint)
+    lemmatizer = Lemmatizer()
+    map_batch = []
+    new_max = last_linked
+    cursor = db_manager.get_connection().cursor()
+    cursor.execute("SELECT id, text_en FROM sentences WHERE id > ? ORDER BY id;", (last_linked,))
+    for s_id, text_en in cursor.fetchall():
+        lemmas = lemmatizer.lemmatize_text(text_en)
+        for lem in lemmas:
+            word_id = db_manager.get_word_id_by_lemma(lem["lemma"])
+            if word_id:
+                map_batch.append({"word_id": word_id, "sentence_id": s_id})
+        new_max = max(new_max, s_id)
+        if len(map_batch) >= 5000:
+            db_manager.insert_word_sentence_map_batch(map_batch)
+            map_batch = []
+    if map_batch:
+        db_manager.insert_word_sentence_map_batch(map_batch)
+    if new_max > last_linked:
+        _write_sentence_link_checkpoint(checkpoint, new_max)

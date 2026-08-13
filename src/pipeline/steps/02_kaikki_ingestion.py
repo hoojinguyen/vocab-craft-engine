@@ -20,15 +20,18 @@ class KaikkiIngestionStep(BaseStep):
         if getattr(context.args, "force_reset", False):
             return False, ""
 
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM words;")
-        existing_words = cursor.fetchone()[0]
-        cursor.execute("SELECT count(*) FROM definitions;")
-        existing_defs = cursor.fetchone()[0]
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM words;")
+            existing_words = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM definitions;")
+            existing_defs = cursor.fetchone()[0]
 
-        if existing_words > 10000 and existing_defs > 10000:
-            return True, f"CHECKPOINT DETECTED: {existing_words:,} words & {existing_defs:,} definitions exist."
+            if existing_words > 10000 and existing_defs > 10000:
+                return True, f"CHECKPOINT DETECTED: {existing_words:,} words & {existing_defs:,} definitions exist."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:

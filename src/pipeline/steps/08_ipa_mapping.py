@@ -15,12 +15,15 @@ class IPAMappingStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM words WHERE ipa_us IS NULL OR ipa_uk IS NULL;")
-        missing = cursor.fetchone()[0]
-        if missing == 0:
-            return True, "100% of words already have IPA transcriptions."
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM words WHERE ipa_us IS NULL OR ipa_uk IS NULL;")
+            missing = cursor.fetchone()[0]
+            if missing == 0:
+                return True, "100% of words already have IPA transcriptions."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:

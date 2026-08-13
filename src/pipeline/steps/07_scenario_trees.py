@@ -15,12 +15,15 @@ class ScenarioTreesStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM dialogue_trees;")
-        trees_count = cursor.fetchone()[0]
-        if trees_count > 0:
-            return True, f"{trees_count} dialogue trees already exist."
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM dialogue_trees;")
+            trees_count = cursor.fetchone()[0]
+            if trees_count > 0:
+                return True, f"{trees_count} dialogue trees already exist."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:

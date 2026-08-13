@@ -41,7 +41,7 @@ class PipelineOrchestrator:
             skip, reason = step.should_skip(context)
 
             if dry_run:
-                msg = f"[DRY-RUN] Dry-run mode: Would run '{step.name}' ({step.description}). Skip status: {skip} ({reason})"
+                msg = f"[DRY-RUN] Would run '{step.name}' ({step.description}). Dry-run mode. Skip status: {skip} ({reason})"
                 logger.info(msg)
                 res = StepResult(
                     step_name=step.name,

@@ -19,17 +19,20 @@ class RelationsTopicsStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM word_relations;")
-        existing_relations = cursor.fetchone()[0]
-        cursor.execute("SELECT count(*) FROM word_topics;")
-        existing_topics = cursor.fetchone()[0]
-        cursor.execute("SELECT count(*) FROM word_relations WHERE inverted = 1;")
-        existing_inverse = cursor.fetchone()[0]
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM word_relations;")
+            existing_relations = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM word_topics;")
+            existing_topics = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM word_relations WHERE inverted = 1;")
+            existing_inverse = cursor.fetchone()[0]
 
-        if existing_relations > RELATION_CHECKPOINT and existing_topics > TOPIC_CHECKPOINT and existing_inverse > 0:
-            return True, f"CHECKPOINT DETECTED: {existing_relations:,} relations, {existing_topics:,} topics exist."
+            if existing_relations > RELATION_CHECKPOINT and existing_topics > TOPIC_CHECKPOINT and existing_inverse > 0:
+                return True, f"CHECKPOINT DETECTED: {existing_relations:,} relations, {existing_topics:,} topics exist."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
@@ -104,4 +107,25 @@ class RelationsTopicsStep(BaseStep):
             link_count += len(inverse_batch)
 
         logger.info("[Step 11] Completed: %s relations, %s inverse links, %s topics.", f"{relation_count:,}", f"{link_count:,}", f"{topics_count:,}")
-        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=relation_count + topics_count + link_count)
+        return StepResult(
+            step_name=self.name,
+            status=StepStatus.SUCCESS,
+            items_processed=relation_count + topics_count + link_count,
+            metrics={"relations": relation_count, "links": link_count, "topics": topics_count}
+        )
+
+
+def run_relations_step(db_manager, args) -> dict:
+    step = RelationsTopicsStep()
+    context = PipelineContext(db_manager=db_manager, args=args)
+    skip, _ = step.should_skip(context)
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    if skip:
+        cursor.execute("SELECT count(*) FROM word_relations;")
+        relations = cursor.fetchone()[0]
+        cursor.execute("SELECT count(*) FROM word_topics;")
+        topics = cursor.fetchone()[0]
+        return {"relations": relations, "links": 0, "topics": topics}
+    res = step.run(context)
+    return res.metrics

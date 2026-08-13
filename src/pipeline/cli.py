@@ -1,6 +1,40 @@
 import argparse
 from typing import List, Optional
 
+from config.settings import (
+    KAIKKI_JSON_PATH,
+    TATOEBA_SENTENCES_PATH,
+    TATOEBA_LINKS_PATH,
+    SUBTLEX_FREQ_PATH,
+    NGSL_PATH,
+    OPENSUBTITLES_EN,
+    OPENSUBTITLES_VI,
+    ENVICORPORA_TED_LIKE_EN,
+    ENVICORPORA_TED_LIKE_VI,
+    ENVICORPORA_BASIC_EN,
+    ENVICORPORA_BASIC_VI,
+)
+
+REQUIRED_RAW_FILES = [
+    KAIKKI_JSON_PATH,
+    TATOEBA_SENTENCES_PATH,
+    TATOEBA_LINKS_PATH,
+    SUBTLEX_FREQ_PATH,
+    NGSL_PATH,
+    OPENSUBTITLES_EN,
+    OPENSUBTITLES_VI,
+    ENVICORPORA_TED_LIKE_EN,
+    ENVICORPORA_TED_LIKE_VI,
+    ENVICORPORA_BASIC_EN,
+    ENVICORPORA_BASIC_VI,
+]
+
+
+def get_missing_raw_files(paths) -> list:
+    """Returns the subset of raw files that are missing or empty (0 bytes)."""
+    return [p for p in paths if not p.exists() or p.stat().st_size == 0]
+
+
 def parse_arguments(args_list: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Vocab Craft Engine Pipeline Runner")
     parser.add_argument("--steps", type=str, help="Comma-separated step names to execute (e.g. schema_init,phrase_mwe).")

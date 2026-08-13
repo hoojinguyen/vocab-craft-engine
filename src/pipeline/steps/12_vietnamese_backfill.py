@@ -20,17 +20,20 @@ class VietnameseBackfillStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM definitions WHERE definition_vi IS NULL OR definition_vi = '';")
-        def_missing = cursor.fetchone()[0]
-        cursor.execute("SELECT count(*) FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '';")
-        col_missing = cursor.fetchone()[0]
-        cursor.execute("SELECT count(*) FROM phrases WHERE definition_vi IS NULL OR definition_vi = '';")
-        phrase_missing = cursor.fetchone()[0]
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM definitions WHERE definition_vi IS NULL OR definition_vi = '';")
+            def_missing = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM collocations WHERE meaning_vi IS NULL OR meaning_vi = '';")
+            col_missing = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM phrases WHERE definition_vi IS NULL OR definition_vi = '';")
+            phrase_missing = cursor.fetchone()[0]
 
-        if (def_missing + col_missing + phrase_missing) == 0:
-            return True, "No missing Vietnamese translations remain."
+            if (def_missing + col_missing + phrase_missing) == 0:
+                return True, "No missing Vietnamese translations remain."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
@@ -96,4 +99,19 @@ class VietnameseBackfillStep(BaseStep):
         translated_phrases, _ = _backfill(priority_phrases, "phrases", "id", "definition_vi", phrase_budget)
 
         logger.info("[Step 12] Completed: translated %s defs, %s colls, %s phrases.", f"{translated_defs:,}", f"{translated_colls:,}", f"{translated_phrases:,}")
-        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=translated_defs + translated_colls + translated_phrases)
+        return StepResult(
+            step_name=self.name,
+            status=StepStatus.SUCCESS,
+            items_processed=translated_defs + translated_colls + translated_phrases,
+            metrics={"definitions": translated_defs, "collocations": translated_colls, "phrases": translated_phrases}
+        )
+
+
+def run_vietnamese_step(db_manager, args) -> dict:
+    step = VietnameseBackfillStep()
+    context = PipelineContext(db_manager=db_manager, args=args)
+    skip, _ = step.should_skip(context)
+    if skip:
+        return {"definitions": 0, "collocations": 0, "phrases": 0}
+    res = step.run(context)
+    return res.metrics if res.metrics else {"definitions": 0, "collocations": 0, "phrases": 0}

@@ -19,12 +19,15 @@ class NLPEnrichmentStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM collocations;")
-        existing_collocs = cursor.fetchone()[0]
-        if existing_collocs > 500:
-            return True, f"CHECKPOINT DETECTED: {existing_collocs:,} collocations exist."
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM collocations;")
+            existing_collocs = cursor.fetchone()[0]
+            if existing_collocs > 500:
+                return True, f"CHECKPOINT DETECTED: {existing_collocs:,} collocations exist."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:

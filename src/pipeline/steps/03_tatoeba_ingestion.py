@@ -16,12 +16,15 @@ class TatoebaIngestionStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM sentences;")
-        existing_sentences = cursor.fetchone()[0]
-        if existing_sentences > 1000:
-            return True, f"CHECKPOINT DETECTED: {existing_sentences:,} sentence pairs exist."
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM sentences;")
+            existing_sentences = cursor.fetchone()[0]
+            if existing_sentences > 1000:
+                return True, f"CHECKPOINT DETECTED: {existing_sentences:,} sentence pairs exist."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:

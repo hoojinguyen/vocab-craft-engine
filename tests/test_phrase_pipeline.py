@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import main as main_module
+import importlib
+main_module = importlib.import_module("src.pipeline.steps.10_phrase_mwe")
 from src.db.staging_db import DatabaseManager
 
 

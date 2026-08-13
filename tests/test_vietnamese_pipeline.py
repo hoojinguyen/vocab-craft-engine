@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import main as main_module
+import importlib
+main_module = importlib.import_module("src.pipeline.steps.12_vietnamese_backfill")
 from src.db.staging_db import DatabaseManager
 
 

@@ -22,15 +22,18 @@ class PhraseMWEStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM phrases;")
-        existing_phrases = cursor.fetchone()[0]
-        cursor.execute("SELECT count(*) FROM phrases WHERE audio_std IS NULL OR audio_fast IS NULL;")
-        missing_audio = cursor.fetchone()[0]
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM phrases;")
+            existing_phrases = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM phrases WHERE audio_std IS NULL OR audio_fast IS NULL;")
+            missing_audio = cursor.fetchone()[0]
 
-        if existing_phrases > 500 and missing_audio == 0:
-            return True, f"CHECKPOINT DETECTED: {existing_phrases:,} phrases with complete audio already exist."
+            if existing_phrases > 500 and missing_audio == 0:
+                return True, f"CHECKPOINT DETECTED: {existing_phrases:,} phrases with complete audio already exist."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
@@ -105,3 +108,21 @@ class PhraseMWEStep(BaseStep):
 
         logger.info("[Step 10] Completed: %s phrases stored, %s links.", f"{phrase_count:,}", f"{len(link_batch):,}")
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=phrase_count)
+
+
+def run_phrase_step(db_manager, args) -> dict:
+    step = PhraseMWEStep()
+    context = PipelineContext(db_manager=db_manager, args=args)
+    skip, _ = step.should_skip(context)
+    if skip:
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT count(*) FROM phrases;")
+        phrases = cursor.fetchone()[0]
+        return {"phrases": phrases, "links": 0}
+    res = step.run(context)
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT count(*) FROM phrase_sentences;")
+    links = cursor.fetchone()[0]
+    return {"phrases": res.items_processed, "links": links}

@@ -15,15 +15,18 @@ class ReflexDrillsStep(BaseStep):
     def should_skip(self, context: PipelineContext) -> Tuple[bool, str]:
         if getattr(context.args, "force_reset", False):
             return False, ""
-        conn = context.db_manager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM sentences;")
-        total_sentences = cursor.fetchone()[0]
-        cursor.execute("SELECT count(*) FROM reflex_drills;")
-        existing_drills = cursor.fetchone()[0]
+        try:
+            conn = context.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM sentences;")
+            total_sentences = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM reflex_drills;")
+            existing_drills = cursor.fetchone()[0]
 
-        if existing_drills >= total_sentences and total_sentences > 0:
-            return True, f"{existing_drills:,} reflex drill cards already exist (complete)."
+            if existing_drills >= total_sentences and total_sentences > 0:
+                return True, f"{existing_drills:,} reflex drill cards already exist (complete)."
+        except Exception:
+            pass
         return False, ""
 
     def run(self, context: PipelineContext) -> StepResult:
