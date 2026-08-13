@@ -35,7 +35,7 @@ class RetryPolicy:
         attempt = 0
 
         while attempt <= self.max_retries:
-            step_start = time.time()
+            step_start = time.monotonic()
             try:
                 if attempt > 0:
                     logger.warning(
@@ -46,17 +46,17 @@ class RetryPolicy:
                 res = step.run(context)
                 res.retry_count = attempt
                 if res.execution_time_seconds == 0.0:
-                    res.execution_time_seconds = round(time.time() - step_start, 2)
+                    res.execution_time_seconds = round(time.monotonic() - step_start, 2)
                 return res
 
             except Exception as e:
-                duration = round(time.time() - step_start, 2)
+                duration = round(time.monotonic() - step_start, 2)
                 tb_str = traceback.format_exc()
 
                 if attempt < self.max_retries:
                     if on_retry_callback:
                         on_retry_callback(attempt + 1, self.max_retries, e)
-                    sleep_time = self.backoff_factor * (attempt + 1)
+                    sleep_time = self.backoff_factor * (2 ** attempt)
                     logger.warning(
                         "[%s] Attempt %d failed after %.2fs: %s. Sleeping %.1fs...",
                         step.name, attempt + 1, duration, e, sleep_time

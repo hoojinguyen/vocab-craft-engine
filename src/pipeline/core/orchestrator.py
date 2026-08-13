@@ -2,7 +2,6 @@ import time
 import logging
 from pathlib import Path
 from typing import List, Optional, Any
-from unittest.mock import MagicMock
 
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.result import StepStatus, StepResult, PipelineSummary
@@ -16,10 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 def _get_arg(args: Any, name: str, default: Any) -> Any:
-    if not hasattr(args, name):
+    if not args or not hasattr(args, name):
         return default
     val = getattr(args, name)
-    if isinstance(val, MagicMock) or type(val).__name__ == "MagicMock":
+    if val is None:
+        return default
+    if not isinstance(val, (bool, int, float, str, list, dict, set, tuple, Path)):
         return default
     return val
 
