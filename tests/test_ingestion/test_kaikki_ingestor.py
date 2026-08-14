@@ -66,3 +66,34 @@ def test_ingest_kaikki_step_attributes():
     assert step.name == "ingest_kaikki"
     assert step.depends_on == ["schema_init"]
     assert set(step.produces) == {"words", "definitions"}
+
+
+def test_kaikki_ingestor_handles_duplicate_lemma_pos(db_mgr, tmp_path):
+    sample_file = tmp_path / "kaikki_dup.json"
+    entry1 = {
+        "word": "cat",
+        "pos": "noun",
+        "lang": "English",
+        "senses": [{"glosses": ["feline 1"]}],
+    }
+    entry2 = {
+        "word": "dog",
+        "pos": "noun",
+        "lang": "English",
+        "senses": [{"glosses": ["canine 1"]}],
+    }
+    entry3 = {
+        "word": "cat",
+        "pos": "noun",
+        "lang": "English",
+        "senses": [{"glosses": ["feline 2"]}],
+    }
+    sample_file.write_text(json.dumps(entry1) + "\n" + json.dumps(entry2) + "\n" + json.dumps(entry3) + "\n")
+
+    ingestor = KaikkiIngestor()
+    inserted = ingestor.ingest(db_mgr, sample_file)
+
+    assert inserted == 2
+    assert db_mgr.count_rows("words") == 2
+    assert db_mgr.count_rows("definitions") == 3
+

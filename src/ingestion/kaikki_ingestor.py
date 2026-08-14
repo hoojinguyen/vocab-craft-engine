@@ -19,9 +19,14 @@ class KaikkiIngestor(BaseIngestor):
             logger.warning("Kaikki source file not found at %s", source_path)
             return 0
 
+        conn = db_mgr.get_connection()
+        existing = conn.execute("SELECT lemma, pos, id FROM words").fetchall()
+        lemma_pos_to_id: Dict[Tuple[str, str], int] = {(row[0], row[1]): row[2] for row in existing}
+        next_word_id = max(lemma_pos_to_id.values(), default=0) + 1
+
         words_batch: List[Dict[str, Any]] = []
         defs_batch: List[Dict[str, Any]] = []
-        word_count = 0
+        new_word_count = 0
 
         with open(source_path, "rb") as f:
             for line in f:
@@ -35,31 +40,44 @@ class KaikkiIngestor(BaseIngestor):
                 if data.get("lang") != "English":
                     continue
 
-                lemma = data.get("word")
-                pos = data.get("pos")
-                if not lemma or not pos:
+                raw_lemma = data.get("word")
+                raw_pos = data.get("pos")
+                if not raw_lemma or not raw_pos:
                     continue
 
-                ipa_us = None
-                ipa_uk = None
-                sounds = data.get("sounds", [])
-                for s in sounds:
-                    ipa = s.get("ipa")
-                    if ipa:
-                        if "US" in s.get("tags", []):
-                            ipa_us = ipa
-                        elif "UK" in s.get("tags", []):
-                            ipa_uk = ipa
-                        elif not ipa_us:
-                            ipa_us = ipa
+                lemma = raw_lemma.lower()
+                pos = raw_pos.lower()
+                key = (lemma, pos)
 
-                words_batch.append({
-                    "lemma": lemma.lower(),
-                    "pos": pos.lower(),
-                    "ipa_uk": ipa_uk,
-                    "ipa_us": ipa_us,
-                    "source": "kaikki",
-                })
+                if key not in lemma_pos_to_id:
+                    word_id = next_word_id
+                    next_word_id += 1
+                    lemma_pos_to_id[key] = word_id
+
+                    ipa_us = None
+                    ipa_uk = None
+                    sounds = data.get("sounds", [])
+                    for s in sounds:
+                        ipa = s.get("ipa")
+                        if ipa:
+                            if "US" in s.get("tags", []):
+                                ipa_us = ipa
+                            elif "UK" in s.get("tags", []):
+                                ipa_uk = ipa
+                            elif not ipa_us:
+                                ipa_us = ipa
+
+                    words_batch.append({
+                        "id": word_id,
+                        "lemma": lemma,
+                        "pos": pos,
+                        "ipa_uk": ipa_uk,
+                        "ipa_us": ipa_us,
+                        "source": "kaikki",
+                    })
+                    new_word_count += 1
+                else:
+                    word_id = lemma_pos_to_id[key]
 
                 senses = data.get("senses", [])
                 for sense in senses:
@@ -72,7 +90,7 @@ class KaikkiIngestor(BaseIngestor):
                     ex_text = examples[0].get("text") if examples else None
 
                     defs_batch.append({
-                        "word_id": word_count + len(words_batch),
+                        "word_id": word_id,
                         "definition_en": def_text,
                         "example": ex_text,
                         "source": "kaikki",
@@ -81,7 +99,6 @@ class KaikkiIngestor(BaseIngestor):
                 if len(words_batch) >= KAIKKI_BATCH_SIZE or len(defs_batch) >= KAIKKI_BATCH_SIZE:
                     if words_batch:
                         db_mgr.insert_batch("words", words_batch)
-                        word_count += len(words_batch)
                         words_batch.clear()
                     if defs_batch:
                         db_mgr.insert_batch("definitions", defs_batch)
@@ -89,8 +106,9 @@ class KaikkiIngestor(BaseIngestor):
 
         if words_batch:
             db_mgr.insert_batch("words", words_batch)
-            word_count += len(words_batch)
+            words_batch.clear()
         if defs_batch:
             db_mgr.insert_batch("definitions", defs_batch)
+            defs_batch.clear()
 
-        return word_count
+        return new_word_count
