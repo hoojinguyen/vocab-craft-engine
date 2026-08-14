@@ -95,15 +95,13 @@ class TopicMapper:
         return "General & Everyday"
 
     def map_topics(self, db_mgr: DuckDBManager) -> int:
-        conn = db_mgr.get_connection()
-
         # Query words along with their first definition (if any)
-        rows = conn.execute("""
+        rows = db_mgr.fetch_all("""
             SELECT w.id, w.lemma, MIN(d.definition_en)
             FROM words w
             LEFT JOIN definitions d ON w.id = d.word_id
             GROUP BY w.id, w.lemma
-        """).fetchall()
+        """)
 
         if not rows:
             logger.warning("No words found in staging DB for topic mapping")

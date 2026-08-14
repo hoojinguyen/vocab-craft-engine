@@ -2,7 +2,9 @@
 
 import logging
 from pathlib import Path
+import threading
 from typing import Any, Dict, List, Optional, Set, Tuple
+import uuid
 import orjson
 import pyarrow as pa
 
@@ -20,8 +22,7 @@ class KaikkiIngestor(BaseIngestor):
             logger.warning("Kaikki source file not found at %s", source_path)
             return 0
 
-        conn = db_mgr.get_connection()
-        existing = conn.execute("SELECT lemma, pos, id FROM words").fetchall()
+        existing = db_mgr.fetch_all("SELECT lemma, pos, id FROM words")
         lemma_pos_to_id: Dict[Tuple[str, str], int] = {(row[0], row[1]): row[2] for row in existing}
         seen_in_batch: Set[Tuple[str, str]] = set()
 
@@ -45,26 +46,29 @@ class KaikkiIngestor(BaseIngestor):
 
             if pending_defs:
                 missing_keys: Set[Tuple[str, str]] = {
-                    key for key, _, _ in pending_defs if key not in lemma_pos_to_id
+                    key for key, _, _ in pending_defs if key not in lemma_pos_to_id or lemma_pos_to_id[key] <= 0
                 }
                 if missing_keys:
                     missing_list = [{"lemma": k[0], "pos": k[1]} for k in missing_keys]
                     arrow_tbl = pa.Table.from_pylist(missing_list)
-                    with db_mgr._lock:
+                    temp_name = f"_tmp_missing_words_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
+                    with db_mgr.lock:
                         conn_local = db_mgr.get_connection()
-                        conn_local.register("_tmp_missing_words", arrow_tbl)
-                        resolved = conn_local.execute(
-                            "SELECT w.lemma, w.pos, w.id FROM words w "
-                            "JOIN _tmp_missing_words m ON w.lemma = m.lemma AND w.pos = m.pos"
-                        ).fetchall()
-                        conn_local.unregister("_tmp_missing_words")
-                        for r in resolved:
-                            lemma_pos_to_id[(r[0], r[1])] = r[2]
+                        conn_local.register(temp_name, arrow_tbl)
+                        try:
+                            resolved = conn_local.execute(
+                                f"SELECT w.lemma, w.pos, w.id FROM words w "
+                                f"JOIN {temp_name} m ON w.lemma = m.lemma AND w.pos = m.pos"
+                            ).fetchall()
+                            for r in resolved:
+                                lemma_pos_to_id[(r[0], r[1])] = r[2]
+                        finally:
+                            conn_local.unregister(temp_name)
 
                 defs_batch: List[Dict[str, Any]] = []
                 for key, def_text, ex_text in pending_defs:
                     word_id = lemma_pos_to_id.get(key)
-                    if word_id is not None:
+                    if word_id is not None and word_id > 0:
                         defs_batch.append({
                             "word_id": word_id,
                             "definition_en": def_text,
@@ -137,4 +141,3 @@ class KaikkiIngestor(BaseIngestor):
 
         flush_batch()
         return new_word_count
-

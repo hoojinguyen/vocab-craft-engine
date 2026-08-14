@@ -71,10 +71,8 @@ CURATED_MWE_CATALOGUE = [
 
 class PhraseExtractor:
     def extract(self, db_mgr: DuckDBManager) -> int:
-        conn = db_mgr.get_connection()
-
         # Step 1: Scan sentences from staging DB
-        sentences = conn.execute("SELECT id, text_en FROM sentences").fetchall()
+        sentences = db_mgr.fetch_all("SELECT id, text_en FROM sentences")
         if not sentences:
             logger.warning("No sentences found in staging DB for phrase extraction")
             return 0
@@ -87,7 +85,7 @@ class PhraseExtractor:
             compiled_mwes.append((phrase, phrase_type, definition_en, cefr_level, patterns))
 
         # Check multi-word lemmas from words table as well
-        multi_words = conn.execute("SELECT DISTINCT lemma FROM words WHERE lemma LIKE '% %'").fetchall()
+        multi_words = db_mgr.fetch_all("SELECT DISTINCT lemma FROM words WHERE lemma LIKE '% %'")
         for row in multi_words:
             m_lemma = row[0].strip().lower()
             if m_lemma and len(m_lemma.split()) >= 2:
@@ -131,7 +129,7 @@ class PhraseExtractor:
         db_mgr.insert_batch_fast("phrases", phrases_to_insert)
 
         # Step 5: Query real auto-generated `id`s from `phrases` table
-        phrase_db_rows = conn.execute("SELECT phrase, id FROM phrases").fetchall()
+        phrase_db_rows = db_mgr.fetch_all("SELECT phrase, id FROM phrases")
         phrase_to_id: Dict[str, int] = {row[0]: row[1] for row in phrase_db_rows}
 
         # Step 6: Batch insert `phrase_sentences` with valid foreign keys

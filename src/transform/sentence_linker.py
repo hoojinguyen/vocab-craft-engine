@@ -14,10 +14,8 @@ TOKEN_PATTERN = re.compile(r"\b[a-zA-Z]+(?:'[a-zA-Z]+)?\b")
 
 class SentenceLinker:
     def link(self, db_mgr: DuckDBManager, batch_size: int = 5000) -> int:
-        conn = db_mgr.get_connection()
-
         # Step 1: Load all distinct lemmas and their IDs into memory
-        words = conn.execute("SELECT id, lemma FROM words").fetchall()
+        words = db_mgr.fetch_all("SELECT id, lemma FROM words")
         if not words:
             logger.warning("No words found in staging DB to link")
             return 0
@@ -74,36 +72,30 @@ class SentenceLinker:
 
             return matched_ids
 
-        # Step 2: Stream sentences and create links
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, text_en FROM sentences")
+        # Step 2: Fetch sentences and create links
+        sentences = db_mgr.fetch_all("SELECT id, text_en FROM sentences")
 
         total_links = 0
         link_batch: List[Dict[str, int]] = []
         seen_pairs: Set[Tuple[int, int]] = set()
 
-        while True:
-            rows = cursor.fetchmany(batch_size)
-            if not rows:
-                break
+        for sid, text_en in sentences:
+            if not text_en:
+                continue
 
-            for sid, text_en in rows:
-                if not text_en:
-                    continue
+            tokens = TOKEN_PATTERN.findall(text_en.lower())
+            sentence_word_ids: Set[int] = set()
 
-                tokens = TOKEN_PATTERN.findall(text_en.lower())
-                sentence_word_ids: Set[int] = set()
+            for token in tokens:
+                wids = get_matching_word_ids(token)
+                sentence_word_ids.update(wids)
 
-                for token in tokens:
-                    wids = get_matching_word_ids(token)
-                    sentence_word_ids.update(wids)
-
-                for wid in sentence_word_ids:
-                    pair = (wid, sid)
-                    if pair not in seen_pairs:
-                        seen_pairs.add(pair)
-                        link_batch.append({"word_id": wid, "sentence_id": sid})
-                        total_links += 1
+            for wid in sentence_word_ids:
+                pair = (wid, sid)
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    link_batch.append({"word_id": wid, "sentence_id": sid})
+                    total_links += 1
 
             if len(link_batch) >= 10000:
                 db_mgr.insert_batch_fast("word_sentences", link_batch)
