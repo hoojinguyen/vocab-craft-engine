@@ -66,6 +66,8 @@ def parse_arguments(args_list: Optional[List[str]] = None):
     parser.add_argument("--build-core-pack", action="store_true", help="Build the curated Core 3000 word pack.")
     parser.add_argument("--resume", action="store_true", help="Resume execution from previous failed state.")
     parser.add_argument("--workers", type=int, default=4, help="Number of concurrent worker threads (default: 4).")
+    parser.add_argument("--tui", action="store_true", default=False, help="Enable Textual TUI dashboard.")
+    parser.add_argument("--no-tui", action="store_false", dest="tui", help="Disable Textual TUI dashboard.")
     parser.add_argument("--max-retries", type=int, default=3, help="Maximum auto-retries per step (default: 3).")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store file logs and JSON reports.")
 

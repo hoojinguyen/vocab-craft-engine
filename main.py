@@ -95,9 +95,12 @@ def main():
         orchestrator = PipelineOrchestrator(registry=registry, max_workers=workers)
 
         summary = orchestrator.run(context)
+        handle_status(db_manager)
         if summary.has_failures:
-            logger.error("Pipeline failed with error(s).")
+            logger.error("Pipeline completed with errors.")
             sys.exit(1)
+        else:
+            logger.info("Pipeline completed successfully in %.2f seconds.", summary.total_time_seconds)
     finally:
         db_manager.close()
 

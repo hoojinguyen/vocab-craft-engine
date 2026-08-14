@@ -23,3 +23,15 @@ def test_parse_arguments_v2_flags():
     assert args.enable == "generate_audio"
     assert args.disable == "generate_dialogues"
     assert args.dry_run is True
+
+
+def test_parse_arguments_tui_flags():
+    args_default = parse_arguments([])
+    assert args_default.tui is False
+
+    args_tui = parse_arguments(["--tui"])
+    assert args_tui.tui is True
+
+    args_no_tui = parse_arguments(["--tui", "--no-tui"])
+    assert args_no_tui.tui is False
+
