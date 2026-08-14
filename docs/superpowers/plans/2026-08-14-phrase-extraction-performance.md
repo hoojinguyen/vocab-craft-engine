@@ -32,9 +32,9 @@ from src.transform.phrase_extractor import PhraseExtractor, normalize_phrase_tex
 def test_normalize_phrase_text_preserves_word_boundaries():
     assert normalize_phrase_text("  Gave-up, now! ") == "gave up now"
 
-def test_phrase_extractor_links_variant_to_canonical_phrase(db_mgr):
+def test_phrase_extractor_returns_structured_result(db_mgr):
     db_mgr.insert_batch_fast("sentences", [
-        {"text_en": "She GAVE-UP, after the delay.", "source": "test"},
+        {"text_en": "She gave up after the delay.", "source": "test"},
     ])
     result = PhraseExtractor().extract(db_mgr, batch_size=1)
 
@@ -45,7 +45,7 @@ def test_phrase_extractor_links_variant_to_canonical_phrase(db_mgr):
 
 - [ ] **Step 2: Verify failure**
 
-Run: `.venv/bin/pytest tests/test_transform/test_phrase_extractor.py -k 'normalize_phrase_text or variant_to_canonical' -v`
+Run: `.venv/bin/pytest tests/test_transform/test_phrase_extractor.py -k 'normalize_phrase_text or structured_result' -v`
 
 Expected: FAIL because the public normalizer and structured result do not exist.
 
@@ -73,7 +73,7 @@ Change `extract` to return `PhraseExtractionResult`. Update existing tests that 
 
 - [ ] **Step 4: Verify success**
 
-Run: `.venv/bin/pytest tests/test_transform/test_phrase_extractor.py -k 'normalize_phrase_text or variant_to_canonical' -v`
+Run: `.venv/bin/pytest tests/test_transform/test_phrase_extractor.py -k 'normalize_phrase_text or structured_result' -v`
 
 Expected: PASS.
 
@@ -112,6 +112,16 @@ def test_phrase_extractor_matches_dynamic_multiword_lemma_across_batches(db_mgr)
     assert db_mgr.fetch_all("SELECT phrase FROM phrases WHERE phrase = 'at home'") == [("at home",)]
     assert db_mgr.count_rows("phrase_sentences") == 2
     assert second.links_created == 0
+
+def test_phrase_extractor_normalizes_punctuated_variant_to_canonical_phrase(db_mgr):
+    db_mgr.insert_batch_fast("sentences", [
+        {"text_en": "She GAVE-UP, after the delay.", "source": "test"},
+    ])
+
+    PhraseExtractor().extract(db_mgr, batch_size=1)
+
+    assert db_mgr.fetch_all("SELECT phrase FROM phrases") == [("give up",)]
+    assert db_mgr.count_rows("phrase_sentences") == 1
 ```
 
 - [ ] **Step 2: Verify failure**
