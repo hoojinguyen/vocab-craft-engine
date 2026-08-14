@@ -1,0 +1,35 @@
+# Pipeline V2 Central Configuration
+
+pipeline:
+  version: "2.0.0"
+  log_level: "INFO"
+  log_dir: "logs"
+
+concurrency:
+  max_workers: 4
+  batch_size: 10000
+  stream_chunk_size: 5000
+
+staging:
+  db_path: "data/processed/staging.duckdb"
+  memory_limit: "4GB"
+  threads: 4
+
+export:
+  sqlite_path: "data/output/english_dataset.db"
+  core_3000_path: "data/output/core_3000.db"
+  json_path: "data/output/dataset.json"
+  output_dir: "data/output"
+  journal_mode: "WAL"
+
+enrichment:
+  target_reflex_time_ms: 2500
+  default_cefr_level: "B1"
+  translation:
+    batch_size: 500
+    cache_enabled: true
+    offline_engine: "argostranslate"
+
+steps:
+  optional_defaults:
+    enrich_audio: false

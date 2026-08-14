@@ -13,7 +13,23 @@ PROCESSED_DATA_DIR = DATA_DIR / "processed"
 AUDIO_DIR = DATA_DIR / "audio"
 OUTPUT_DIR = DATA_DIR / "output"
 
+PIPELINE_CONFIG_PATH = CONFIG_DIR / "pipeline_config.yaml"
 THEME_MAP_PATH = CONFIG_DIR / "theme_map.yaml"
+
+
+def load_pipeline_config(config_path: Path | None = None) -> dict:
+    """Loads and returns the pipeline configuration YAML."""
+    import yaml
+    path = config_path or PIPELINE_CONFIG_PATH
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {
+        "concurrency": {"max_workers": 4, "batch_size": 10000},
+        "staging": {"memory_limit": "4GB", "threads": 4},
+        "export": {"journal_mode": "WAL"},
+        "steps": {"optional_defaults": {"enrich_audio": False}},
+    }
 
 
 # Source File Paths
