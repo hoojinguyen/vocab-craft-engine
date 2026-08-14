@@ -30,6 +30,7 @@ class ReflexBuilder:
             SELECT id, text_en, text_vi, cefr_level 
             FROM sentences 
             WHERE text_en IS NOT NULL AND text_vi IS NOT NULL
+            ORDER BY id
         """).fetchall()
 
         if not sentences:
@@ -52,9 +53,12 @@ class ReflexBuilder:
             )
 
         # Collect word pool for cloze distractors
-        words = conn.execute(
-            "SELECT lemma FROM words WHERE length(lemma) >= 3"
-        ).fetchall()
+        words = conn.execute("""
+            SELECT lemma
+            FROM words
+            WHERE length(lemma) >= 3
+            ORDER BY lower(lemma), id
+            """).fetchall()
         word_pool = [row[0].strip().lower() for row in words if row[0]]
         if len(word_pool) < 10:
             word_pool.extend(

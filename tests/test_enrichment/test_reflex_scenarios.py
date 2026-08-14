@@ -147,6 +147,108 @@ def test_reflex_builder_caps_each_drill_type_and_replaces_prior_run(
     assert db_mgr.count_rows("reflex_drills") == 4
 
 
+def test_reflex_builder_is_reproducible_when_fixture_insert_order_changes(
+    tmp_path: Path,
+):
+    class UnorderedResult:
+        def __init__(self, result):
+            self._result = result
+
+        def fetchall(self):
+            return self._result.fetchall()[::-1]
+
+    class UnorderedManager(DuckDBManager):
+        def get_connection(self):
+            connection = super().get_connection()
+            if not getattr(self, "shuffle_queries", False):
+                return connection
+
+            class ConnectionProxy:
+                def execute(self, sql, *args):
+                    result = connection.execute(sql, *args)
+                    if (
+                        "FROM sentences" in sql or "FROM words" in sql
+                    ) and "ORDER BY" not in sql.upper():
+                        return UnorderedResult(result)
+                    return result
+
+                def __getattr__(self, name):
+                    return getattr(connection, name)
+
+            return ConnectionProxy()
+
+    sentences = [
+        ("I drink hot coffee every morning.", "Tôi uống cà phê nóng mỗi sáng."),
+        ("She reads books in the library.", "Cô ấy đọc sách trong thư viện."),
+        (
+            "They travel to Japan every summer.",
+            "Họ đi du lịch Nhật Bản mỗi mùa hè.",
+        ),
+        ("The weather is very nice today.", "Thời tiết hôm nay rất đẹp."),
+        ("We listen to music after dinner.", "Chúng tôi nghe nhạc sau bữa tối."),
+        ("My family lives in the country.", "Gia đình tôi sống ở nông thôn."),
+    ]
+    words = [
+        "coffee",
+        "drink",
+        "morning",
+        "books",
+        "library",
+        "travel",
+        "summer",
+        "weather",
+        "today",
+        "music",
+        "family",
+        "country",
+    ]
+
+    managers = []
+    outputs = []
+    for name, insertion_order in [("first", 1), ("second", -1)]:
+        manager = UnorderedManager(db_path=tmp_path / f"{name}.duckdb")
+        manager.init_schema()
+        managers.append(manager)
+        manager.insert_batch_fast(
+            "words",
+            [
+                {
+                    "id": index + 1,
+                    "lemma": word,
+                    "pos": "noun",
+                    "source": "test",
+                }
+                for index, word in (list(enumerate(words))[::insertion_order])
+            ],
+        )
+        manager.insert_batch_fast(
+            "sentences",
+            [
+                {
+                    "id": index + 1,
+                    "text_en": text_en,
+                    "text_vi": text_vi,
+                    "cefr_level": "A2",
+                    "source": "test",
+                }
+                for index, (text_en, text_vi) in (
+                    list(enumerate(sentences))[::insertion_order]
+                )
+            ],
+        )
+        manager.shuffle_queries = True
+        ReflexBuilder(seed=7).build(manager)
+        outputs.append(manager.get_connection().execute("""
+                SELECT drill_type, prompt_text, correct_answer, distractors_json
+                FROM reflex_drills
+                ORDER BY drill_type, prompt_text, correct_answer, distractors_json
+                """).fetchall())
+
+    for manager in managers:
+        manager.close()
+    assert outputs[0] == outputs[1]
+
+
 def test_scenario_trees_generation(db_mgr: DuckDBManager):
     builder = ScenarioBuilder()
     tree_count = builder.build(db_mgr)
