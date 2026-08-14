@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config.settings import (
     KAIKKI_JSON_PATH,
     NGSL_PATH,
+    OXFORD_3000_PATH,
     RAW_DATA_DIR,
     SUBTLEX_FREQ_PATH,
     TATOEBA_LINKS_PATH,
@@ -33,6 +34,7 @@ URL_TATOEBA_SENTENCES = "https://downloads.tatoeba.org/exports/sentences.tar.bz2
 URL_TATOEBA_LINKS = "https://downloads.tatoeba.org/exports/links.tar.bz2"
 URL_FREQ_WORDS = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt"
 URL_NGSL = "https://raw.githubusercontent.com/koba-ninkigumi/ngsl/master/NGSL-1.01.csv"
+URL_OXFORD_3000 = "https://raw.githubusercontent.com/open-dictionary/oxford-3000-5000/main/oxford3000.txt"
 URL_OPENS_ENVI = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2024/moses/en-vi.txt.zip"
 URL_TED_LIKE_EN = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.en"
 URL_TED_LIKE_VI = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.vi"
@@ -121,6 +123,58 @@ def download_ngsl():
     if not NGSL_PATH.exists() or NGSL_PATH.stat().st_size == 0:
         download_file(URL_NGSL, NGSL_PATH)
     return NGSL_PATH
+
+
+def load_oxford_words(path: Path) -> set:
+    """
+    Parses an Oxford 3000 text file (one word per line) into a set of lowercase words.
+    Returns an empty set when the file is missing.
+    """
+    if not path.exists():
+        return set()
+    words = set()
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for line in f:
+            word = line.strip().lower()
+            if word and not word.startswith("#"):
+                words.add(word)
+    return words
+
+
+def download_oxford_3000(dest_path: Path | None = None) -> Path:
+    """
+    Downloads the Oxford 3000 vocabulary list if missing.
+    Falls back to basic headword list if download fails.
+    """
+    target = dest_path or OXFORD_3000_PATH
+    if not target.exists() or target.stat().st_size == 0:
+        logger.info("Downloading Oxford 3000 vocabulary list...")
+        try:
+            req = urllib.request.Request(
+                URL_OXFORD_3000,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req) as resp:
+                content = resp.read()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+        except Exception as e:
+            logger.warning("Could not download Oxford 3000 from URL (%s); writing fallback list", e)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Basic fallback headwords
+            target.write_text("the\nbe\nto\nof\nand\na\nin\nthat\nhave\ni\nit\nfor\nnot\non\nwith\nhe\nas\nyou\ndo\nat\n", encoding="utf-8")
+    return target
+
+
+def download_nltk_corpora() -> None:
+    """Checks and downloads NLTK corpora (wordnet, cmudict)."""
+    logger.info("Checking and downloading NLTK corpora (wordnet, cmudict)...")
+    import nltk
+    for pkg in ["wordnet", "cmudict"]:
+        try:
+            nltk.download(pkg, quiet=True)
+        except Exception as e:
+            logger.warning("Failed downloading NLTK package '%s': %s", pkg, e)
 
 
 def download_resumable(url: str, dest_path: Path):
@@ -229,6 +283,12 @@ def download_all_raw_data():
 
     # 7. Download EnViCorpora (ted-like + basic)
     download_envicorpora()
+
+    # 8. Download Oxford 3000 list
+    download_oxford_3000()
+
+    # 9. Download NLTK corpora (wordnet, cmudict)
+    download_nltk_corpora()
 
     logger.info("All raw data files are ready in %s!", RAW_DATA_DIR)
 

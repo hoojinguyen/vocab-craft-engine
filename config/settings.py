@@ -39,6 +39,7 @@ TATOEBA_LINKS_PATH = RAW_DATA_DIR / "links.csv"
 OPUS_SUBTITLES_PATH = RAW_DATA_DIR / "opensubtitles_en_vi.txt"
 SUBTLEX_FREQ_PATH = RAW_DATA_DIR / "SUBTLEX_US.csv"
 NGSL_PATH = RAW_DATA_DIR / "NGSL-1.01.csv"
+OXFORD_3000_PATH = RAW_DATA_DIR / "oxford_3000.txt"
 
 # Parallel sentence corpora (Phase A — sentences coverage)
 OPENSUBTITLES_EN_VI_ZIP = RAW_DATA_DIR / "opensubtitles_envi" / "en-vi.txt.zip"
