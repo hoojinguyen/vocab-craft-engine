@@ -110,3 +110,27 @@ def test_core_selector_deduplication_and_limit(tmp_path: Path):
 
     assert len(selected) == 2
     assert [w.lemma for w in selected] == ["run", "walk"]
+
+
+def test_core_selector_oxford_overlap(tmp_path: Path):
+    oxford_file = tmp_path / "oxford_3000.txt"
+    oxford_file.write_text("water\napple\n", encoding="utf-8")
+
+    db_path = tmp_path / "staging.duckdb"
+    db_mgr = DuckDBManager(db_path)
+    db_mgr.init_schema()
+
+    db_mgr.insert_batch_fast("words", [
+        {"id": 1, "lemma": "water", "pos": "noun", "frequency_rank": 50, "source": "kaikki"},
+        {"id": 2, "lemma": "rocket", "pos": "noun", "frequency_rank": 100, "source": "kaikki"},
+    ])
+
+    selector = CoreSelector()
+    selected = selector.select_core_words(db_mgr, limit=10, oxford_path=oxford_file)
+
+    water_w = next(w for w in selected if w.lemma == "water")
+    rocket_w = next(w for w in selected if w.lemma == "rocket")
+
+    assert water_w.in_oxford is True
+    assert rocket_w.in_oxford is False
+

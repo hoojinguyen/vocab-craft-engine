@@ -27,6 +27,7 @@ class ExportCore3000Step(BaseStep):
             report_path=report_path,
             core_limit=3000,
             ngsl_path=settings.NGSL_PATH,
+            oxford_path=settings.OXFORD_3000_PATH,
         )
         return StepResult(
             step_name=self.name,

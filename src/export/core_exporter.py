@@ -28,6 +28,7 @@ class CoreExporter:
         report_path: Optional[Path] = None,
         core_limit: int = 3000,
         ngsl_path: Optional[Path] = None,
+        oxford_path: Optional[Path] = None,
     ) -> int:
         target_file = Path(target_path)
         target_file.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +36,9 @@ class CoreExporter:
             target_file.unlink()
 
         # 1. Select headwords
-        selected_words = self.selector.select_core_words(db_mgr, limit=core_limit, ngsl_path=ngsl_path)
+        selected_words = self.selector.select_core_words(
+            db_mgr, limit=core_limit, ngsl_path=ngsl_path, oxford_path=oxford_path
+        )
         if not selected_words:
             logger.warning("No words found in staging DB for core bundle export")
             return 0
@@ -173,6 +176,8 @@ class CoreExporter:
 
         ngsl_count = sum(1 for w in selected_words if getattr(w, "in_ngsl", False))
         ngsl_pct = (ngsl_count / summary.total_words * 100) if summary.total_words else 0.0
+        oxford_count = sum(1 for w in selected_words if getattr(w, "in_oxford", False))
+        oxford_pct = (oxford_count / summary.total_words * 100) if summary.total_words else 0.0
         pass_pct = (summary.passed_all_gates / summary.total_words * 100) if summary.total_words else 0.0
 
         md = f"""# Core 3000 Quality Audit Report
@@ -180,7 +185,8 @@ class CoreExporter:
 **Generated:** {now_str}  
 **Total Selected Headwords:** {summary.total_words:,}  
 **Pass All Quality Gates:** {summary.passed_all_gates:,} ({pass_pct:.1f}%)  
-**NGSL Overlap:** {ngsl_count:,} ({ngsl_pct:.1f}%)
+**NGSL Overlap:** {ngsl_count:,} ({ngsl_pct:.1f}%)  
+**Oxford 3000 Overlap:** {oxford_count:,} ({oxford_pct:.1f}%)
 
 ---
 

@@ -60,6 +60,7 @@ class SelectedWord:
     cefr_level: str
     in_ngsl: bool
     source: str
+    in_oxford: bool = False
 
 
 class CoreSelector:
@@ -70,6 +71,7 @@ class CoreSelector:
         db_mgr: DuckDBManager,
         limit: int = 3000,
         ngsl_path: Optional[Path] = None,
+        oxford_path: Optional[Path] = None,
     ) -> List[SelectedWord]:
         ngsl_words: Set[str] = set()
         if ngsl_path and Path(ngsl_path).exists():
@@ -81,6 +83,17 @@ class CoreSelector:
                             ngsl_words.add(parts[0].strip().lower())
             except Exception as e:
                 logger.warning("Could not parse NGSL file at %s: %s", ngsl_path, e)
+
+        oxford_words: Set[str] = set()
+        if oxford_path and Path(oxford_path).exists():
+            try:
+                with open(oxford_path, "r", encoding="utf-8-sig") as f:
+                    for line in f:
+                        w = line.strip().lower()
+                        if w:
+                            oxford_words.add(w)
+            except Exception as e:
+                logger.warning("Could not parse Oxford 3000 file at %s: %s", oxford_path, e)
 
         conn = db_mgr.get_connection()
         query = """
@@ -108,6 +121,7 @@ class CoreSelector:
             seen_lemmas.add(clean_lemma)
             cefr = rank_to_cefr(freq_rank)
             in_ngsl = clean_lemma in ngsl_words
+            in_oxford = clean_lemma in oxford_words
 
             selected.append(SelectedWord(
                 id=wid,
@@ -117,10 +131,17 @@ class CoreSelector:
                 cefr_level=cefr,
                 in_ngsl=in_ngsl,
                 source=source or "kaikki",
+                in_oxford=in_oxford,
             ))
 
             if len(selected) >= limit:
                 break
 
-        logger.info("Selected %d core words (NGSL overlap: %d)", len(selected), sum(1 for w in selected if w.in_ngsl))
+        logger.info(
+            "Selected %d core words (NGSL overlap: %d, Oxford 3000 overlap: %d)",
+            len(selected),
+            sum(1 for w in selected if w.in_ngsl),
+            sum(1 for w in selected if w.in_oxford),
+        )
         return selected
+

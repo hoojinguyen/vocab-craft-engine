@@ -146,3 +146,40 @@ def test_core_exporter_without_report_path():
 
         assert count == 1
         assert sqlite_out.exists()
+
+
+def test_core_exporter_oxford_overlap(tmp_path: Path):
+    db_path = tmp_path / "staging.duckdb"
+    sqlite_out = tmp_path / "core_3000.db"
+    report_out = tmp_path / "quality_report.md"
+    oxford_file = tmp_path / "oxford_3000.txt"
+    oxford_file.write_text("water\n", encoding="utf-8")
+    ngsl_file = tmp_path / "ngsl.csv"
+    ngsl_file.write_text("rocket,1\n", encoding="utf-8")
+
+    db_mgr = DuckDBManager(db_path)
+    db_mgr.init_schema()
+
+    db_mgr.insert_batch_fast("words", [
+        {"id": 1, "lemma": "water", "pos": "noun", "ipa_uk": "/ˈwɔː.tər/", "ipa_us": "/ˈwɑː.tɚ/", "frequency_rank": 50, "source": "kaikki"},
+        {"id": 2, "lemma": "rocket", "pos": "noun", "ipa_uk": "/ˈrɒk.ɪt/", "ipa_us": "/ˈrɑː.kɪt/", "frequency_rank": 100, "source": "kaikki"},
+    ])
+
+    exporter = CoreExporter()
+    count = exporter.export_core_bundle(
+        db_mgr=db_mgr,
+        target_path=sqlite_out,
+        report_path=report_out,
+        core_limit=10,
+        ngsl_path=ngsl_file,
+        oxford_path=oxford_file,
+    )
+
+    assert count == 2
+    assert report_out.exists()
+    content = report_out.read_text(encoding="utf-8")
+    assert "NGSL Overlap:" in content
+    assert "Oxford 3000 Overlap:" in content
+    assert "Oxford 3000 Overlap:** 1 (50.0%)" in content
+    assert "NGSL Overlap:** 1 (50.0%)" in content
+
