@@ -70,8 +70,8 @@ def test_phrase_extractor_past_tense_variants(audit_db: DuckDBManager):
     ])
 
     extractor = PhraseExtractor()
-    extracted = extractor.extract(audit_db)
-    assert extracted >= 3
+    result = extractor.extract(audit_db)
+    assert result.phrases_created >= 3
 
     conn = audit_db.get_connection()
     phrases = {row[0] for row in conn.execute("SELECT phrase FROM phrases").fetchall()}

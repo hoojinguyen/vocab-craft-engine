@@ -2,10 +2,26 @@
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Dict, List, Set, Tuple
 from src.db.duckdb_manager import DuckDBManager
 
 logger = logging.getLogger(__name__)
+
+TOKEN_RE = re.compile(r"[a-z]+(?:'[a-z]+)?")
+
+
+@dataclass(frozen=True)
+class PhraseExtractionResult:
+    phrases_created: int
+    links_created: int
+    sentences_processed: int
+    resumed: bool
+
+
+def normalize_phrase_text(text: str) -> str:
+    """Return a casefolded, tokenized phrase representation."""
+    return " ".join(TOKEN_RE.findall(text.casefold()))
 
 CURATED_MWE_CATALOGUE = [
     # Phrasal Verbs
@@ -70,12 +86,14 @@ CURATED_MWE_CATALOGUE = [
 
 
 class PhraseExtractor:
-    def extract(self, db_mgr: DuckDBManager) -> int:
+    def extract(self, db_mgr: DuckDBManager, *, batch_size: int = 5000) -> PhraseExtractionResult:
+        del batch_size
+
         # Step 1: Scan sentences from staging DB
         sentences = db_mgr.fetch_all("SELECT id, text_en FROM sentences")
         if not sentences:
             logger.warning("No sentences found in staging DB for phrase extraction")
-            return 0
+            return PhraseExtractionResult(0, 0, 0, resumed=False)
 
         # Step 2: Compile regex patterns for MWEs including variants
         compiled_mwes: List[Tuple[str, str, str, str, List[re.Pattern]]] = []
@@ -114,7 +132,7 @@ class PhraseExtractor:
 
         if not matched_phrases_data:
             logger.info("No phrases matched in the current sentence dataset")
-            return 0
+            return PhraseExtractionResult(0, 0, len(sentences), resumed=False)
 
         # Step 4: Batch insert unique phrases into `phrases`
         phrases_to_insert = [
@@ -126,7 +144,9 @@ class PhraseExtractor:
             }
             for p, (ptype, pdef, pcefr) in matched_phrases_data.items()
         ]
+        phrases_before = db_mgr.count_rows("phrases")
         db_mgr.insert_batch_fast("phrases", phrases_to_insert)
+        phrases_created = db_mgr.count_rows("phrases") - phrases_before
 
         # Step 5: Query real auto-generated `id`s from `phrases` table
         phrase_db_rows = db_mgr.fetch_all("SELECT phrase, id FROM phrases")
@@ -144,7 +164,16 @@ class PhraseExtractor:
                 })
 
         if phrase_sentences_batch:
+            links_before = db_mgr.count_rows("phrase_sentences")
             db_mgr.insert_batch_fast("phrase_sentences", phrase_sentences_batch)
+            links_created = db_mgr.count_rows("phrase_sentences") - links_before
+        else:
+            links_created = 0
 
-        logger.info("Extracted %d unique phrases and created %d phrase-sentence links", len(matched_phrases_data), len(phrase_sentences_batch))
-        return len(matched_phrases_data)
+        logger.info("Extracted %d unique phrases and created %d phrase-sentence links", phrases_created, links_created)
+        return PhraseExtractionResult(
+            phrases_created=phrases_created,
+            links_created=links_created,
+            sentences_processed=len(sentences),
+            resumed=False,
+        )

@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 from src.db.duckdb_manager import DuckDBManager
-from src.transform.phrase_extractor import PhraseExtractor
+from src.transform.phrase_extractor import PhraseExtractor, normalize_phrase_text
 from src.pipeline.steps.transform_phrases import TransformPhrasesStep
 
 
@@ -22,8 +22,8 @@ def test_phrase_extractor_comprehensive(db_mgr: DuckDBManager):
     ])
 
     extractor = PhraseExtractor()
-    count = extractor.extract(db_mgr)
-    assert count >= 3
+    result = extractor.extract(db_mgr)
+    assert result.phrases_created >= 3
 
     conn = db_mgr.get_connection()
     phrases = conn.execute("SELECT id, phrase, phrase_type FROM phrases").fetchall()
@@ -40,6 +40,22 @@ def test_phrase_extractor_comprehensive(db_mgr: DuckDBManager):
         assert p_row is not None, f"phrase_id {pid} does not exist in phrases table!"
         s_row = conn.execute("SELECT id FROM sentences WHERE id = ?", [sid]).fetchone()
         assert s_row is not None, f"sentence_id {sid} does not exist in sentences table!"
+
+
+def test_normalize_phrase_text_preserves_word_boundaries():
+    assert normalize_phrase_text("  Gave-up, now! ") == "gave up now"
+
+
+def test_phrase_extractor_returns_structured_result(db_mgr: DuckDBManager):
+    db_mgr.insert_batch_fast("sentences", [
+        {"text_en": "She gave up after the delay.", "text_vi": "", "source": "tatoeba"},
+    ])
+
+    result = PhraseExtractor().extract(db_mgr, batch_size=1)
+
+    assert result.phrases_created == 1
+    assert db_mgr.fetch_all("SELECT phrase FROM phrases") == [("give up",)]
+    assert db_mgr.fetch_one("SELECT count(*) FROM phrase_sentences")[0] == 1
 
 
 def test_transform_phrases_step():

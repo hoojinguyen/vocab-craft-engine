@@ -22,5 +22,9 @@ class TransformPhrasesStep(BaseStep):
 
     def run(self, ctx: PipelineContext) -> StepResult:
         extractor = PhraseExtractor()
-        count = extractor.extract(ctx.db)
-        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=count)
+        result = extractor.extract(ctx.db)
+        return StepResult(
+            step_name=self.name,
+            status=StepStatus.SUCCESS,
+            items_processed=result.phrases_created,
+        )
