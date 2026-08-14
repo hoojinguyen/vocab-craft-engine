@@ -34,6 +34,18 @@ class StepTable(DataTable):
         self.add_column("Time", key="time", width=8)
         self.add_column("Items", key="items", width=10)
         self.add_column("ETA", key="eta", width=8)
+        if self.steps_data and self.row_count == 0:
+            for idx, name in enumerate(self.steps_data.keys(), 1):
+                self.add_row(
+                    str(idx),
+                    name,
+                    "[dim]PENDING[/dim]",
+                    "[dim]--[/dim]",
+                    "-",
+                    "0",
+                    "-",
+                    key=name,
+                )
 
     def init_steps(self, step_names: List[str]) -> None:
         for name in step_names:
