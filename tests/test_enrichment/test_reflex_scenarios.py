@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.db.duckdb_manager import DuckDBManager
+from src.enrichment import reflex_builder as reflex_builder_module
 from src.enrichment.reflex_builder import ReflexBuilder, _select_indexed_distractors
 from src.enrichment.scenario_builder import ScenarioBuilder
 from src.pipeline.steps.enrich_reflex import EnrichReflexStep
@@ -354,6 +355,40 @@ def test_indexed_speed_selection_reads_only_selected_values():
     assert pool.accesses == 3
     assert len(distractors) == 3
     assert "translation-500" not in distractors
+
+
+def test_reflex_builder_does_not_construct_cloze_candidates_when_capped(
+    db_mgr: DuckDBManager, monkeypatch: pytest.MonkeyPatch
+):
+    db_mgr.insert_batch_fast(
+        "words",
+        [
+            {"lemma": f"word-{index}", "pos": "noun", "source": "test"}
+            for index in range(20)
+        ],
+    )
+    db_mgr.insert_batch_fast(
+        "sentences",
+        [
+            {
+                "text_en": f"Sentence number {index} has many words.",
+                "text_vi": f"Câu số {index} có nhiều từ.",
+                "cefr_level": "A2",
+                "source": "test",
+            }
+            for index in range(5)
+        ],
+    )
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(reflex_builder_module, "_build_cloze_candidates", spy)
+
+    assert ReflexBuilder(seed=3).build(db_mgr, max_drills_per_type=0) == 0
+    assert calls == []
 
 
 def test_scenario_trees_generation(db_mgr: DuckDBManager):

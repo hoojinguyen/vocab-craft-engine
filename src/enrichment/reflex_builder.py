@@ -57,6 +57,23 @@ def _select_indexed_distractors(
     ]
 
 
+def _build_cloze_candidates(
+    target_lower: str,
+    words_by_length: dict[int, list[str]],
+    word_pool: list[str],
+) -> list[str]:
+    """Build candidates for one selected target from bounded buckets."""
+    bucket_candidates = [
+        word
+        for length in range(len(target_lower) - 2, len(target_lower) + 3)
+        for word in words_by_length.get(length, [])
+        if word.casefold() != target_lower
+    ]
+    if len(bucket_candidates) >= 3:
+        return bucket_candidates
+    return [word for word in word_pool if word.casefold() != target_lower]
+
+
 class ReflexBuilder:
     def __init__(self, *, seed: int = 0, batch_size: int = 1_000):
         self._seed = seed
@@ -124,24 +141,6 @@ class ReflexBuilder:
         words_by_length: dict[int, list[str]] = {}
         for word in word_pool:
             words_by_length.setdefault(len(word), []).append(word)
-        cloze_candidates_by_target: dict[str, list[str]] = {}
-        for _, text_en, _, _ in sentences:
-            for target_word in re.findall(r"\b[a-zA-Z]{3,}\b", text_en.strip()):
-                target_lower = target_word.lower()
-                if target_lower in cloze_candidates_by_target:
-                    continue
-                bucket_candidates = [
-                    word
-                    for length in range(len(target_lower) - 2, len(target_lower) + 3)
-                    for word in words_by_length.get(length, [])
-                    if word.casefold() != target_lower
-                ]
-                if len(bucket_candidates) < 3:
-                    bucket_candidates = [
-                        word for word in word_pool if word.casefold() != target_lower
-                    ]
-                cloze_candidates_by_target[target_lower] = bucket_candidates
-
         drills_batch: list[dict[str, Any]] = []
         rng = random.Random(self._seed)
         speed_translation_created = 0
@@ -184,7 +183,9 @@ class ReflexBuilder:
                 )
 
                 distractors_cloze = _select_distractors(
-                    cloze_candidates_by_target[target_word.lower()],
+                    _build_cloze_candidates(
+                        target_word.lower(), words_by_length, word_pool
+                    ),
                     target_word,
                     rng,
                 )
