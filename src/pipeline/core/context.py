@@ -21,8 +21,14 @@ class PipelineContext:
     output_dir: Optional[Path] = None
     enabled_optional_steps: List[str] = field(default_factory=list)
     shared_data: Dict[str, Any] = field(default_factory=dict)
+    progress_reporter: Optional[Any] = None
 
     @property
     def db(self) -> Union[DuckDBManager, DatabaseManager]:
         """Convenience alias for db_manager."""
         return self.db_manager
+
+    def create_progress(self, step_name: str, total: int = 100) -> Any:
+        from src.pipeline.monitor.progress import StepProgress
+
+        return StepProgress(step_name=step_name, total=total, reporter=self.progress_reporter)
