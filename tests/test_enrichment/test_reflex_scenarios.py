@@ -1,4 +1,6 @@
+import json
 import pytest
+from pathlib import Path
 from src.db.duckdb_manager import DuckDBManager
 from src.enrichment.reflex_builder import ReflexBuilder
 from src.enrichment.scenario_builder import ScenarioBuilder
@@ -7,23 +9,74 @@ from src.pipeline.steps.enrich_scenarios import EnrichScenariosStep
 
 
 @pytest.fixture
-def db_mgr(tmp_path):
+def db_mgr(tmp_path: Path):
     mgr = DuckDBManager(db_path=tmp_path / "test.duckdb")
     mgr.init_schema()
-    mgr.insert_batch("sentences", [{"text_en": "The dog run fast.", "text_vi": "Con chó chạy nhanh."}])
     yield mgr
     mgr.close()
 
 
-def test_reflex_builder(db_mgr):
+def test_reflex_drills_generation(db_mgr: DuckDBManager):
+    db_mgr.insert_batch_fast("words", [
+        {"lemma": "coffee", "pos": "noun", "source": "kaikki"},
+        {"lemma": "drink", "pos": "verb", "source": "kaikki"},
+    ])
+
+    db_mgr.insert_batch_fast("sentences", [
+        {"text_en": "I drink hot coffee every morning.", "text_vi": "Tôi uống cà phê nóng mỗi sáng.", "cefr_level": "A2", "source": "tatoeba"},
+        {"text_en": "She reads books in the library.", "text_vi": "Cô ấy đọc sách trong thư viện.", "cefr_level": "A2", "source": "tatoeba"},
+        {"text_en": "They travel to Japan every summer.", "text_vi": "Họ đi du lịch Nhật Bản mỗi mùa hè.", "cefr_level": "B1", "source": "tatoeba"},
+        {"text_en": "The weather is very nice today.", "text_vi": "Thời tiết hôm nay rất đẹp.", "cefr_level": "A1", "source": "tatoeba"},
+    ])
+
     builder = ReflexBuilder()
     count = builder.build(db_mgr)
-    assert count >= 1
-    assert db_mgr.count_rows("reflex_drills") >= 1
+    assert count >= 4
+
+    conn = db_mgr.get_connection()
+    drills = conn.execute("SELECT sentence_id, drill_type, prompt_text, correct_answer, distractors_json, target_time_ms FROM reflex_drills").fetchall()
+    assert len(drills) >= 4
+
+    drill_types = {d[1] for d in drills}
+    assert "speed_translation" in drill_types or "cloze" in drill_types
+
+    for sid, dtype, prompt, ans, dist_json, target_ms in drills:
+        assert prompt
+        assert ans
+        assert target_ms == 2500
+        distractors = json.loads(dist_json)
+        assert isinstance(distractors, list)
+        assert len(distractors) == 3
+        # Distractors must not include the correct answer!
+        assert ans not in distractors
 
 
-def test_scenario_builder(db_mgr):
+def test_scenario_trees_generation(db_mgr: DuckDBManager):
     builder = ScenarioBuilder()
-    count = builder.build(db_mgr)
-    assert count >= 1
-    assert db_mgr.count_rows("dialogue_trees") >= 1
+    tree_count = builder.build(db_mgr)
+    assert tree_count >= 4
+
+    conn = db_mgr.get_connection()
+    trees = conn.execute("SELECT id, title, topic, cefr_level FROM dialogue_trees").fetchall()
+    assert len(trees) >= 4
+
+    tree_ids = [t[0] for t in trees]
+
+    nodes = conn.execute("SELECT id, tree_id, parent_node_id, choice_label, speaker_role FROM dialogue_nodes").fetchall()
+    assert len(nodes) >= 15
+
+    # Check that all nodes link to valid trees
+    for nid, tid, parent_id, label, role in nodes:
+        assert tid in tree_ids
+        assert role in ("A", "B")
+
+
+def test_enrich_reflex_and_scenarios_steps():
+    step_reflex = EnrichReflexStep()
+    assert step_reflex.name == "enrich_reflex"
+    assert "reflex_drills" in step_reflex.produces
+
+    step_scenarios = EnrichScenariosStep()
+    assert step_scenarios.name == "enrich_scenarios"
+    assert "dialogue_trees" in step_scenarios.produces
+    assert "dialogue_nodes" in step_scenarios.produces
