@@ -165,7 +165,7 @@ class CoreExporter:
         output_path: Path,
     ) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(timezone.utc).isoformat()
 
         cefr_counts: Dict[str, int] = {}
         for w in selected_words:

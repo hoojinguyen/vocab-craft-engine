@@ -22,7 +22,7 @@ CONTRACTION_MAP = {
 
 NOISE_POS = {
     "name", "prefix", "suffix", "symbol", "particle", "num",
-    "punct", "character", "contraction", "affix", "symbol",
+    "punct", "character", "contraction", "affix",
 }
 
 CEFR_RANK_THRESHOLDS = [
