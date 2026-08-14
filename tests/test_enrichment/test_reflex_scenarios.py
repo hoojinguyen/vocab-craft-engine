@@ -249,6 +249,90 @@ def test_reflex_builder_is_reproducible_when_fixture_insert_order_changes(
     assert outputs[0] == outputs[1]
 
 
+def test_reflex_builder_deduplicates_candidates_across_equivalent_databases(
+    tmp_path: Path,
+):
+    sentences = [
+        ("I drink hot coffee every morning.", "Tôi uống cà phê nóng mỗi sáng."),
+        ("She reads books in the library.", "Cô ấy đọc sách trong thư viện."),
+        ("They travel to Japan every summer.", "Họ đi du lịch Nhật Bản mỗi mùa hè."),
+        ("The weather is very nice today.", "Thời tiết hôm nay rất đẹp."),
+        ("I drink tea after lunch.", "Tôi uống trà sau bữa trưa."),
+        ("He reads stories at home.", "Cô ấy đọc sách trong thư viện."),
+        ("We travel abroad in winter.", "Họ đi du lịch Nhật Bản mỗi mùa hè."),
+        ("The weather is warm tonight.", "Thời tiết hôm nay rất đẹp."),
+    ]
+    words = [
+        "coffee",
+        "coffee",
+        "drink",
+        "drink",
+        "morning",
+        "morning",
+        "books",
+        "books",
+        "library",
+        "travel",
+        "summer",
+        "weather",
+        "today",
+        "music",
+        "family",
+    ]
+
+    managers = []
+    outputs = []
+    for name, insertion_order in [("first", 1), ("second", -1)]:
+        manager = DuckDBManager(db_path=tmp_path / f"{name}.duckdb")
+        manager.init_schema()
+        managers.append(manager)
+        manager.insert_batch_fast(
+            "words",
+            [
+                {
+                    "id": index + 1,
+                    "lemma": word,
+                    "pos": "noun",
+                    "source": "test",
+                }
+                for index, word in (list(enumerate(words))[::insertion_order])
+            ],
+        )
+        manager.insert_batch_fast(
+            "sentences",
+            [
+                {
+                    "id": index + 1,
+                    "text_en": text_en,
+                    "text_vi": text_vi,
+                    "cefr_level": "A2",
+                    "source": "test",
+                }
+                for index, (text_en, text_vi) in (
+                    list(enumerate(sentences))[::insertion_order]
+                )
+            ],
+        )
+        ReflexBuilder(seed=11).build(manager)
+        outputs.append(manager.get_connection().execute("""
+                SELECT drill_type, prompt_text, correct_answer, distractors_json
+                FROM reflex_drills
+                ORDER BY drill_type, prompt_text, correct_answer, distractors_json
+                """).fetchall())
+
+    for manager in managers:
+        manager.close()
+
+    assert outputs[0] == outputs[1]
+    for _, _, correct_answer, distractors_json in outputs[0]:
+        distractors = json.loads(distractors_json)
+        assert len(distractors) == 3
+        assert len({value.casefold() for value in distractors}) == 3
+        assert correct_answer.casefold() not in {
+            value.casefold() for value in distractors
+        }
+
+
 def test_scenario_trees_generation(db_mgr: DuckDBManager):
     builder = ScenarioBuilder()
     tree_count = builder.build(db_mgr)
