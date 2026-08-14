@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import uuid
 
 import duckdb
 
@@ -27,6 +28,11 @@ class DuckDBManager:
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._lock = threading.RLock()
 
+    @property
+    def lock(self) -> threading.RLock:
+        """Expose the internal re-entrant lock for coordinated transaction blocks."""
+        return self._lock
+
     def get_connection(self) -> duckdb.DuckDBPyConnection:
         with self._lock:
             if self._conn is None:
@@ -43,6 +49,30 @@ class DuckDBManager:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
+
+    def execute(self, sql: str, params: Optional[Any] = None) -> Any:
+        """Execute a SQL statement within the thread lock."""
+        with self._lock:
+            conn = self.get_connection()
+            if params is not None:
+                return conn.execute(sql, params)
+            return conn.execute(sql)
+
+    def fetch_all(self, sql: str, params: Optional[Any] = None) -> List[Tuple[Any, ...]]:
+        """Execute a query and fetch all result rows within the thread lock."""
+        with self._lock:
+            conn = self.get_connection()
+            if params is not None:
+                return conn.execute(sql, params).fetchall()
+            return conn.execute(sql).fetchall()
+
+    def fetch_one(self, sql: str, params: Optional[Any] = None) -> Optional[Tuple[Any, ...]]:
+        """Execute a query and fetch a single result row within the thread lock."""
+        with self._lock:
+            conn = self.get_connection()
+            if params is not None:
+                return conn.execute(sql, params).fetchone()
+            return conn.execute(sql).fetchone()
 
     def init_schema(self) -> None:
         """Create all staging and internal tables."""
@@ -64,14 +94,17 @@ class DuckDBManager:
             return 0
         import pyarrow as pa
 
+        temp_name = f"_tmp_arrow_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
         with self._lock:
             conn = self.get_connection()
             arrow_table = pa.Table.from_pylist(rows)
             col_names = arrow_table.column_names
             col_str = ", ".join(col_names)
-            conn.register("_tmp_arrow_batch", arrow_table)
-            conn.execute(f"INSERT OR IGNORE INTO {table} ({col_str}) SELECT {col_str} FROM _tmp_arrow_batch")
-            conn.unregister("_tmp_arrow_batch")
+            conn.register(temp_name, arrow_table)
+            try:
+                conn.execute(f"INSERT OR IGNORE INTO {table} ({col_str}) SELECT {col_str} FROM {temp_name}")
+            finally:
+                conn.unregister(temp_name)
             return arrow_table.num_rows
 
     def insert_arrow(self, table: str, arrow_table) -> int:
@@ -79,13 +112,16 @@ class DuckDBManager:
         if arrow_table is None or arrow_table.num_rows == 0:
             return 0
 
+        temp_name = f"_tmp_arrow_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
         with self._lock:
             conn = self.get_connection()
             col_names = arrow_table.column_names
             col_str = ", ".join(col_names)
-            conn.register("_tmp_arrow_batch", arrow_table)
-            conn.execute(f"INSERT OR IGNORE INTO {table} ({col_str}) SELECT {col_str} FROM _tmp_arrow_batch")
-            conn.unregister("_tmp_arrow_batch")
+            conn.register(temp_name, arrow_table)
+            try:
+                conn.execute(f"INSERT OR IGNORE INTO {table} ({col_str}) SELECT {col_str} FROM {temp_name}")
+            finally:
+                conn.unregister(temp_name)
             return arrow_table.num_rows
 
     def count_rows(self, table: str) -> int:
