@@ -149,6 +149,22 @@ def test_reflex_builder_caps_each_drill_type_and_replaces_prior_run(
     assert db_mgr.count_rows("reflex_drills") == 4
 
 
+def test_reflex_builder_logs_progress_after_persisting_batches(
+    db_mgr: DuckDBManager, caplog: pytest.LogCaptureFixture
+):
+    _insert_reflex_cap_fixture(db_mgr)
+
+    with caplog.at_level("INFO", logger=reflex_builder_module.__name__):
+        ReflexBuilder(seed=1, batch_size=2).build(db_mgr, max_drills_per_type=2)
+
+    progress_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "reflex progress" in record.getMessage()
+    ]
+    assert any("created=2/2" in message for message in progress_messages)
+
+
 def test_reflex_builder_is_reproducible_when_fixture_insert_order_changes(
     tmp_path: Path,
 ):

@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import re
+import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -84,6 +85,7 @@ class ReflexBuilder:
             raise ValueError("max_drills_per_type must be nonnegative")
         if self._batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        started_at = time.monotonic()
 
         conn = db_mgr.get_connection()
         conn.execute("DELETE FROM reflex_drills")
@@ -141,12 +143,46 @@ class ReflexBuilder:
         words_by_length: dict[int, list[str]] = {}
         for word in word_pool:
             words_by_length.setdefault(len(word), []).append(word)
-        drills_batch: list[dict[str, Any]] = []
+        pending_by_type: dict[str, list[dict[str, Any]]] = {
+            "speed_translation": [],
+            "cloze": [],
+        }
         rng = random.Random(self._seed)
         speed_translation_created = 0
         cloze_created = 0
+        speed_translation_skipped = 0
+        cloze_skipped = 0
+        sentences_examined = 0
+
+        def flush(drill_type: str) -> None:
+            pending = pending_by_type[drill_type]
+            if not pending:
+                return
+            try:
+                db_mgr.insert_batch_fast("reflex_drills", pending)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"reflex batch insert failed for {drill_type}"
+                ) from exc
+            pending.clear()
+            created = (
+                speed_translation_created
+                if drill_type == "speed_translation"
+                else cloze_created
+            )
+            elapsed = time.monotonic() - started_at
+            logger.info(
+                "reflex progress type=%s sentences_examined=%d created=%d/%d "
+                "elapsed=%.3fs",
+                drill_type,
+                sentences_examined,
+                created,
+                max_drills_per_type,
+                elapsed,
+            )
 
         for sid, text_en, text_vi, cefr in sentences:
+            sentences_examined += 1
             en_clean = text_en.strip()
             vi_clean = text_vi.strip()
             if not en_clean or not vi_clean:
@@ -160,7 +196,7 @@ class ReflexBuilder:
                     rng,
                 )
                 if distractors_vi is not None:
-                    drills_batch.append(
+                    pending_by_type["speed_translation"].append(
                         {
                             "sentence_id": sid,
                             "drill_type": "speed_translation",
@@ -173,6 +209,10 @@ class ReflexBuilder:
                         }
                     )
                     speed_translation_created += 1
+                    if len(pending_by_type["speed_translation"]) >= self._batch_size:
+                        flush("speed_translation")
+                else:
+                    speed_translation_skipped += 1
 
             # Drill 2: Cloze / Missing Word Fill
             words_in_sent = re.findall(r"\b[a-zA-Z]{3,}\b", en_clean)
@@ -190,7 +230,7 @@ class ReflexBuilder:
                     rng,
                 )
                 if distractors_cloze is not None:
-                    drills_batch.append(
+                    pending_by_type["cloze"].append(
                         {
                             "sentence_id": sid,
                             "drill_type": "cloze",
@@ -203,14 +243,27 @@ class ReflexBuilder:
                         }
                     )
                     cloze_created += 1
+                    if len(pending_by_type["cloze"]) >= self._batch_size:
+                        flush("cloze")
+                else:
+                    cloze_skipped += 1
+            elif cloze_created < max_drills_per_type:
+                cloze_skipped += 1
 
-            if len(drills_batch) >= self._batch_size:
-                db_mgr.insert_batch_fast("reflex_drills", drills_batch)
-                drills_batch.clear()
-
-        if drills_batch:
-            db_mgr.insert_batch_fast("reflex_drills", drills_batch)
+        flush("speed_translation")
+        flush("cloze")
 
         created = speed_translation_created + cloze_created
-        logger.info("Generated and saved %d reflex drill cards", created)
+        logger.info(
+            "Completed reflex build: speed_translation created=%d/%d skipped=%d; "
+            "cloze created=%d/%d skipped=%d; sentences_examined=%d elapsed=%.3fs",
+            speed_translation_created,
+            max_drills_per_type,
+            speed_translation_skipped,
+            cloze_created,
+            max_drills_per_type,
+            cloze_skipped,
+            sentences_examined,
+            time.monotonic() - started_at,
+        )
         return created
