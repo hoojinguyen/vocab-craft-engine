@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from src.db.duckdb_manager import DuckDBManager
@@ -40,6 +40,21 @@ def _select_distractors(
     }:
         return None
     return distractors
+
+
+def _select_indexed_distractors(
+    pool: Sequence[str], answer_index: int | None, rng: random.Random
+) -> list[str] | None:
+    """Select three values by index while excluding the answer's pool index."""
+    if answer_index is None or len(pool) < 4:
+        return None
+    if not 0 <= answer_index < len(pool):
+        return None
+
+    selected_indices = rng.sample(range(len(pool) - 1), 3)
+    return [
+        pool[index if index < answer_index else index + 1] for index in selected_indices
+    ]
 
 
 class ReflexBuilder:
@@ -80,13 +95,8 @@ class ReflexBuilder:
             )
             all_vi_texts = _dedupe_stable(all_vi_texts)
 
-        vi_candidates_by_answer = {
-            answer.casefold(): [
-                candidate
-                for candidate in all_vi_texts
-                if candidate.casefold() != answer.casefold()
-            ]
-            for answer in {row[2].strip() for row in sentences if row[2]}
+        vi_index_by_answer = {
+            answer.casefold(): index for index, answer in enumerate(all_vi_texts)
         }
 
         # Collect word pool for cloze distractors
@@ -145,9 +155,9 @@ class ReflexBuilder:
 
             # Drill 1: Speed Translation (EN -> VI prompt with 3 random VI distractors)
             if speed_translation_created < max_drills_per_type:
-                distractors_vi = _select_distractors(
-                    vi_candidates_by_answer.get(vi_clean.casefold(), all_vi_texts),
-                    vi_clean,
+                distractors_vi = _select_indexed_distractors(
+                    all_vi_texts,
+                    vi_index_by_answer.get(vi_clean.casefold()),
                     rng,
                 )
                 if distractors_vi is not None:

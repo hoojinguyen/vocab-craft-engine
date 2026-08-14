@@ -1,10 +1,11 @@
 import json
+import random
 from pathlib import Path
 
 import pytest
 
 from src.db.duckdb_manager import DuckDBManager
-from src.enrichment.reflex_builder import ReflexBuilder
+from src.enrichment.reflex_builder import ReflexBuilder, _select_indexed_distractors
 from src.enrichment.scenario_builder import ScenarioBuilder
 from src.pipeline.steps.enrich_reflex import EnrichReflexStep
 from src.pipeline.steps.enrich_scenarios import EnrichScenariosStep
@@ -331,6 +332,28 @@ def test_reflex_builder_deduplicates_candidates_across_equivalent_databases(
         assert correct_answer.casefold() not in {
             value.casefold() for value in distractors
         }
+
+
+def test_indexed_speed_selection_reads_only_selected_values():
+    class CountingPool:
+        def __init__(self, values):
+            self.values = values
+            self.accesses = 0
+
+        def __len__(self):
+            return len(self.values)
+
+        def __getitem__(self, index):
+            self.accesses += 1
+            return self.values[index]
+
+    pool = CountingPool([f"translation-{index}" for index in range(1000)])
+    distractors = _select_indexed_distractors(pool, 500, random.Random(17))
+
+    assert distractors is not None
+    assert pool.accesses == 3
+    assert len(distractors) == 3
+    assert "translation-500" not in distractors
 
 
 def test_scenario_trees_generation(db_mgr: DuckDBManager):
