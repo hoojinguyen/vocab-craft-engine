@@ -117,6 +117,7 @@ class SqliteExporter:
 
         # Final maintenance pragmas
         s_cursor.execute("PRAGMA foreign_keys = ON;")
+        s_cursor.execute("PRAGMA journal_mode = WAL;")
         s_cursor.execute("PRAGMA optimize;")
         s_conn.close()
 
