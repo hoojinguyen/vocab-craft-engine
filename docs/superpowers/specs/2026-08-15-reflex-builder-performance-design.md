@@ -1,6 +1,6 @@
 # Reflex Builder Performance Design
 
-**Date:** 2026-08-15  
+**Date:** 2026-08-15
 **Status:** Approved design
 
 ## Goal
