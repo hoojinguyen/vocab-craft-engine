@@ -23,6 +23,10 @@ dependencies = [
     "PyYAML>=6.0",
     "rich>=13.7.0",
     "textual>=0.70.0",
+    "orjson>=3.9.0",
+    "nltk>=3.8.0",
+    "pyarrow>=14.0.0",
+    "argostranslate>=1.9.0",
 ]
 
 [project.optional-dependencies]
