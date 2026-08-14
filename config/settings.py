@@ -6,11 +6,15 @@ from pathlib import Path
 
 # Base Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_DIR = BASE_DIR / "config"
 DATA_DIR = BASE_DIR / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 AUDIO_DIR = DATA_DIR / "audio"
 OUTPUT_DIR = DATA_DIR / "output"
+
+THEME_MAP_PATH = CONFIG_DIR / "theme_map.yaml"
+
 
 # Source File Paths
 KAIKKI_JSON_PATH = RAW_DATA_DIR / "kaikki.org-dictionary-English.json"
