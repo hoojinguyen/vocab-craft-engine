@@ -1,0 +1,49 @@
+import logging
+import pytest
+from src.monitoring.tui.progress import PipelineProgressApp, TUILoggingHandler
+from src.pipeline.monitor.dashboard import TextualPipelineDashboard, DashboardLoggingHandler
+
+
+def test_progress_app_init_and_steps():
+    app = PipelineProgressApp(title="TEST MONITOR")
+    app.set_steps(["step1", "step2"])
+    assert "step1" in app.step_list.steps_data
+    assert "step2" in app.step_list.steps_data
+
+
+def test_tui_logging_handler():
+    app = PipelineProgressApp()
+    handler = TUILoggingHandler(app)
+    logger = logging.getLogger("test_tui_logger")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+    logger.info("Test log record output")
+    assert len(app.logs_buffer) > 0
+    assert "Test log record output" in app.logs_buffer[-1]
+
+
+def test_backward_compatibility_alias():
+    # Verify TextualPipelineDashboard is an alias/compatible subclass of PipelineProgressApp
+    dashboard = TextualPipelineDashboard(title="LEGACY MONITOR")
+    assert isinstance(dashboard, PipelineProgressApp)
+    handler = DashboardLoggingHandler(dashboard)
+    assert isinstance(handler, TUILoggingHandler)
+
+
+def test_progress_app_pause_and_refresh_actions():
+    app = PipelineProgressApp()
+    assert not app.is_paused
+    app.action_toggle_pause()
+    assert app.is_paused
+    app.action_toggle_pause()
+    assert not app.is_paused
+
+
+def test_progress_app_step_status_update():
+    app = PipelineProgressApp()
+    app.set_steps(["ingest"])
+    app.update_step_status("ingest", "SUCCESS", duration=1.5, items=200, retries=0, metrics="200 items/s")
+    assert app.step_list.steps_data["ingest"]["status"] == "SUCCESS"
+    assert app.step_list.steps_data["ingest"]["duration"] == 1.5
+    assert app.step_list.steps_data["ingest"]["items"] == 200
