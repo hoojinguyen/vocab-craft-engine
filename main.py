@@ -91,7 +91,8 @@ def main():
 
         context = PipelineContext(db_manager=db_manager, args=args)
         registry = get_default_registry()
-        orchestrator = PipelineOrchestrator(registry=registry)
+        workers = getattr(args, "workers", 4)
+        orchestrator = PipelineOrchestrator(registry=registry, max_workers=workers)
 
         summary = orchestrator.run(context)
         if summary.has_failures:
