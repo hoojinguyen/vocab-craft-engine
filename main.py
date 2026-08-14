@@ -25,12 +25,13 @@ logger = logging.getLogger(__name__)
 
 def handle_status(db_manager: DuckDBManager):
     conn = db_manager.get_connection()
-    rows = conn.execute("SELECT step_name, status, items_processed, execution_time_seconds, updated_at FROM _pipeline_meta").fetchall()
+    rows = conn.execute("SELECT step_name, status, row_count, duration_secs, completed_at FROM _pipeline_meta ORDER BY started_at").fetchall()
     print("\n=== PIPELINE STEP STATUS ===")
-    print(f"{'STEP NAME':<25} {'STATUS':<12} {'ITEMS':<10} {'TIME (s)':<10} {'UPDATED AT'}")
+    print(f"{'STEP NAME':<25} {'STATUS':<12} {'ITEMS':<10} {'TIME (s)':<10} {'COMPLETED AT'}")
     print("-" * 75)
     for r in rows:
-        print(f"{r[0]:<25} {r[1]:<12} {r[2]:<10} {r[3]:<10.2f} {r[4]}")
+        dur = r[3] if r[3] is not None else 0.0
+        print(f"{r[0]:<25} {r[1]:<12} {r[2]:<10} {dur:<10.2f} {r[4]}")
     print()
 
 

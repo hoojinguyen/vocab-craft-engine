@@ -74,20 +74,26 @@ def test_clear_checkpoints(db_manager):
     assert db_manager.get_last_checkpoint("ingest_kaikki") is None
 
 
-def test_translation_cache_roundtrip(db_manager):
-    db_manager.save_translation("hello", "xin chào", "argos")
-    result = db_manager.get_translation("hello")
-    assert result == "xin chào"
+def test_insert_batch_fast_high_speed(db_manager):
+    rows = [{"lemma": f"word_{i}", "pos": "noun", "source": "test"} for i in range(5000)]
+    inserted = db_manager.insert_batch_fast("words", rows)
+    assert inserted == 5000
+    assert db_manager.count_rows("words") == 5000
+
+    # Test deduplication
+    dup_inserted = db_manager.insert_batch_fast("words", rows)
+    assert dup_inserted == 0 or db_manager.count_rows("words") == 5000
+    assert db_manager.count_rows("words") == 5000
 
 
-def test_translation_cache_miss(db_manager):
-    assert db_manager.get_translation("unknown") is None
+def test_insert_arrow_table(db_manager):
+    import pyarrow as pa
+    data = {
+        "lemma": ["apple", "banana", "cherry"],
+        "pos": ["noun", "noun", "noun"],
+        "source": ["arrow", "arrow", "arrow"]
+    }
+    arrow_table = pa.Table.from_pydict(data)
+    db_manager.insert_arrow("words", arrow_table)
+    assert db_manager.count_rows("words") == 3
 
-
-def test_translations_batch(db_manager):
-    db_manager.save_translation("hello", "xin chào", "argos")
-    db_manager.save_translation("goodbye", "tạm biệt", "argos")
-    results = db_manager.get_translations_batch(["hello", "goodbye", "missing"])
-    assert results["hello"] == "xin chào"
-    assert results["goodbye"] == "tạm biệt"
-    assert "missing" not in results

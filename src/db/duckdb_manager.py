@@ -50,22 +50,28 @@ class DuckDBManager:
     # ---- Batch Operations ------------------------------------------------
 
     def insert_batch(self, table: str, rows: list[dict[str, Any]]) -> int:
-        """Insert rows into table with ON CONFLICT DO NOTHING for dedup.
+        """Insert rows into table with ON CONFLICT DO NOTHING for dedup."""
+        return self.insert_batch_fast(table, rows)
 
-        Returns the number of rows inserted (new count - old count).
-        """
+    def insert_batch_fast(self, table: str, rows: list[dict[str, Any]]) -> int:
+        """High-speed batch insertion using PyArrow Table zero-copy registration in DuckDB."""
         if not rows:
             return 0
+        import pyarrow as pa
+        arrow_table = pa.Table.from_pylist(rows)
+        return self.insert_arrow(table, arrow_table)
+
+    def insert_arrow(self, table: str, arrow_table: Any) -> int:
+        """Zero-copy insertion of PyArrow Table into DuckDB with INSERT OR IGNORE."""
+        if arrow_table is None or arrow_table.num_rows == 0:
+            return 0
         conn = self.get_connection()
-        count_before = self.count_rows(table)
-        columns = list(rows[0].keys())
-        placeholders = ", ".join(["?"] * len(columns))
-        col_str = ", ".join(columns)
-        sql = f"INSERT OR IGNORE INTO {table} ({col_str}) VALUES ({placeholders})"
-        values = [tuple(row.get(c) for c in columns) for row in rows]
-        conn.executemany(sql, values)
-        count_after = self.count_rows(table)
-        return count_after - count_before
+        col_names = arrow_table.column_names
+        col_str = ", ".join(col_names)
+        conn.register("_tmp_arrow_batch", arrow_table)
+        conn.execute(f"INSERT OR IGNORE INTO {table} ({col_str}) SELECT {col_str} FROM _tmp_arrow_batch")
+        conn.unregister("_tmp_arrow_batch")
+        return arrow_table.num_rows
 
     def count_rows(self, table: str) -> int:
         conn = self.get_connection()
