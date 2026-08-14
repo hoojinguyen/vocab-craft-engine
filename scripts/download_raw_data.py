@@ -34,7 +34,11 @@ URL_TATOEBA_SENTENCES = "https://downloads.tatoeba.org/exports/sentences.tar.bz2
 URL_TATOEBA_LINKS = "https://downloads.tatoeba.org/exports/links.tar.bz2"
 URL_FREQ_WORDS = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt"
 URL_NGSL = "https://raw.githubusercontent.com/koba-ninkigumi/ngsl/master/NGSL-1.01.csv"
-URL_OXFORD_3000 = "https://raw.githubusercontent.com/open-dictionary/oxford-3000-5000/main/oxford3000.txt"
+OXFORD_3000_URLS = [
+    "https://gist.githubusercontent.com/dlants/d3b25b0f6c0bf8d023f65e86498bf9e6/raw/3000-words.txt",
+    "https://raw.githubusercontent.com/gokhanyavas/Oxford-3000-Word-List/master/Oxford%203000%20Word%20List.txt",
+]
+URL_OXFORD_3000 = OXFORD_3000_URLS[0]
 URL_OPENS_ENVI = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2024/moses/en-vi.txt.zip"
 URL_TED_LIKE_EN = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.en"
 URL_TED_LIKE_VI = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.vi"
@@ -144,24 +148,32 @@ def load_oxford_words(path: Path) -> set:
 def download_oxford_3000(dest_path: Path | None = None) -> Path:
     """
     Downloads the Oxford 3000 vocabulary list if missing.
-    Falls back to basic headword list if download fails.
+    Tries multiple mirror URLs, falling back to basic headword list if all fail.
     """
     target = dest_path or OXFORD_3000_PATH
     if not target.exists() or target.stat().st_size == 0:
         logger.info("Downloading Oxford 3000 vocabulary list...")
-        try:
-            req = urllib.request.Request(
-                URL_OXFORD_3000,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            with urllib.request.urlopen(req) as resp:
-                content = resp.read()
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(content)
-        except Exception as e:
-            logger.warning("Could not download Oxford 3000 from URL (%s); writing fallback list", e)
+        downloaded = False
+        for url in OXFORD_3000_URLS:
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    if resp.status == 200:
+                        content = resp.read()
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(content)
+                        logger.info("Successfully downloaded Oxford 3000 list from %s (%d bytes)", url, len(content))
+                        downloaded = True
+                        break
+            except Exception as e:
+                logger.warning("Could not download Oxford 3000 from URL %s: %s", url, e)
+
+        if not downloaded:
+            logger.warning("All Oxford 3000 mirror URLs failed; writing local fallback list")
             target.parent.mkdir(parents=True, exist_ok=True)
-            # Basic fallback headwords
             target.write_text("the\nbe\nto\nof\nand\na\nin\nthat\nhave\ni\nit\nfor\nnot\non\nwith\nhe\nas\nyou\ndo\nat\n", encoding="utf-8")
     return target
 
