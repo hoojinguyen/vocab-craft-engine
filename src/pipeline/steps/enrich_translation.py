@@ -19,5 +19,8 @@ class EnrichTranslationStep(BaseStep):
 
     def run(self, ctx: PipelineContext) -> StepResult:
         translator = HybridTranslator(ctx.db)
-        count = translator.translate_definitions()
-        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=count)
+        count_defs = translator.translate_definitions()
+        count_phrases = translator.translate_phrases()
+        total = count_defs + count_phrases
+        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=total)
+
