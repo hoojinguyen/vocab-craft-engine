@@ -6,7 +6,7 @@ Orchestrates DAG-based Parallel Execution with DuckDB Staging.
 import logging
 import sys
 
-from config.settings import STAGING_DUCKDB_PATH
+import config.settings
 from scripts.download_raw_data import download_all_raw_data
 from src.db.duckdb_manager import DuckDBManager
 from src.pipeline.cli import REQUIRED_RAW_FILES, get_missing_raw_files, parse_arguments
@@ -67,7 +67,7 @@ def handle_export(db_manager: DuckDBManager, export_format: str):
 def main():
     args = parse_arguments()
 
-    db_manager = DuckDBManager(db_path=STAGING_DUCKDB_PATH)
+    db_manager = DuckDBManager(db_path=config.settings.STAGING_DUCKDB_PATH)
     db_manager.init_schema()
 
     try:

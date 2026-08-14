@@ -4,6 +4,7 @@ import pytest
 
 def test_pipeline_dry_run_cli(tmp_path):
     db_path = tmp_path / "sqlite_export.db"
+    staging_path = tmp_path / "test_staging.duckdb"
     state_path = tmp_path / ".pipeline_state.json"
     script = (
         "import sys, pathlib; sys.argv=['main.py', '--dry-run']; "
@@ -11,8 +12,10 @@ def test_pipeline_dry_run_cli(tmp_path):
         "patch('main.download_all_raw_data').start(); "
         "import config.settings; "
         f"config.settings.EXPORT_SQLITE_PATH = pathlib.Path({repr(str(db_path))}); "
+        f"config.settings.STAGING_DUCKDB_PATH = pathlib.Path({repr(str(staging_path))}); "
         "import main; "
         f"main.EXPORT_SQLITE_PATH = pathlib.Path({repr(str(db_path))}); "
+        f"main.STAGING_DUCKDB_PATH = pathlib.Path({repr(str(staging_path))}); "
         "main.main()"
     )
     result = subprocess.run(

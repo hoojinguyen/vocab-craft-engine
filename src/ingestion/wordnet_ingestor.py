@@ -4,11 +4,7 @@ import logging
 from typing import Any, Dict, List, Set, Tuple
 import nltk
 
-try:
-    nltk.data.find("corpora/wordnet.zip")
-except LookupError:
-    nltk.download("wordnet")
-
+import config.settings  # registers local nltk data paths
 from nltk.corpus import wordnet as wn
 from src.db.duckdb_manager import DuckDBManager
 

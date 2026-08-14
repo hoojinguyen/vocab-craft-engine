@@ -85,3 +85,18 @@ TTS_SPEED_FAST_REFLEX = "+20%"
 # Ensure directories exist
 for directory in [DATA_DIR, RAW_DATA_DIR, PROCESSED_DATA_DIR, AUDIO_DIR, OUTPUT_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
+
+# NLTK local data path configuration
+NLTK_DATA_DIR = RAW_DATA_DIR / "nltk_data"
+VENV_NLTK_DATA_DIR = BASE_DIR / ".venv" / "nltk_data"
+
+try:
+    import nltk
+    valid_paths = [str(VENV_NLTK_DATA_DIR), str(NLTK_DATA_DIR)]
+    for p in nltk.data.path:
+        if str(BASE_DIR) in p and p not in valid_paths:
+            valid_paths.append(p)
+    nltk.data.path = valid_paths
+except ImportError:
+    pass
+

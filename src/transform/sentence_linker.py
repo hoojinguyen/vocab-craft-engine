@@ -3,13 +3,7 @@
 import logging
 import re
 from typing import Dict, List, Set, Tuple
-import nltk
-
-try:
-    nltk.data.find("corpora/wordnet.zip")
-except LookupError:
-    nltk.download("wordnet")
-
+import config.settings  # registers local nltk data paths
 from nltk.corpus import wordnet as wn
 from src.db.duckdb_manager import DuckDBManager
 
@@ -46,10 +40,13 @@ class SentenceLinker:
                 matched_ids.update(lemma_to_ids[token])
 
             # Try WordNet morphy lemmatization across POS tags
-            for pos_tag in (wn.NOUN, wn.VERB, wn.ADJ, wn.ADV):
-                lemma_wn = wn.morphy(token, pos_tag)
-                if lemma_wn and lemma_wn in lemma_to_ids:
-                    matched_ids.update(lemma_to_ids[lemma_wn])
+            try:
+                for pos_tag in (wn.NOUN, wn.VERB, wn.ADJ, wn.ADV):
+                    lemma_wn = wn.morphy(token, pos_tag)
+                    if lemma_wn and lemma_wn in lemma_to_ids:
+                        matched_ids.update(lemma_to_ids[lemma_wn])
+            except Exception:
+                pass
 
             # Common rule-based suffix fallbacks
             if token.endswith("s") and len(token) > 3:

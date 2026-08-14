@@ -13,14 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import g2p_en
 import nltk
 
-try:
-    nltk.data.find("corpora/cmudict.zip")
-except LookupError:
-    try:
-        nltk.download("cmudict", quiet=True)
-    except Exception:
-        pass
-
+import config.settings  # registers local nltk data paths
 from nltk.corpus import cmudict
 from src.db.duckdb_manager import DuckDBManager
 
