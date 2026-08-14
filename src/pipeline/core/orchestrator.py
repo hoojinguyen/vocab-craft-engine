@@ -5,9 +5,10 @@ Executes DAG levels sequentially, running independent steps within each level in
 Integrates with DuckDB-backed StateManager, RetryPolicy, and Textual Dashboard.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
-import time
 from pathlib import Path
+import time
 from typing import Any, List, Optional, Set
 
 from src.db.duckdb_manager import DuckDBManager
@@ -42,6 +43,7 @@ class PipelineOrchestrator:
         registry: Optional[StepRegistry] = None,
         state_manager: Optional[StateManager] = None,
         state_file: Optional[Any] = None,
+        max_workers: int = 4,
         tui_enabled: bool = False,
     ):
         if steps is not None:
@@ -56,6 +58,7 @@ class PipelineOrchestrator:
         if self.state_manager is None:
             from unittest.mock import MagicMock
             self.state_manager = MagicMock()
+        self.max_workers = max(1, max_workers)
         self.dashboard: Optional[TextualPipelineDashboard] = None
         self.has_failures = False
 
@@ -89,6 +92,15 @@ class PipelineOrchestrator:
         log_dir_arg = _get_arg(args, "log_dir", "logs")
         log_dir = Path(log_dir_arg) if log_dir_arg else Path("logs")
 
+        # Resolve enabled optional steps from CLI args or context
+        enabled_opts = set(getattr(context, "enabled_optional_steps", []))
+        cli_enabled = _get_arg(args, "enable", None)
+        if isinstance(cli_enabled, str):
+            enabled_opts.update([s.strip() for s in cli_enabled.split(",") if s.strip()])
+        elif isinstance(cli_enabled, (list, set)):
+            enabled_opts.update(cli_enabled)
+        context.enabled_optional_steps = list(enabled_opts)
+
         run_logger = RunLogger(log_dir=log_dir)
         self.dashboard = TextualPipelineDashboard(enabled=tui_enabled and not dry_run)
 
@@ -98,6 +110,7 @@ class PipelineOrchestrator:
 
         logger.info("==========================================================")
         logger.info("   STARTING VOCAB CRAFT ENGINE PIPELINE (DAG V2)         ")
+        logger.info("   Workers: %d | Total Steps: %d", self.max_workers, len(all_step_names))
         logger.info("==========================================================")
 
         def worker_func():
@@ -127,6 +140,145 @@ class PipelineOrchestrator:
         self._print_summary(results, total_time)
         return summary
 
+    def _execute_single_step(
+        self,
+        step: BaseStep,
+        context: PipelineContext,
+        dry_run: bool,
+        force_all: bool,
+        force_steps: Set[str],
+        retry_policy: RetryPolicy,
+    ) -> StepResult:
+        logger.info(f"=== START: {step.name}")
+        step_start = time.monotonic()
+        if self.dashboard:
+            self.dashboard.update_step(step.name, "RUNNING")
+
+        # 1. Check dry-run
+        if dry_run:
+            msg = f"[DRY-RUN] Would run '{step.name}' ({getattr(step, 'description', '')})"
+            logger.info(msg)
+            res = StepResult(step_name=step.name, status=StepStatus.SKIPPED, execution_time_seconds=0.0, message=msg)
+            if self.dashboard:
+                self.dashboard.update_step(step.name, "SKIPPED", 0.0, 0, 0, "Dry-Run")
+            logger.info(f"=== END: {step.name}")
+            return res
+
+        # 2. Check if optional and disabled
+        is_optional = getattr(step, "optional", False)
+        enabled_list = getattr(context, "enabled_optional_steps", [])
+        if is_optional and step.name not in enabled_list:
+            msg = f"Optional step '{step.name}' is not enabled"
+            logger.info("SKIPPED: %s (%s)", step.name, msg)
+            res = StepResult(step_name=step.name, status=StepStatus.SKIPPED, execution_time_seconds=0.0, message=msg)
+            if self.dashboard:
+                self.dashboard.update_step(step.name, "SKIPPED", 0.0, 0, 0, "Optional Disabled")
+            logger.info(f"=== END: {step.name}")
+            return res
+
+        # 3. Check StateManager skip condition
+        skip = False
+        skip_reason = ""
+        if self.state_manager and self.dag and hasattr(self.state_manager, "should_skip"):
+            res_skip = self.state_manager.should_skip(
+                step=step, dag=self.dag, force_steps=force_steps, force_all=force_all
+            )
+            if isinstance(res_skip, tuple) and len(res_skip) == 2:
+                skip, skip_reason = res_skip
+
+        if skip:
+            logger.info("SKIPPED: %s (%s)", step.name, skip_reason)
+            res = StepResult(
+                step_name=step.name,
+                status=StepStatus.SKIPPED,
+                execution_time_seconds=0.0,
+                message=skip_reason,
+            )
+            if self.dashboard:
+                self.dashboard.update_step(step.name, "SKIPPED", 0.0, 0, 0, skip_reason)
+            logger.info(f"=== END: {step.name}")
+            return res
+
+        # Invalidate downstream steps in state manager
+        if self.state_manager and self.dag:
+            self.state_manager.invalidate_step(step.name, self.dag)
+
+        # 4. Execute with retry
+        try:
+            logger.info("Running: %s...", getattr(step, "description", ""))
+
+            def on_retry(attempt, total, exc):
+                if self.dashboard:
+                    self.dashboard.update_step(step.name, f"RETRY {attempt}/{total}", retries=attempt)
+                    self.dashboard.add_log(f"[WARNING] [{step.name}] Attempt {attempt}/{total} failed: {exc}")
+
+            res = retry_policy.execute_with_retry(step, context, on_retry_callback=on_retry)
+            duration = round(time.monotonic() - step_start, 2)
+            if res.execution_time_seconds == 0.0:
+                res.execution_time_seconds = duration
+
+            if res.status == StepStatus.SUCCESS:
+                if self.state_manager:
+                    source_hash = step.compute_source_hash()
+                    self.state_manager.record_success(
+                        step.name, source_hash, res.items_processed, res.execution_time_seconds
+                    )
+                if self.dashboard:
+                    self.dashboard.update_step(
+                        step.name, "SUCCESS", res.execution_time_seconds, res.items_processed, res.retry_count,
+                        f"processed: {res.items_processed}"
+                    )
+                logger.info(f"=== END: {step.name}")
+                return res
+            else:
+                self.has_failures = True
+                if self.state_manager:
+                    source_hash = step.compute_source_hash()
+                    self.state_manager.record_failure(
+                        step.name, source_hash, res.execution_time_seconds, res.message
+                    )
+                    if self.dag:
+                        self.state_manager.invalidate_step(step.name, self.dag)
+
+                if self.dashboard:
+                    self.dashboard.update_step(
+                        step.name, "FAILED", res.execution_time_seconds, 0, res.retry_count, res.message[:20] if res.message else ""
+                    )
+                if hasattr(step, "rollback"):
+                    try:
+                        step.rollback(context)
+                    except Exception as rb_err:
+                        logger.warning("Rollback error: %s", rb_err)
+                logger.info(f"=== END: {step.name}")
+                return res
+
+        except Exception as e:
+            duration = round(time.monotonic() - step_start, 2)
+            logger.error("FAILED step '%s' after %ss: %s", step.name, duration, e, exc_info=True)
+            self.has_failures = True
+            res = StepResult(
+                step_name=step.name,
+                status=StepStatus.FAILED,
+                execution_time_seconds=duration,
+                message=str(e),
+                error=e,
+            )
+            if self.state_manager:
+                source_hash = step.compute_source_hash()
+                self.state_manager.record_failure(step.name, source_hash, duration, str(e))
+                if self.dag:
+                    self.state_manager.invalidate_step(step.name, self.dag)
+
+            if self.dashboard:
+                self.dashboard.update_step(step.name, "FAILED", duration, 0, 0, str(e)[:20])
+            if hasattr(step, "rollback"):
+                try:
+                    step.rollback(context)
+                except Exception as rb_err:
+                    logger.warning("Rollback error: %s", rb_err)
+            logger.info(f"=== END: {step.name}")
+            return res
+
     def _execute_levels(
         self,
         execution_levels: List[List[BaseStep]],
@@ -138,7 +290,6 @@ class PipelineOrchestrator:
         results: List[StepResult],
     ) -> None:
         retry_policy = RetryPolicy(max_retries=max_retries)
-        step_idx = 0
 
         for level_idx, level in enumerate(execution_levels, 1):
             if self.has_failures:
@@ -147,126 +298,45 @@ class PipelineOrchestrator:
 
             logger.info(f"--- Execution Level {level_idx} ({len(level)} step(s)) ---")
 
-            for step in level:
-                step_idx += 1
-                self.dashboard.current_step_idx = step_idx
-                logger.info(f"=== START: {step.name}")
-                step_start = time.monotonic()
-                self.dashboard.update_step(step.name, "RUNNING")
-
-                if dry_run:
-                    msg = f"[DRY-RUN] Would run '{step.name}' ({getattr(step, 'description', '')})"
-                    logger.info(msg)
-                    res = StepResult(
-                        step_name=step.name,
-                        status=StepStatus.SKIPPED,
-                        execution_time_seconds=0.0,
-                        message=msg,
+            if len(level) == 1 or dry_run:
+                # Sequential single step execution
+                for step in level:
+                    res = self._execute_single_step(
+                        step=step,
+                        context=context,
+                        dry_run=dry_run,
+                        force_all=force_all,
+                        force_steps=force_steps,
+                        retry_policy=retry_policy,
                     )
                     results.append(res)
-                    self.dashboard.update_step(step.name, "SKIPPED", 0.0, 0, 0, "Dry-Run")
-                    logger.info(f"=== END: {step.name}")
-                    continue
-
-                # Check StateManager skip condition
-                skip = False
-                skip_reason = ""
-                if self.state_manager and self.dag and hasattr(self.state_manager, "should_skip"):
-                    res = self.state_manager.should_skip(
-                        step=step, dag=self.dag, force_steps=force_steps, force_all=force_all
-                    )
-                    if isinstance(res, tuple) and len(res) == 2:
-                        skip, skip_reason = res
-
-                if skip:
-                    logger.info("SKIPPED: %s (%s)", step.name, skip_reason)
-                    res = StepResult(
-                        step_name=step.name,
-                        status=StepStatus.SKIPPED,
-                        execution_time_seconds=0.0,
-                        message=skip_reason,
-                    )
-                    results.append(res)
-                    self.dashboard.update_step(step.name, "SKIPPED", 0.0, 0, 0, skip_reason)
-                    logger.info(f"=== END: {step.name}")
-                    continue
-
-                # Step will run: invalidate downstream steps in state manager
-                if self.state_manager and self.dag:
-                    self.state_manager.invalidate_step(step.name, self.dag)
-
-                # Run step with retry
-                try:
-                    logger.info("Running: %s...", getattr(step, "description", ""))
-
-                    def on_retry(attempt, total, exc):
-                        self.dashboard.update_step(step.name, f"RETRY {attempt}/{total}", retries=attempt)
-                        self.dashboard.add_log(f"[WARNING] [{step.name}] Attempt {attempt}/{total} failed: {exc}")
-
-                    res = retry_policy.execute_with_retry(step, context, on_retry_callback=on_retry)
-                    duration = round(time.monotonic() - step_start, 2)
-                    if res.execution_time_seconds == 0.0:
-                        res.execution_time_seconds = duration
-                    results.append(res)
-
-                    if res.status == StepStatus.SUCCESS:
-                        if self.state_manager:
-                            source_hash = step.compute_source_hash()
-                            self.state_manager.record_success(
-                                step.name, source_hash, res.items_processed, res.execution_time_seconds
-                            )
-                        self.dashboard.update_step(
-                            step.name, "SUCCESS", res.execution_time_seconds, res.items_processed, res.retry_count,
-                            f"processed: {res.items_processed}"
-                        )
-                        logger.info(f"=== END: {step.name}")
-                    else:
+                    if res.status == StepStatus.FAILED:
                         self.has_failures = True
-                        if self.state_manager:
-                            source_hash = step.compute_source_hash()
-                            self.state_manager.record_failure(
-                                step.name, source_hash, res.execution_time_seconds, res.message
-                            )
-                            if self.dag:
-                                self.state_manager.invalidate_step(step.name, self.dag)
-
-                        self.dashboard.update_step(
-                            step.name, "FAILED", res.execution_time_seconds, 0, res.retry_count, res.message[:20] if res.message else ""
-                        )
-                        if hasattr(step, "rollback"):
-                            try:
-                                step.rollback(context)
-                            except Exception as rb_err:
-                                logger.warning("Rollback error: %s", rb_err)
-                        logger.info(f"=== END: {step.name}")
                         break
+            else:
+                # Concurrent level execution across worker threads
+                workers = min(self.max_workers, len(level))
+                logger.info("Executing %d level steps concurrently with %d workers", len(level), workers)
 
-                except Exception as e:
-                    duration = round(time.monotonic() - step_start, 2)
-                    logger.error("FAILED step '%s' after %ss: %s", step.name, duration, e, exc_info=True)
-                    self.has_failures = True
-                    res = StepResult(
-                        step_name=step.name,
-                        status=StepStatus.FAILED,
-                        execution_time_seconds=duration,
-                        message=str(e),
-                        error=e,
-                    )
-                    results.append(res)
-                    if self.state_manager:
-                        source_hash = step.compute_source_hash()
-                        self.state_manager.record_failure(step.name, source_hash, duration, str(e))
-                        if self.dag:
-                            self.state_manager.invalidate_step(step.name, self.dag)
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_to_step = {
+                        executor.submit(
+                            self._execute_single_step,
+                            step,
+                            context,
+                            dry_run,
+                            force_all,
+                            force_steps,
+                            retry_policy,
+                        ): step
+                        for step in level
+                    }
 
-                    self.dashboard.update_step(step.name, "FAILED", duration, 0, 0, str(e)[:20])
-                    if hasattr(step, "rollback"):
-                        try:
-                            step.rollback(context)
-                        except Exception as rb_err:
-                            logger.warning("Rollback error: %s", rb_err)
-                    logger.info(f"=== END: {step.name}")
-                    break
+                    for future in as_completed(future_to_step):
+                        res = future.result()
+                        results.append(res)
+                        if res.status == StepStatus.FAILED:
+                            self.has_failures = True
 
     def _print_summary(self, results: List[StepResult], total_time: float) -> None:
         logger.info("\n" + "=" * 65)
