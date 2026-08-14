@@ -184,3 +184,24 @@ class DuckDBManager:
             texts,
         ).fetchall()
         return {row[0]: row[1] for row in rows}
+
+    # ---- IPA Cache -------------------------------------------------------
+
+    def get_ipa(self, word: str) -> dict[str, str | None] | None:
+        conn = self.get_connection()
+        row = conn.execute(
+            "SELECT ipa_us, ipa_uk, source FROM _ipa_cache WHERE word = ?",
+            [word],
+        ).fetchone()
+        if not row:
+            return None
+        return {"ipa_us": row[0], "ipa_uk": row[1], "source": row[2]}
+
+    def save_ipa(
+        self, word: str, ipa_us: str | None, ipa_uk: str | None, source: str = "cmu"
+    ) -> None:
+        conn = self.get_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO _ipa_cache (word, ipa_us, ipa_uk, source) VALUES (?, ?, ?, ?)",
+            [word, ipa_us, ipa_uk, source],
+        )

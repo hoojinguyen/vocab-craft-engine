@@ -97,3 +97,14 @@ def test_insert_arrow_table(db_manager):
     db_manager.insert_arrow("words", arrow_table)
     assert db_manager.count_rows("words") == 3
 
+
+def test_ipa_cache_operations(db_manager):
+    db_manager.save_ipa("hello", ipa_us="/həˈloʊ/", ipa_uk="/həˈləʊ/", source="cmu")
+    cached = db_manager.get_ipa("hello")
+    assert cached is not None
+    assert cached["ipa_us"] == "/həˈloʊ/"
+    assert cached["ipa_uk"] == "/həˈləʊ/"
+    assert cached["source"] == "cmu"
+    assert db_manager.get_ipa("nonexistent_word") is None
+
+
