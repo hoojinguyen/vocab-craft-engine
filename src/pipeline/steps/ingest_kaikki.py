@@ -1,7 +1,8 @@
 """Kaikki Wiktionary Ingestion Step V2."""
 
 from typing import Tuple
-from config.settings import KAIKKI_JSON_PATH
+from config.settings import KAIKKI_JSON_PATH, SUBTLEX_FREQ_PATH
+from src.ingestion.frequency_ingestor import FrequencyIngestor
 from src.ingestion.kaikki_ingestor import KaikkiIngestor
 from src.pipeline.core.base_step import BaseStep
 from src.pipeline.core.context import PipelineContext
@@ -25,4 +26,8 @@ class IngestKaikkiStep(BaseStep):
     def run(self, ctx: PipelineContext) -> StepResult:
         ingestor = KaikkiIngestor()
         count = ingestor.ingest(ctx.db, KAIKKI_JSON_PATH)
+        if SUBTLEX_FREQ_PATH.exists():
+            freq_ingestor = FrequencyIngestor()
+            freq_ingestor.populate_frequency_ranks(ctx.db, SUBTLEX_FREQ_PATH)
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=count)
+
