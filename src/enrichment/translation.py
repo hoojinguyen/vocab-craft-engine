@@ -1,5 +1,6 @@
 """Hybrid Translation Engine: Cache -> Argos (offline) -> Google (fallback) with Vectorized Bulk DB Updates."""
 
+from dataclasses import dataclass
 import logging
 from typing import Any, Dict, List, Optional
 import pyarrow as pa
@@ -10,20 +11,32 @@ from src.enrichment.vi_validator import VietnameseValidator
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class TranslationStats:
+    cache_hits: int = 0
+    argos_translated: int = 0
+    google_translated: int = 0
+    validation_rejected: int = 0
+    total_requested: int = 0
+
+
 class HybridTranslator:
     def __init__(self, db_mgr: DuckDBManager):
         self.db_mgr = db_mgr
         self.validator = VietnameseValidator()
+        self.stats = TranslationStats()
 
     def translate_text(self, text: str) -> str:
         if not text or not text.strip():
             return ""
 
+        self.stats.total_requested += 1
         clean_text = text.strip()
 
         # 1. Cache lookup
         cached = self.db_mgr.get_translation(clean_text)
         if cached:
+            self.stats.cache_hits += 1
             return cached
 
         # 2. Argos Translate offline primary
@@ -35,7 +48,11 @@ class HybridTranslator:
         except Exception:
             pass
 
-        if not self.validator.validate(translated):
+        if translated and self.validator.validate(translated):
+            self.stats.argos_translated += 1
+        else:
+            if translated:
+                self.stats.validation_rejected += 1
             # 3. Google Translate fallback
             source_engine = "google"
             try:
@@ -44,10 +61,14 @@ class HybridTranslator:
             except Exception:
                 translated = None
 
-        if not self.validator.validate(translated):
-            # Fallback placeholder if offline & network unavailable
-            translated = f"[VI] {clean_text}"
-            source_engine = "fallback"
+            if translated and self.validator.validate(translated):
+                self.stats.google_translated += 1
+            else:
+                if translated:
+                    self.stats.validation_rejected += 1
+                # Fallback placeholder if offline & network unavailable
+                translated = f"[VI] {clean_text}"
+                source_engine = "fallback"
 
         final_text = translated if translated else clean_text
         self.db_mgr.save_translation(clean_text, final_text, translator=source_engine)
@@ -63,6 +84,9 @@ class HybridTranslator:
         # Check DuckDB translation cache
         cached_map = self.db_mgr.get_translations_batch(unique_texts)
         results.update(cached_map)
+        if cached_map:
+            self.stats.cache_hits += len(cached_map)
+            self.stats.total_requested += len(cached_map)
 
         # Translate missing texts
         missing = [t for t in unique_texts if t not in results]
@@ -70,6 +94,21 @@ class HybridTranslator:
             results[item] = self.translate_text(item)
 
         return results
+
+    def get_summary(self) -> Dict[str, Any]:
+        cache_ratio = (
+            (self.stats.cache_hits / self.stats.total_requested * 100.0)
+            if self.stats.total_requested > 0
+            else 0.0
+        )
+        return {
+            "total_requested": self.stats.total_requested,
+            "cache_hits": self.stats.cache_hits,
+            "cache_ratio_pct": round(cache_ratio, 2),
+            "argos_translated": self.stats.argos_translated,
+            "google_translated": self.stats.google_translated,
+            "validation_rejected": self.stats.validation_rejected,
+        }
 
     def translate_definitions(
         self,

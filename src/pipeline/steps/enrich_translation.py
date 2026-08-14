@@ -1,10 +1,13 @@
 """Vietnamese Translation Enrichment Step V2."""
 
+import logging
 from typing import Tuple
 from src.enrichment.translation import HybridTranslator
 from src.pipeline.core.base_step import BaseStep
 from src.pipeline.core.context import PipelineContext
 from src.pipeline.core.result import StepResult, StepStatus
+
+logger = logging.getLogger(__name__)
 
 
 class EnrichTranslationStep(BaseStep):
@@ -33,5 +36,20 @@ class EnrichTranslationStep(BaseStep):
         count_defs = translator.translate_definitions(limit=vi_budget, progress=progress)
         count_phrases = translator.translate_phrases(limit=vi_budget, progress=progress)
         total = count_defs + count_phrases
-        return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=total)
+
+        summary = translator.get_summary()
+        logger.info(
+            "Translation Complete: %d defs, %d phrases (Total: %d) | Cache Hits: %d (%.1f%%) | Argos: %d | Google: %d | Rejects: %d",
+            count_defs, count_phrases, total,
+            summary["cache_hits"], summary["cache_ratio_pct"],
+            summary["argos_translated"], summary["google_translated"],
+            summary["validation_rejected"],
+        )
+
+        return StepResult(
+            step_name=self.name,
+            status=StepStatus.SUCCESS,
+            items_processed=total,
+            metrics=summary,
+        )
 
