@@ -1,7 +1,7 @@
 """OPUS Parallel Sentence Ingestion Step V2."""
 
 from typing import Tuple
-from config.settings import OPENSUBTITLES_EN, OPENSUBTITLES_VI
+from config.settings import MAX_SENTENCES_PER_CORPUS, OPENSUBTITLES_EN, OPENSUBTITLES_VI
 from src.ingestion.opus_ingestor import OpusIngestor
 from src.pipeline.core.base_step import BaseStep
 from src.pipeline.core.context import PipelineContext
@@ -20,6 +20,7 @@ class IngestOpusStep(BaseStep):
         return False, ""
 
     def run(self, ctx: PipelineContext) -> StepResult:
+        progress = ctx.create_progress(self.name, total=MAX_SENTENCES_PER_CORPUS) if hasattr(ctx, "create_progress") else None
         ingestor = OpusIngestor()
-        count = ingestor.ingest_pair(ctx.db, OPENSUBTITLES_EN, OPENSUBTITLES_VI, source="opus")
+        count = ingestor.ingest_pair(ctx.db, OPENSUBTITLES_EN, OPENSUBTITLES_VI, source="opus", progress=progress)
         return StepResult(step_name=self.name, status=StepStatus.SUCCESS, items_processed=count)

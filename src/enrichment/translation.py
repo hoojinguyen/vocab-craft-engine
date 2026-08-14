@@ -1,7 +1,7 @@
 """Hybrid Translation Engine: Cache -> Argos (offline) -> Google (fallback) with Vectorized Bulk DB Updates."""
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import pyarrow as pa
 
 from src.db.duckdb_manager import DuckDBManager
@@ -71,7 +71,12 @@ class HybridTranslator:
 
         return results
 
-    def translate_definitions(self, batch_size: int = 500, limit: Optional[int] = None) -> int:
+    def translate_definitions(
+        self,
+        batch_size: int = 500,
+        limit: Optional[int] = None,
+        progress: Optional[Any] = None,
+    ) -> int:
         conn = self.db_mgr.get_connection()
         query = "SELECT id, definition_en FROM definitions WHERE definition_vi IS NULL AND definition_en IS NOT NULL"
         if limit:
@@ -104,12 +109,23 @@ class HybridTranslator:
                     WHERE definitions.id = _tmp_def_trans.def_id;
                 """)
                 conn.unregister("_tmp_def_trans")
-                total_translated += len(update_rows)
+                batch_count = len(update_rows)
+                total_translated += batch_count
+                if progress:
+                    if hasattr(progress, "advance"):
+                        progress.advance(batch_count, f"Definitions: {total_translated:,}/{len(rows):,}")
+                    elif hasattr(progress, "emit_progress"):
+                        progress.emit_progress("enrich_translation", total_translated, len(rows), f"Definitions: {total_translated:,}/{len(rows):,}")
 
         logger.info("Successfully translated and updated %d definitions", total_translated)
         return total_translated
 
-    def translate_phrases(self, batch_size: int = 500, limit: Optional[int] = None) -> int:
+    def translate_phrases(
+        self,
+        batch_size: int = 500,
+        limit: Optional[int] = None,
+        progress: Optional[Any] = None,
+    ) -> int:
         conn = self.db_mgr.get_connection()
         query = "SELECT id, phrase, definition_en FROM phrases WHERE definition_vi IS NULL"
         if limit:
@@ -132,7 +148,7 @@ class HybridTranslator:
             for pid, phrase_text, def_en in chunk:
                 target_en = (def_en if def_en else phrase_text).strip()
                 if target_en in trans_map:
-                    update_rows.append({"phrase_id": pid, "vi_text": trans_map[target_en]})
+                    update_rows.append({"phrase_id": pid, "vi_text": target_en if not trans_map[target_en] else trans_map[target_en]})
 
             if update_rows:
                 arrow_table = pa.Table.from_pylist(update_rows)
@@ -144,7 +160,13 @@ class HybridTranslator:
                     WHERE phrases.id = _tmp_phrase_trans.phrase_id;
                 """)
                 conn.unregister("_tmp_phrase_trans")
-                total_translated += len(update_rows)
+                batch_count = len(update_rows)
+                total_translated += batch_count
+                if progress:
+                    if hasattr(progress, "advance"):
+                        progress.advance(batch_count, f"Phrases: {total_translated:,}/{len(rows):,}")
+                    elif hasattr(progress, "emit_progress"):
+                        progress.emit_progress("enrich_translation", total_translated, len(rows), f"Phrases: {total_translated:,}/{len(rows):,}")
 
         logger.info("Successfully translated and updated %d phrases", total_translated)
         return total_translated

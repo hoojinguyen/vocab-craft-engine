@@ -24,8 +24,9 @@ class IngestKaikkiStep(BaseStep):
         return False, ""
 
     def run(self, ctx: PipelineContext) -> StepResult:
+        progress = ctx.create_progress(self.name, total=100_000) if hasattr(ctx, "create_progress") else None
         ingestor = KaikkiIngestor()
-        count = ingestor.ingest(ctx.db, KAIKKI_JSON_PATH)
+        count = ingestor.ingest(ctx.db, KAIKKI_JSON_PATH, progress=progress)
         if SUBTLEX_FREQ_PATH.exists():
             freq_ingestor = FrequencyIngestor()
             freq_ingestor.populate_frequency_ranks(ctx.db, SUBTLEX_FREQ_PATH)

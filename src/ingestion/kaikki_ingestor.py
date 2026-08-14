@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import orjson
 import pyarrow as pa
 
@@ -15,7 +15,7 @@ KAIKKI_BATCH_SIZE = 20000
 
 
 class KaikkiIngestor(BaseIngestor):
-    def ingest(self, db_mgr: DuckDBManager, source_path: Path) -> int:
+    def ingest(self, db_mgr: DuckDBManager, source_path: Path, progress: Optional[Any] = None) -> int:
         if not source_path.exists():
             logger.warning("Kaikki source file not found at %s", source_path)
             return 0
@@ -31,11 +31,17 @@ class KaikkiIngestor(BaseIngestor):
 
         def flush_batch():
             nonlocal new_word_count
+            batch_count = len(words_batch)
             if words_batch:
                 db_mgr.insert_batch_fast("words", words_batch)
-                new_word_count += len(words_batch)
+                new_word_count += batch_count
                 words_batch.clear()
                 seen_in_batch.clear()
+                if progress:
+                    if hasattr(progress, "advance"):
+                        progress.advance(batch_count, f"{new_word_count:,} words")
+                    elif hasattr(progress, "emit_progress"):
+                        progress.emit_progress("ingest_kaikki", new_word_count, max(new_word_count, 100000), f"{new_word_count:,} words")
 
             if pending_defs:
                 missing_keys: Set[Tuple[str, str]] = {

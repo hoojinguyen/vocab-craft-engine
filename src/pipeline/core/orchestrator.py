@@ -20,6 +20,7 @@ from src.pipeline.core.result import PipelineSummary, StepResult, StepStatus
 from src.pipeline.core.retry import RetryPolicy
 from src.pipeline.core.state_manager import StateManager
 from src.pipeline.monitor.dashboard import TextualPipelineDashboard
+from src.pipeline.monitor.progress import ProgressReporter
 from src.pipeline.monitor.run_logger import RunLogger
 
 logger = logging.getLogger(__name__)
@@ -104,9 +105,41 @@ class PipelineOrchestrator:
         run_logger = RunLogger(log_dir=log_dir)
         self.dashboard = TextualPipelineDashboard(enabled=tui_enabled and not dry_run)
 
+        # Wire ProgressReporter with Dashboard
+        if getattr(context, "progress_reporter", None) is None:
+            context.progress_reporter = ProgressReporter(callback=self.dashboard.update_step_progress)
+        else:
+            existing_cb = getattr(context.progress_reporter, "callback", None)
+            if existing_cb is None:
+                context.progress_reporter.callback = self.dashboard.update_step_progress
+            elif existing_cb != self.dashboard.update_step_progress:
+                def combined_callback(step_name: str, cur: int, tot: int, msg: str = "") -> None:
+                    if existing_cb:
+                        try:
+                            existing_cb(step_name, cur, tot, msg)
+                        except Exception:
+                            pass
+                    if self.dashboard:
+                        self.dashboard.update_step_progress(step_name, cur, tot, msg)
+
+                context.progress_reporter.callback = combined_callback
+
         execution_levels = self.dag.get_execution_levels() if self.dag else []
+        dag_levels_str = [[s.name for s in lvl] for lvl in execution_levels]
+        step_info_map = {
+            step.name: {
+                "description": getattr(step, "description", ""),
+                "depends_on": getattr(step, "depends_on", []),
+                "produces": getattr(step, "produces", []),
+                "execution_type": getattr(step, "execution_type", "cpu"),
+                "type": getattr(step, "execution_type", "cpu"),
+            }
+            for level in execution_levels
+            for step in level
+        }
+        self.dashboard.set_dag_levels(dag_levels_str, step_info_map)
+
         all_step_names = [s.name for level in execution_levels for s in level]
-        self.dashboard.set_steps(all_step_names)
 
         logger.info("==========================================================")
         logger.info("   STARTING VOCAB CRAFT ENGINE PIPELINE (DAG V2)         ")

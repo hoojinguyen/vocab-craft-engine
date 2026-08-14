@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from typing import Any, Optional
 from config.settings import MAX_SENTENCES_PER_CORPUS
 from src.db.duckdb_manager import DuckDBManager
 
@@ -12,7 +13,14 @@ OPUS_BATCH_SIZE = 20000
 
 
 class OpusIngestor:
-    def ingest_pair(self, db_mgr: DuckDBManager, en_path: Path, vi_path: Path, source: str) -> int:
+    def ingest_pair(
+        self,
+        db_mgr: DuckDBManager,
+        en_path: Path,
+        vi_path: Path,
+        source: str,
+        progress: Optional[Any] = None,
+    ) -> int:
         if not en_path.exists() or not vi_path.exists():
             return 0
 
@@ -33,13 +41,25 @@ class OpusIngestor:
                 count += 1
 
                 if len(batch) >= OPUS_BATCH_SIZE:
+                    batch_len = len(batch)
                     db_mgr.insert_batch("sentences", batch)
                     batch.clear()
+                    if progress:
+                        if hasattr(progress, "advance"):
+                            progress.advance(batch_len, f"Ingested {count:,} sentences")
+                        elif hasattr(progress, "emit_progress"):
+                            progress.emit_progress("ingest_opus", count, MAX_SENTENCES_PER_CORPUS, f"Ingested {count:,} sentences")
 
                 if count >= MAX_SENTENCES_PER_CORPUS:
                     break
 
         if batch:
+            batch_len = len(batch)
             db_mgr.insert_batch("sentences", batch)
+            if progress:
+                if hasattr(progress, "advance"):
+                    progress.advance(batch_len, f"Ingested {count:,} sentences")
+                elif hasattr(progress, "emit_progress"):
+                    progress.emit_progress("ingest_opus", count, MAX_SENTENCES_PER_CORPUS, f"Ingested {count:,} sentences")
 
         return count
