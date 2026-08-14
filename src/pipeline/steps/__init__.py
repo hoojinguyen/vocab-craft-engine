@@ -1,35 +1,35 @@
-import importlib
+"""Pipeline Steps V2 exports."""
 
-SchemaInitStep = importlib.import_module("src.pipeline.steps.01_schema_init").SchemaInitStep
-KaikkiIngestionStep = importlib.import_module("src.pipeline.steps.02_kaikki_ingestion").KaikkiIngestionStep
-TatoebaIngestionStep = importlib.import_module("src.pipeline.steps.03_tatoeba_ingestion").TatoebaIngestionStep
-SentenceLinkingStep = importlib.import_module("src.pipeline.steps.04_sentence_linking").SentenceLinkingStep
-NLPEnrichmentStep = importlib.import_module("src.pipeline.steps.05_nlp_enrichment").NLPEnrichmentStep
-ReflexDrillsStep = importlib.import_module("src.pipeline.steps.06_reflex_drills").ReflexDrillsStep
-ScenarioTreesStep = importlib.import_module("src.pipeline.steps.07_scenario_trees").ScenarioTreesStep
-IPAMappingStep = importlib.import_module("src.pipeline.steps.08_ipa_mapping").IPAMappingStep
-AudioGenerationStep = importlib.import_module("src.pipeline.steps.09_audio_generation").AudioGenerationStep
-PhraseMWEStep = importlib.import_module("src.pipeline.steps.10_phrase_mwe").PhraseMWEStep
-RelationsTopicsStep = importlib.import_module("src.pipeline.steps.11_relations_topics").RelationsTopicsStep
-VietnameseBackfillStep = importlib.import_module("src.pipeline.steps.12_vietnamese_backfill").VietnameseBackfillStep
-CorePackStep = importlib.import_module("src.pipeline.steps.13_core_pack").CorePackStep
-SentenceCoverageStep = importlib.import_module("src.pipeline.steps.14_sentence_coverage").SentenceCoverageStep
-SQLiteExportStep = importlib.import_module("src.pipeline.steps.15_sqlite_export").SQLiteExportStep
+from src.pipeline.steps.schema_init import SchemaInitStep
+from src.pipeline.steps.ingest_kaikki import IngestKaikkiStep
+from src.pipeline.steps.ingest_tatoeba import IngestTatoebaStep
+from src.pipeline.steps.ingest_opus import IngestOpusStep
+from src.pipeline.steps.ingest_wordnet import IngestWordNetStep
+from src.pipeline.steps.transform_linking import TransformLinkingStep
+from src.pipeline.steps.transform_phrases import TransformPhrasesStep
+from src.pipeline.steps.transform_relations import TransformRelationsStep
+from src.pipeline.steps.enrich_translation import EnrichTranslationStep
+from src.pipeline.steps.enrich_reflex import EnrichReflexStep
+from src.pipeline.steps.enrich_scenarios import EnrichScenariosStep
+from src.pipeline.steps.enrich_audio import EnrichAudioStep
+from src.pipeline.steps.export_sqlite import ExportSQLiteStep
+from src.pipeline.steps.export_core3000 import ExportCore3000Step
+from src.pipeline.steps.export_json import ExportJsonStep
 
 __all__ = [
     "SchemaInitStep",
-    "KaikkiIngestionStep",
-    "TatoebaIngestionStep",
-    "SentenceLinkingStep",
-    "NLPEnrichmentStep",
-    "ReflexDrillsStep",
-    "ScenarioTreesStep",
-    "IPAMappingStep",
-    "AudioGenerationStep",
-    "PhraseMWEStep",
-    "RelationsTopicsStep",
-    "VietnameseBackfillStep",
-    "CorePackStep",
-    "SentenceCoverageStep",
-    "SQLiteExportStep",
+    "IngestKaikkiStep",
+    "IngestTatoebaStep",
+    "IngestOpusStep",
+    "IngestWordNetStep",
+    "TransformLinkingStep",
+    "TransformPhrasesStep",
+    "TransformRelationsStep",
+    "EnrichTranslationStep",
+    "EnrichReflexStep",
+    "EnrichScenariosStep",
+    "EnrichAudioStep",
+    "ExportSQLiteStep",
+    "ExportCore3000Step",
+    "ExportJsonStep",
 ]
