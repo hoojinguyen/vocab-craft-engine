@@ -65,7 +65,13 @@ class StepListWidget(Widget):
         yield self._table
 
     def on_mount(self) -> None:
-        self._table.add_columns("#", "Step Name", "Status", "Time (s)", "Items", "Retries", "Metrics")
+        self._table.add_column("#", key="idx")
+        self._table.add_column("Step Name", key="name")
+        self._table.add_column("Status", key="status")
+        self._table.add_column("Time (s)", key="time")
+        self._table.add_column("Items", key="items")
+        self._table.add_column("Retries", key="retries")
+        self._table.add_column("Metrics", key="metrics")
         for idx, (name, data) in enumerate(self.steps_data.items(), 1):
             self._table.add_row(
                 str(idx),
@@ -87,6 +93,18 @@ class StepListWidget(Widget):
                 "retries": 0,
                 "metrics": "",
             }
+        if self._table.is_mounted and self._table.row_count == 0:
+            for idx, name in enumerate(step_names, 1):
+                self._table.add_row(
+                    str(idx),
+                    name,
+                    "PENDING ⏸",
+                    "-",
+                    "0",
+                    "0",
+                    "",
+                    key=name,
+                )
 
     def update_step(
         self,
@@ -106,7 +124,7 @@ class StepListWidget(Widget):
             "retries": retries,
             "metrics": metrics,
         })
-        if self._table.row_count > 0:
+        if self._table.is_mounted and self._table.row_count > 0:
             status_badge = {
                 "PENDING": "PENDING ⏸",
                 "RUNNING": "[bold cyan]RUNNING ⏳[/bold cyan]",
@@ -115,11 +133,11 @@ class StepListWidget(Widget):
                 "SKIPPED": "[dim]SKIPPED ⏭[/dim]",
             }.get(status, status)
             try:
-                self._table.update_cell(step_name, "Status", status_badge)
-                self._table.update_cell(step_name, "Time (s)", f"{duration:.1f}s" if duration > 0 else "-")
-                self._table.update_cell(step_name, "Items", f"{items:,}" if items > 0 else "0")
-                self._table.update_cell(step_name, "Retries", str(retries))
-                self._table.update_cell(step_name, "Metrics", metrics)
+                self._table.update_cell(step_name, "status", status_badge)
+                self._table.update_cell(step_name, "time", f"{duration:.1f}s" if duration > 0 else "-")
+                self._table.update_cell(step_name, "items", f"{items:,}" if items > 0 else "0")
+                self._table.update_cell(step_name, "retries", str(retries))
+                self._table.update_cell(step_name, "metrics", metrics)
             except Exception:
                 pass
 
@@ -144,6 +162,9 @@ class MetricsCard(Static):
         self.throughput = 0.0
         self.eta_sec = 0.0
         self.eta_str = "--:--:--"
+
+    def on_mount(self) -> None:
+        self.update_metrics(0.0, 0.0, 0.0, 0.0, 0.0)
 
     def update_metrics(
         self,

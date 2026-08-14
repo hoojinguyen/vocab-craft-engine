@@ -5,6 +5,7 @@ Pipeline Progress Terminal User Interface (TUI) Application using Textual.
 import logging
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from textual import work
 from textual.app import App, ComposeResult
@@ -32,13 +33,17 @@ class TUILoggingHandler(logging.Handler):
             msg = record.getMessage()
             time_str = time.strftime("%H:%M:%S", time.localtime(record.created))
             level = record.levelname
-            step_idx = getattr(self.app, "current_step_idx", "?")
 
             if msg.startswith("=== START:"):
                 step_name = msg.replace("=== START:", "").strip()
-                formatted = f"[bold cyan]▶ STEP {step_idx}: {step_name.upper()}[/bold cyan]"
+                step_names = list(self.app.steps_data.keys())
+                step_num = (step_names.index(step_name) + 1) if step_name in step_names else "?"
+                formatted = f"[bold cyan]▶ STEP {step_num}: {step_name.upper()}[/bold cyan]"
             elif msg.startswith("=== END:"):
-                formatted = ""
+                step_name = msg.replace("=== END:", "").strip()
+                step_names = list(self.app.steps_data.keys())
+                step_num = (step_names.index(step_name) + 1) if step_name in step_names else "?"
+                formatted = f"[bold green]✔ FINISHED STEP {step_num}: {step_name.upper()}[/bold green]"
             else:
                 formatted = f"   [dim]{time_str}[/dim] [{level}] {msg}"
 
@@ -203,6 +208,35 @@ class PipelineProgressApp(App):
             status="PAUSED" if self.is_paused else "RUNNING",
             elapsed=elapsed,
             workers=4,
+        )
+
+        cpu_pct = 0.0
+        mem_mb = 0.0
+        try:
+            import os
+            import psutil
+            proc = psutil.Process(os.getpid())
+            cpu_pct = proc.cpu_percent()
+            mem_mb = proc.memory_info().rss / (1024 * 1024)
+        except Exception:
+            pass
+
+        staging_db = Path("data/processed/staging.duckdb")
+        db_size_mb = (staging_db.stat().st_size / (1024 * 1024)) if staging_db.exists() else 0.0
+
+        total_items = sum(s.get("items", 0) for s in self.steps_data.values())
+        throughput = (total_items / elapsed) if elapsed > 0 else 0.0
+
+        total_steps = len(self.steps_data)
+        completed_steps = sum(1 for s in self.steps_data.values() if s.get("status") in ("SUCCESS", "SKIPPED"))
+        eta_sec = ((elapsed / completed_steps) * (total_steps - completed_steps)) if completed_steps > 0 else 0.0
+
+        self.metrics_card.update_metrics(
+            cpu_pct=cpu_pct,
+            memory_mb=mem_mb,
+            db_size_mb=db_size_mb,
+            throughput=throughput,
+            eta_sec=eta_sec,
         )
 
     @work(thread=True)

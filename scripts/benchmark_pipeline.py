@@ -19,7 +19,7 @@ from src.pipeline.core.registry import get_default_registry
 logger = logging.getLogger(__name__)
 
 
-def run_benchmark(dry_run: bool = False) -> Dict[str, Any]:
+def run_benchmark(dry_run: bool = False, db_path: Any = None) -> Dict[str, Any]:
     if psutil:
         process = psutil.Process()
         start_mem = process.memory_info().rss
@@ -27,7 +27,8 @@ def run_benchmark(dry_run: bool = False) -> Dict[str, Any]:
         start_mem = 0
     start_time = time.monotonic()
 
-    db_mgr = DuckDBManager(db_path=STAGING_DUCKDB_PATH)
+    target_db = db_path or STAGING_DUCKDB_PATH
+    db_mgr = DuckDBManager(db_path=target_db)
     db_mgr.init_schema()
 
     args_list = ["--dry-run"] if dry_run else []
