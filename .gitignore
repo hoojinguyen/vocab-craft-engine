@@ -47,3 +47,5 @@ data/output/*
 .pipeline_state.json
 
 logs/
+.superpowers/
+MagicMock/
