@@ -13,12 +13,17 @@ from src.media.audio_generator import AudioGenerator
 def test_ipa_mapper():
     mapper = IPAMapper()
 
-    # Preserves existing valid IPA
-    existing = mapper.get_ipa("cat", existing_ipa="kæt")
+    # Preserves existing valid IPA (string helper)
+    existing = mapper.get_ipa_string("cat", existing_ipa="kæt")
     assert existing == "kæt"
 
+    # Tuple get_ipa
+    uk, us = mapper.get_ipa("cat", existing_ipa="kæt")
+    assert uk == "kæt"
+    assert us == "kæt"
+
     # G2P fallback for word without existing IPA
-    fallback = mapper.get_ipa("cat")
+    fallback = mapper.get_ipa_string("cat")
     assert fallback is not None
     assert len(fallback) > 0
 
