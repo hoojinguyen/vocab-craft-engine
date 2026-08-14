@@ -178,15 +178,73 @@ def download_oxford_3000(dest_path: Path | None = None) -> Path:
     return target
 
 
-def download_nltk_corpora() -> None:
-    """Checks and downloads NLTK corpora (wordnet, cmudict)."""
-    logger.info("Checking and downloading NLTK corpora (wordnet, cmudict)...")
-    import nltk
-    for pkg in ["wordnet", "cmudict"]:
-        try:
-            nltk.download(pkg, quiet=True)
-        except Exception as e:
-            logger.warning("Failed downloading NLTK package '%s': %s", pkg, e)
+def download_nltk_corpora(target_dir: Path | None = None) -> list[str]:
+    """Checks and downloads NLTK corpora directly into local workspace directory."""
+    from config.settings import NLTK_DATA_DIR, VENV_NLTK_DATA_DIR
+
+    dest = target_dir or (VENV_NLTK_DATA_DIR if VENV_NLTK_DATA_DIR.exists() else NLTK_DATA_DIR)
+    dest.mkdir(parents=True, exist_ok=True)
+    logger.info("Downloading NLTK corpora to %s...", dest)
+
+    packages = [
+        "wordnet",
+        "cmudict",
+        "averaged_perceptron_tagger_eng",
+        "omw-1.4",
+        "punkt_tab",
+    ]
+    downloaded = []
+    try:
+        import nltk
+
+        for pkg in packages:
+            try:
+                nltk.download(pkg, download_dir=str(dest), quiet=True)
+                downloaded.append(pkg)
+            except Exception as e:
+                logger.warning("Failed downloading NLTK package '%s': %s", pkg, e)
+    except ImportError:
+        logger.warning("NLTK not installed; skipping NLTK download")
+    return downloaded
+
+
+def install_argos_models() -> bool:
+    """Checks and installs Argos Translate English to Vietnamese offline package."""
+    try:
+        import argostranslate.package
+        import argostranslate.translate
+
+        installed_languages = argostranslate.translate.get_installed_languages()
+        from_lang = next((lang for lang in installed_languages if lang.code == "en"), None)
+        to_lang = next((lang for lang in installed_languages if lang.code == "vi"), None)
+
+        if from_lang and to_lang:
+            translations = from_lang.get_translations(to_lang)
+            if translations:
+                logger.info("Argos Translate en->vi translation package is already installed.")
+                return True
+
+        logger.info("Updating Argos Translate package index...")
+        argostranslate.package.update_package_index()
+        available_packages = argostranslate.package.get_available_packages()
+        package_to_install = next(
+            (p for p in available_packages if p.from_code == "en" and p.to_code == "vi"),
+            None,
+        )
+
+        if package_to_install:
+            logger.info("Installing Argos Translate en->vi package...")
+            download_path = package_to_install.download()
+            argostranslate.package.install_from_path(download_path)
+            logger.info("Successfully installed Argos Translate en->vi model!")
+            return True
+        else:
+            logger.warning("Argos Translate en->vi package not found in index.")
+            return False
+    except Exception as e:
+        logger.warning("Could not auto-install Argos Translate offline models: %s", e)
+        return False
+
 
 
 def download_resumable(url: str, dest_path: Path):
@@ -299,8 +357,11 @@ def download_all_raw_data():
     # 8. Download Oxford 3000 list
     download_oxford_3000()
 
-    # 9. Download NLTK corpora (wordnet, cmudict)
+    # 9. Download NLTK corpora (wordnet, cmudict, averaged_perceptron_tagger_eng, omw-1.4, punkt_tab)
     download_nltk_corpora()
+
+    # 10. Install Argos Translate offline translation models (en -> vi)
+    install_argos_models()
 
     logger.info("All raw data files are ready in %s!", RAW_DATA_DIR)
 

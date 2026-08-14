@@ -1,8 +1,14 @@
 import io
 import zipfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from scripts.download_raw_data import download_resumable, extract_zip_member
+from scripts.download_raw_data import (
+    download_nltk_corpora,
+    download_resumable,
+    extract_zip_member,
+    install_argos_models,
+)
 
 
 class _FakeResp(io.BytesIO):
@@ -103,3 +109,48 @@ def test_download_opensubtitles_envi_refills_empty_file(tmp_path, monkeypatch):
     module.download_opensubtitles_envi()
 
     assert empty_en.read_bytes() == payload
+
+
+def test_download_nltk_corpora_uses_local_target_dir(tmp_path):
+    with patch("nltk.download") as mock_download:
+        mock_download.return_value = True
+        res = download_nltk_corpora(target_dir=tmp_path)
+        assert mock_download.call_count >= 4
+        assert len(res) >= 4
+        # Verify download_dir was passed
+        for call in mock_download.call_args_list:
+            assert "download_dir" in call.kwargs
+            assert call.kwargs["download_dir"] == str(tmp_path)
+
+
+def test_install_argos_models_already_installed():
+    with patch("argostranslate.translate.get_installed_languages") as mock_get_lang:
+        mock_en = MagicMock()
+        mock_en.code = "en"
+        mock_vi = MagicMock()
+        mock_vi.code = "vi"
+        mock_translation = MagicMock()
+        mock_translation.to_lang = mock_vi
+        mock_en.get_translations.return_value = [mock_translation]
+        mock_get_lang.return_value = [mock_en, mock_vi]
+
+        res = install_argos_models()
+        assert res is True
+
+
+def test_install_argos_models_installs_package():
+    with patch("argostranslate.translate.get_installed_languages", return_value=[]), \
+         patch("argostranslate.package.update_package_index") as mock_update, \
+         patch("argostranslate.package.get_available_packages") as mock_get_avail, \
+         patch("argostranslate.package.install_from_path") as mock_install:
+        pkg = MagicMock()
+        pkg.from_code = "en"
+        pkg.to_code = "vi"
+        pkg.download.return_value = "/fake/path.argosmodel"
+        mock_get_avail.return_value = [pkg]
+
+        res = install_argos_models()
+        assert res is True
+        mock_update.assert_called_once()
+        mock_install.assert_called_once_with("/fake/path.argosmodel")
+
