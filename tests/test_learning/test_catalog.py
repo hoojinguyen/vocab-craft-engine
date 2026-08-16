@@ -1,6 +1,11 @@
 import hashlib
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Barrier, Lock, Thread
+from typing import Any
 
+import duckdb
 import pytest
 
 from src.learning.catalog import SourceCatalog
@@ -28,6 +33,85 @@ def catalog(tmp_path: Path) -> SourceCatalog:
     store = LearningGraphStore(tmp_path / "graph.duckdb")
     store.initialize()
     return SourceCatalog(store)
+
+
+class _FirstReadsGate:
+    def __init__(self, readers: int):
+        self._barrier = Barrier(readers)
+        self._lock = Lock()
+        self._remaining = readers
+
+    def wait(self) -> None:
+        with self._lock:
+            if self._remaining == 0:
+                return
+            self._remaining -= 1
+        self._barrier.wait(timeout=5)
+
+
+class _ReadSynchronizingConnection:
+    def __init__(self, connection: Any, sql_prefix: str, gate: _FirstReadsGate):
+        self._connection = connection
+        self._sql_prefix = sql_prefix
+        self._gate = gate
+
+    def execute(self, sql: str, params: Any = None) -> Any:
+        result = self._connection.execute(sql, params)
+        if " ".join(sql.split()).startswith(self._sql_prefix):
+            self._gate.wait()
+        return result
+
+
+def _synchronize_first_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: SourceCatalog,
+    sql_prefix: str,
+    gate: _FirstReadsGate,
+) -> None:
+    transaction = catalog.store.transaction
+
+    @contextmanager
+    def synchronized_transaction() -> Iterator[_ReadSynchronizingConnection]:
+        with transaction() as connection:
+            yield _ReadSynchronizingConnection(connection, sql_prefix, gate)
+
+    monkeypatch.setattr(catalog.store, "transaction", synchronized_transaction)
+
+
+def _run_concurrently(
+    first: Callable[[], Any], second: Callable[[], Any]
+) -> tuple[list[Any], list[Exception]]:
+    results: list[Any] = []
+    errors: list[Exception] = []
+    lock = Lock()
+
+    def run(operation: Callable[[], Any]) -> None:
+        try:
+            result = operation()
+        except (ValueError, duckdb.Error) as exc:
+            with lock:
+                errors.append(exc)
+        else:
+            with lock:
+                results.append(result)
+
+    workers = [Thread(target=run, args=(operation,)) for operation in (first, second)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+
+    assert all(not worker.is_alive() for worker in workers)
+    return results, errors
+
+
+def _catalogs(tmp_path: Path) -> tuple[SourceCatalog, SourceCatalog]:
+    db_path = tmp_path / "graph.duckdb"
+    first_store = LearningGraphStore(db_path)
+    second_store = LearningGraphStore(db_path)
+    first_store.initialize()
+    second_store.initialize()
+    return SourceCatalog(first_store), SourceCatalog(second_store)
 
 
 def test_register_source_is_idempotent_and_preserves_input_attributes(
@@ -85,6 +169,66 @@ def test_register_source_rejects_changed_checksum(catalog: SourceCatalog):
             "SELECT sha256 FROM source_assets WHERE asset_id = ?", [changed.asset_id]
         )
         == "a" * 64
+    )
+
+
+def test_concurrent_source_registration_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    first_catalog, second_catalog = _catalogs(tmp_path)
+    gate = _FirstReadsGate(readers=2)
+    for catalog in (first_catalog, second_catalog):
+        _synchronize_first_reads(
+            monkeypatch,
+            catalog,
+            "SELECT sha256 FROM source_assets",
+            gate,
+        )
+
+    results, errors = _run_concurrently(
+        lambda: first_catalog.register_source(_approved_source()),
+        lambda: second_catalog.register_source(_approved_source()),
+    )
+
+    assert results == [None, None]
+    assert errors == []
+    assert (
+        first_catalog.store.fetch_value(
+            "SELECT count(*) FROM source_assets WHERE asset_id = ?", ["approved-source"]
+        )
+        == 1
+    )
+
+
+def test_concurrent_source_registration_with_changed_checksum_raises_value_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    first_catalog, second_catalog = _catalogs(tmp_path)
+    gate = _FirstReadsGate(readers=2)
+    for catalog in (first_catalog, second_catalog):
+        _synchronize_first_reads(
+            monkeypatch,
+            catalog,
+            "SELECT sha256 FROM source_assets",
+            gate,
+        )
+
+    results, errors = _run_concurrently(
+        lambda: first_catalog.register_source(_approved_source()),
+        lambda: second_catalog.register_source(
+            _approved_source().model_copy(update={"sha256": "b" * 64})
+        ),
+    )
+
+    assert results == [None]
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert "different checksum" in str(errors[0])
+    assert (
+        first_catalog.store.fetch_value(
+            "SELECT count(*) FROM source_assets WHERE asset_id = ?", ["approved-source"]
+        )
+        == 1
     )
 
 
@@ -180,3 +324,44 @@ def test_record_raw_snapshot_retains_changed_payload_as_second_record(
             canonical_json({"word": "hello", "rank": 2}).encode("utf-8")
         ).hexdigest(),
     }
+
+
+def test_concurrent_raw_snapshot_recording_returns_one_record_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    first_catalog, second_catalog = _catalogs(tmp_path)
+    source = _approved_source()
+    first_catalog.register_source(source)
+    gate = _FirstReadsGate(readers=2)
+    for catalog in (first_catalog, second_catalog):
+        _synchronize_first_reads(
+            monkeypatch,
+            catalog,
+            "SELECT raw_record_id FROM raw_reference_records",
+            gate,
+        )
+
+    results, errors = _run_concurrently(
+        lambda: first_catalog.record_raw_snapshot(
+            source.asset_id, "word:hello", {"word": "hello"}
+        ),
+        lambda: second_catalog.record_raw_snapshot(
+            source.asset_id, "word:hello", {"word": "hello"}
+        ),
+    )
+
+    assert errors == []
+    assert len(results) == 2
+    assert results[0] == results[1]
+    assert (
+        first_catalog.store.connection()
+        .execute(
+            """
+        SELECT raw_record_id FROM raw_reference_records
+        WHERE asset_id = ? AND external_key = ?
+        """,
+            [source.asset_id, "word:hello"],
+        )
+        .fetchall()
+        == [(results[0],)]
+    )

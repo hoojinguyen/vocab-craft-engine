@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+import time
+from collections.abc import Callable
+from typing import Any, TypeVar
 from uuid import uuid4
+
+import duckdb
 
 from src.learning.models import ReviewState, SourceAssetInput, canonical_json
 from src.learning.store import LearningGraphStore
+
+_Result = TypeVar("_Result")
+_WRITE_RETRY_ATTEMPTS = 4
+
+
+class _ConcurrentCatalogWrite(RuntimeError):
+    pass
 
 
 class SourceCatalog:
@@ -16,17 +27,18 @@ class SourceCatalog:
 
     def register_source(self, source: SourceAssetInput) -> None:
         """Persist a source asset unless its asset ID has a conflicting checksum."""
+        self._retry_catalog_write(lambda: self._register_source_once(source))
+
+    def _register_source_once(self, source: SourceAssetInput) -> None:
         with self.store.transaction() as connection:
             existing_checksum = connection.execute(
                 "SELECT sha256 FROM source_assets WHERE asset_id = ?",
                 [source.asset_id],
             ).fetchone()
             if existing_checksum is not None:
-                if existing_checksum[0] != source.sha256:
-                    raise ValueError(
-                        f"source asset {source.asset_id!r} is already registered "
-                        "with a different checksum"
-                    )
+                self._ensure_matching_checksum(
+                    source.asset_id, source.sha256, existing_checksum[0]
+                )
                 return
 
             connection.execute(
@@ -35,6 +47,7 @@ class SourceCatalog:
                     asset_id, title, locator, asset_version, sha256, license_id,
                     license_url, attribution, redistribution_allowed, validation_status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
                 """,
                 [
                     source.asset_id,
@@ -49,6 +62,15 @@ class SourceCatalog:
                     source.validation_status.value,
                 ],
             )
+            stored_checksum = connection.execute(
+                "SELECT sha256 FROM source_assets WHERE asset_id = ?",
+                [source.asset_id],
+            ).fetchone()
+            if stored_checksum is None:
+                raise _ConcurrentCatalogWrite
+            self._ensure_matching_checksum(
+                source.asset_id, source.sha256, stored_checksum[0]
+            )
 
     def record_raw_snapshot(
         self, asset_id: str, external_key: str, payload: dict[str, Any]
@@ -56,7 +78,19 @@ class SourceCatalog:
         """Store a content-addressed raw snapshot for an approved source asset."""
         payload_json = canonical_json(payload)
         payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        return self._retry_catalog_write(
+            lambda: self._record_raw_snapshot_once(
+                asset_id, external_key, payload_json, payload_sha256
+            )
+        )
 
+    def _record_raw_snapshot_once(
+        self,
+        asset_id: str,
+        external_key: str,
+        payload_json: str,
+        payload_sha256: str,
+    ) -> str:
         with self.store.transaction() as connection:
             approved_source = connection.execute(
                 """
@@ -80,16 +114,16 @@ class SourceCatalog:
             if existing_snapshot is not None:
                 return str(existing_snapshot[0])
 
-            raw_record_id = str(uuid4())
             connection.execute(
                 """
                 INSERT INTO raw_reference_records (
                     raw_record_id, asset_id, external_key, record_type, payload_json,
                     payload_sha256, import_run_id
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
                 """,
                 [
-                    raw_record_id,
+                    str(uuid4()),
                     asset_id,
                     external_key,
                     "snapshot",
@@ -98,4 +132,40 @@ class SourceCatalog:
                     str(uuid4()),
                 ],
             )
-            return raw_record_id
+            stored_snapshot = connection.execute(
+                """
+                SELECT raw_record_id FROM raw_reference_records
+                WHERE asset_id = ? AND external_key = ? AND payload_sha256 = ?
+                """,
+                [asset_id, external_key, payload_sha256],
+            ).fetchone()
+            if stored_snapshot is None:
+                raise _ConcurrentCatalogWrite
+            return str(stored_snapshot[0])
+
+    def _retry_catalog_write(self, operation: Callable[[], _Result]) -> _Result:
+        last_error: Exception | None = None
+        for attempt in range(_WRITE_RETRY_ATTEMPTS):
+            try:
+                return operation()
+            except (
+                _ConcurrentCatalogWrite,
+                duckdb.ConstraintException,
+                duckdb.TransactionException,
+            ) as exc:
+                last_error = exc
+                if attempt + 1 < _WRITE_RETRY_ATTEMPTS:
+                    time.sleep(0.01 * (attempt + 1))
+
+        raise RuntimeError(
+            "concurrent source catalog write did not settle"
+        ) from last_error
+
+    @staticmethod
+    def _ensure_matching_checksum(
+        asset_id: str, submitted_checksum: str, stored_checksum: str
+    ) -> None:
+        if stored_checksum != submitted_checksum:
+            raise ValueError(
+                f"source asset {asset_id!r} is already registered with a different checksum"
+            )
