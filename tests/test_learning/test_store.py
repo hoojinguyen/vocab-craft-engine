@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Thread
 
 import pytest
 
@@ -84,6 +85,26 @@ def test_transactions_commit_and_roll_back(tmp_path: Path):
         )
         == 0
     )
+
+
+def test_transaction_lock_allows_nested_store_helpers(tmp_path: Path):
+    store = LearningGraphStore(tmp_path / "graph.duckdb")
+    store.initialize()
+    errors: list[BaseException] = []
+
+    def use_store_inside_transaction() -> None:
+        try:
+            with store.transaction():
+                assert store.fetch_value("SELECT 42") == 42
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    worker = Thread(target=use_store_inside_transaction, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive()
+    assert errors == []
 
 
 def test_fetch_value_and_close_allow_reopening(tmp_path: Path):
