@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 from src.pipeline.cli import parse_arguments
 
 
@@ -27,6 +31,31 @@ def test_curriculum_init_uses_dedicated_database_path(tmp_path):
 
     database = tmp_path / "graph.duckdb"
     assert cli.run_curriculum_command(["init", "--db-path", str(database)]) == 0
+    assert database.exists()
+
+
+def test_curriculum_main_dispatch_does_not_import_legacy_steps(tmp_path):
+    project_root = Path(__file__).resolve().parents[2]
+    database = tmp_path / "graph.duckdb"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "main.py",
+            "curriculum",
+            "init",
+            "--db-path",
+            str(database),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "[nltk_data]" not in result.stdout
+    assert "[nltk_data]" not in result.stderr
     assert database.exists()
 
 

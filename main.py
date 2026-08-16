@@ -11,8 +11,6 @@ from scripts.download_raw_data import download_all_raw_data
 from src.db.duckdb_manager import DuckDBManager
 from src.pipeline.cli import REQUIRED_RAW_FILES, get_missing_raw_files, parse_arguments
 from src.pipeline.core.context import PipelineContext
-from src.pipeline.core.orchestrator import PipelineOrchestrator
-from src.pipeline.core.registry import get_default_registry
 from src.pipeline.core.state_manager import StateManager
 
 logging.basicConfig(
@@ -42,6 +40,9 @@ def handle_status(db_manager: DuckDBManager):
 def handle_reset(
     db_manager: DuckDBManager, step_name: str | None = None, reset_all: bool = False
 ):
+    from src.pipeline.core.orchestrator import PipelineOrchestrator
+    from src.pipeline.core.registry import get_default_registry
+
     state_mgr = StateManager(db_manager)
     registry = get_default_registry()
     dag = PipelineOrchestrator(registry=registry).dag
@@ -56,6 +57,8 @@ def handle_reset(
 
 
 def handle_export(db_manager: DuckDBManager, export_format: str):
+    from src.pipeline.core.registry import get_default_registry
+
     format_map = {
         "sqlite": "export_sqlite",
         "json": "export_json",
@@ -105,6 +108,9 @@ def main():
             download_all_raw_data()
 
         context = PipelineContext(db_manager=db_manager, args=args)
+        from src.pipeline.core.orchestrator import PipelineOrchestrator
+        from src.pipeline.core.registry import get_default_registry
+
         registry = get_default_registry()
         workers = getattr(args, "workers", 4)
         orchestrator = PipelineOrchestrator(registry=registry, max_workers=workers)
