@@ -52,3 +52,27 @@ def test_sentence_linker_step_attributes():
     assert step.name == "transform_linking"
     assert "words" in step.depends_on or "ingest_kaikki" in step.depends_on
     assert "word_sentences" in step.produces
+
+
+def test_sentence_linker_capping_and_ranking(db_mgr: DuckDBManager):
+    db_mgr.insert_batch_fast("words", [
+        {"id": 1, "lemma": "help", "pos": "verb", "source": "kaikki"},
+    ])
+
+    db_mgr.insert_batch_fast("sentences", [
+        {"id": 1, "text_en": "Please help me with this heavy luggage.", "text_vi": "Làm ơn giúp tôi với cái hành lý nặng này.", "source": "tatoeba"},
+        {"id": 2, "text_en": "Help is on the way.", "text_vi": "Sự giúp đỡ đang đến.", "source": "tatoeba"},
+        {"id": 3, "text_en": "Can you help?", "text_vi": "Bạn có thể giúp không?", "source": "tatoeba"},
+        {"id": 4, "text_en": "Help me!", "text_vi": "Giúp tôi với!", "source": "opensubtitles"},
+        {"id": 5, "text_en": "I need your help right now immediately please.", "text_vi": "Tôi cần sự giúp đỡ của bạn ngay bây giờ.", "source": "opensubtitles"},
+    ])
+
+    linker = SentenceLinker(max_per_word=3)
+    linked_count = linker.link(db_mgr)
+    assert linked_count == 3  # strictly capped at 3
+
+    conn = db_mgr.get_connection()
+    ranks = conn.execute("SELECT sentence_id, rank FROM word_sentences WHERE word_id = 1 ORDER BY rank").fetchall()
+    assert len(ranks) == 3
+    assert [r[1] for r in ranks] == [1, 2, 3]
+
