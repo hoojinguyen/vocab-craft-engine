@@ -41,6 +41,12 @@ SUBTLEX_FREQ_PATH = RAW_DATA_DIR / "SUBTLEX_US.csv"
 NGSL_PATH = RAW_DATA_DIR / "NGSL-1.01.csv"
 OXFORD_3000_PATH = RAW_DATA_DIR / "oxford_3000.txt"
 
+# Curated Open-Source Datasets V3 Paths
+FVDP_DICT_PATH = RAW_DATA_DIR / "fvdp_anhviet.json"
+DAILYDIALOG_PATH = RAW_DATA_DIR / "dailydialog.json"
+CLOTH_DATASET_PATH = RAW_DATA_DIR / "cloth_cloze.json"
+AWL_PATH = RAW_DATA_DIR / "academic_word_list.txt"
+
 # Parallel sentence corpora (Phase A — sentences coverage)
 OPENSUBTITLES_EN_VI_ZIP = RAW_DATA_DIR / "opensubtitles_envi" / "en-vi.txt.zip"
 OPENSUBTITLES_EN = RAW_DATA_DIR / "opensubtitles_envi" / "en-vi.txt.en"
@@ -54,14 +60,15 @@ SENTENCE_LINK_CHECKPOINT = PROCESSED_DATA_DIR / "sentence_link_checkpoint.json"
 KAIKKI_INGEST_CHECKPOINT = PROCESSED_DATA_DIR / ".kaikki_ingest_done"
 TATOEBA_INGEST_CHECKPOINT = PROCESSED_DATA_DIR / ".tatoeba_ingest_done"
 
-# Per-corpus ingest cap: huge parallel corpora (e.g. OpenSubtitles 37M lines)
-# would blow past the plan's >=100K goal and fill the disk. Stop after this many
-# accepted sentences per corpus (500K >> enough for 95% coverage of 3K core words).
+# V3 Vocabulary and Sentence Curation Parameters
+TARGET_VOCAB_SIZE_LIMIT = 50_000
+MAX_SENTENCES_PER_WORD = 3
 MAX_SENTENCES_PER_CORPUS = 500_000
 
 # Target Export Database Path
 EXPORT_SQLITE_PATH = OUTPUT_DIR / "english_dataset.db"
 STAGING_DUCKDB_PATH = PROCESSED_DATA_DIR / "staging.duckdb"
+
 
 # Pipeline Parameters
 BATCH_SIZE = 1000

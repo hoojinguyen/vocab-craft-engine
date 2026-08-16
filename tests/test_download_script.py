@@ -154,3 +154,34 @@ def test_install_argos_models_installs_package():
         mock_update.assert_called_once()
         mock_install.assert_called_once_with("/fake/path.argosmodel")
 
+
+def test_download_curated_v3_datasets(tmp_path):
+    from scripts.download_raw_data import (
+        download_academic_word_list,
+        download_cloth_dataset,
+        download_dailydialog,
+        download_fvdp_dict,
+        load_awl_words,
+    )
+
+    fvdp_dest = tmp_path / "fvdp.txt"
+    dd_dest = tmp_path / "dailydialog.json"
+    cloth_dest = tmp_path / "cloth.json"
+    awl_dest = tmp_path / "awl.txt"
+
+    with patch("scripts.download_raw_data.download_file") as mock_dl:
+        download_fvdp_dict(fvdp_dest)
+        download_dailydialog(dd_dest)
+        download_cloth_dataset(cloth_dest)
+        download_academic_word_list(awl_dest)
+        assert mock_dl.call_count == 4
+
+    # Test load_awl_words fallback
+    awl_dest.write_text("analysis\napproach\n# comment\nconcept\n", encoding="utf-8")
+    words = load_awl_words(awl_dest)
+    assert "analysis" in words
+    assert "approach" in words
+    assert "concept" in words
+    assert "# comment" not in words
+
+

@@ -17,6 +17,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import (
+    AWL_PATH,
+    CLOTH_DATASET_PATH,
+    DAILYDIALOG_PATH,
+    FVDP_DICT_PATH,
     KAIKKI_JSON_PATH,
     NGSL_PATH,
     OXFORD_3000_PATH,
@@ -43,6 +47,11 @@ URL_OPENS_ENVI = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2024/moses/en-
 URL_TED_LIKE_EN = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.en"
 URL_TED_LIKE_VI = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/ted-like/data.vi"
 URL_BASIC_EN = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/basic/data.en"
+URL_FVDP_DICT = "https://raw.githubusercontent.com/yenthanh132/avdict-database-sqlite-converter/master/anhviet109K.txt"
+URL_DAILYDIALOG = "https://raw.githubusercontent.com/DanManN/dialogue-generation/master/data/ijcnlp_dailydialog/dialogues_text.txt"
+URL_CLOTH = "https://raw.githubusercontent.com/andychiang/cloth-dataset/master/data/cloth_sample.json"
+URL_AWL = "https://raw.githubusercontent.com/r-spacex/academic-word-list/master/academic-word-list.txt"
+
 URL_BASIC_VI = "https://raw.githubusercontent.com/thanhleha-kit/EnViCorpora/master/basic/data.vi"
 OPENSUBTITLES_ZIP_MIN_SIZE = 900_000_000
 
@@ -319,6 +328,70 @@ def download_envicorpora():
             download_resumable(url, dest)
 
 
+def download_fvdp_dict(dest_path: Path | None = None) -> Path:
+    """Downloads Hồ Ngọc Đức Free Vietnamese Dictionary Project raw dataset."""
+    target = dest_path or FVDP_DICT_PATH
+    if not target.exists() or target.stat().st_size == 0:
+        logger.info("Downloading Hồ Ngọc Đức English-Vietnamese dictionary dataset...")
+        try:
+            download_file(URL_FVDP_DICT, target)
+        except Exception as e:
+            logger.warning("Could not download FVDP dictionary from %s: %s", URL_FVDP_DICT, e)
+    return target
+
+
+def download_dailydialog(dest_path: Path | None = None) -> Path:
+    """Downloads DailyDialog conversational scenario dataset."""
+    target = dest_path or DAILYDIALOG_PATH
+    if not target.exists() or target.stat().st_size == 0:
+        logger.info("Downloading DailyDialog scenario dataset...")
+        try:
+            download_file(URL_DAILYDIALOG, target)
+        except Exception as e:
+            logger.warning("Could not download DailyDialog dataset: %s", e)
+    return target
+
+
+def download_cloth_dataset(dest_path: Path | None = None) -> Path:
+    """Downloads CLOTH Cloze Test multiple choice dataset."""
+    target = dest_path or CLOTH_DATASET_PATH
+    if not target.exists() or target.stat().st_size == 0:
+        logger.info("Downloading CLOTH Cloze quiz dataset...")
+        try:
+            download_file(URL_CLOTH, target)
+        except Exception as e:
+            logger.warning("Could not download CLOTH dataset: %s", e)
+    return target
+
+
+def load_awl_words(path: Path | None = None) -> set:
+    """Parses the Academic Word List text file into a set of lowercase words."""
+    target = path or AWL_PATH
+    if not target.exists():
+        return set()
+    words = set()
+    with open(target, "r", encoding="utf-8-sig") as f:
+        for line in f:
+            word = line.strip().lower()
+            if word and not word.startswith("#"):
+                words.add(word)
+    return words
+
+
+def download_academic_word_list(dest_path: Path | None = None) -> Path:
+    """Downloads Academic Word List (AWL) headwords."""
+    target = dest_path or AWL_PATH
+    if not target.exists() or target.stat().st_size == 0:
+        logger.info("Downloading Academic Word List...")
+        try:
+            download_file(URL_AWL, target)
+        except Exception as e:
+            logger.warning("Could not download AWL from %s: %s", URL_AWL, e)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("analysis\napproach\narea\nassessment\nassume\nauthority\navailable\nbenefit\nconcept\nconsistent\nconstitutional\ncontext\ncontract\ncreate\ndata\ndefinition\nderive\ndistribution\neconomic\nenvironment\nestablished\nestimate\nevidence\nfactor\nfinancial\nformula\nfunction\nidentifying\nincome\nindicate\nindividual\ninterpretation\ninvolved\nissues\nlabour\nlegal\nlegislation\nmajor\nmethod\npercent\nperiod\npolicy\nprinciple\nprocedure\nprocess\nrequired\nresearch\nresponse\nrole\nsection\nsector\nsignificant\nsimilar\nsource\nspecific\nstructure\ntheory\nvariables\n", encoding="utf-8")
+    return target
+
+
 def download_all_raw_data():
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -363,8 +436,15 @@ def download_all_raw_data():
     # 10. Install Argos Translate offline translation models (en -> vi)
     install_argos_models()
 
+    # 11. Download Curated V3 Open-Source Datasets
+    download_fvdp_dict()
+    download_dailydialog()
+    download_cloth_dataset()
+    download_academic_word_list()
+
     logger.info("All raw data files are ready in %s!", RAW_DATA_DIR)
 
 
 if __name__ == "__main__":
     download_all_raw_data()
+
