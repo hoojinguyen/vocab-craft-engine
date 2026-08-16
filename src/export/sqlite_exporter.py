@@ -106,9 +106,10 @@ class SqliteExporter:
         # Populate dataset metadata
         now_str = datetime.now(UTC).isoformat()
         metadata_entries = [
-            ("version", "2.0"),
-            ("schema_version", "2.0"),
+            ("version", "3.0"),
+            ("schema_version", "3.0"),
             ("build_timestamp", now_str),
+            ("target_platform", "mobile_sqlite"),
             ("total_words", str(exported_counts.get("words", 0))),
             ("total_definitions", str(exported_counts.get("definitions", 0))),
             ("total_sentences", str(exported_counts.get("sentences", 0))),
@@ -128,13 +129,15 @@ class SqliteExporter:
         )
         s_conn.commit()
 
-        # Final maintenance pragmas
+        # Final maintenance pragmas & vacuum compaction
         s_cursor.execute("PRAGMA foreign_keys = ON;")
         s_cursor.execute("PRAGMA journal_mode = WAL;")
         s_cursor.execute("PRAGMA optimize;")
+        s_cursor.execute("VACUUM;")
+        s_cursor.execute("ANALYZE;")
         s_conn.close()
 
-        logger.info("Successfully exported SQLite dataset to %s", target_path)
+        logger.info("Successfully exported and optimized SQLite dataset at %s", target_path)
         return exported_counts
 
 

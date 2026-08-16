@@ -62,8 +62,8 @@ def test_sqlite_exporter_full_export_and_metadata(test_staging: DuckDBManager, t
 
     # Check metadata
     meta = dict(cur.execute("SELECT key, value FROM dataset_metadata").fetchall())
-    assert meta["version"] == "2.0"
-    assert int(meta["total_words"]) == 2
+    assert meta["version"] == "3.0"
+    assert meta["total_words"] == "2"
     assert int(meta["total_sentences"]) == 1
     assert int(meta["total_phrases"]) == 1
 
