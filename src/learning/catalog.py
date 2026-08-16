@@ -76,11 +76,33 @@ class SourceCatalog:
         self, asset_id: str, external_key: str, payload: dict[str, Any]
     ) -> str:
         """Store a content-addressed raw snapshot for an approved source asset."""
+        return self.append_raw_record(
+            asset_id=asset_id,
+            external_key=external_key,
+            record_type="snapshot",
+            payload=payload,
+            import_run_id=str(uuid4()),
+        )
+
+    def append_raw_record(
+        self,
+        asset_id: str,
+        external_key: str,
+        record_type: str,
+        payload: dict[str, Any],
+        import_run_id: str,
+    ) -> str:
+        """Append one approved-source record, retaining each changed payload version."""
         payload_json = canonical_json(payload)
         payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
         return self._retry_catalog_write(
             lambda: self._record_raw_snapshot_once(
-                asset_id, external_key, payload_json, payload_sha256
+                asset_id,
+                external_key,
+                record_type,
+                payload_json,
+                payload_sha256,
+                import_run_id,
             )
         )
 
@@ -88,8 +110,10 @@ class SourceCatalog:
         self,
         asset_id: str,
         external_key: str,
+        record_type: str,
         payload_json: str,
         payload_sha256: str,
+        import_run_id: str,
     ) -> str:
         with self.store.transaction() as connection:
             approved_source = connection.execute(
@@ -126,10 +150,10 @@ class SourceCatalog:
                     str(uuid4()),
                     asset_id,
                     external_key,
-                    "snapshot",
+                    record_type,
                     payload_json,
                     payload_sha256,
-                    str(uuid4()),
+                    import_run_id,
                 ],
             )
             stored_snapshot = connection.execute(
