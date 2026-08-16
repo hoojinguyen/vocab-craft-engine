@@ -45,6 +45,7 @@ data/output/*
 .vscode/
 *.swp
 .pipeline_state.json
+.worktrees/
 
 logs/
 .superpowers/
