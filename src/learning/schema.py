@@ -19,7 +19,14 @@ CREATE TABLE IF NOT EXISTS source_assets (
  license_url TEXT NOT NULL, attribution TEXT NOT NULL,
  redistribution_allowed BOOLEAN NOT NULL, validation_status TEXT NOT NULL,
  created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
- CHECK (validation_status IN ('candidate','approved','rejected','quarantined'))
+ CHECK (validation_status IN ('candidate','approved','rejected','quarantined')),
+ CHECK (
+   validation_status <> 'approved'
+   OR (
+     trim(license_id) <> '' AND trim(attribution) <> ''
+     AND redistribution_allowed = TRUE
+   )
+ )
 );
 CREATE TABLE IF NOT EXISTS raw_reference_records (
  raw_record_id TEXT PRIMARY KEY, asset_id TEXT NOT NULL REFERENCES source_assets(asset_id),
