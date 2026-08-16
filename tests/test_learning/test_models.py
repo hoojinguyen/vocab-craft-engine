@@ -85,6 +85,11 @@ def test_approved_source_rejects_blank_license_on_assignment():
     with pytest.raises(ValidationError, match="license_id"):
         source.license_id = ""
 
+    assert source.license_id == "CC-BY-4.0"
+    assert source.attribution == "Test author"
+    assert source.redistribution_allowed is True
+    assert source.validation_status is ReviewState.APPROVED
+
 
 @pytest.mark.parametrize(
     "payload",

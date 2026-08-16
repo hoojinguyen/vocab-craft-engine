@@ -76,7 +76,7 @@ class ContentType(StrEnum):
 
 
 class SourceAssetInput(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(frozen=True, validate_assignment=True)
 
     asset_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,127}$")
     title: str = Field(min_length=1)
