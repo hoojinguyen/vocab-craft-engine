@@ -150,7 +150,6 @@ class SourceCatalog:
                 return operation()
             except (
                 _ConcurrentCatalogWrite,
-                duckdb.ConstraintException,
                 duckdb.TransactionException,
             ) as exc:
                 last_error = exc

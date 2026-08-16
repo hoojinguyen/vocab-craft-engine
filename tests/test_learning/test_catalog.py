@@ -35,7 +35,7 @@ def catalog(tmp_path: Path) -> SourceCatalog:
     return SourceCatalog(store)
 
 
-class _FirstReadsGate:
+class _FirstStatementsGate:
     def __init__(self, readers: int):
         self._barrier = Barrier(readers)
         self._lock = Lock()
@@ -50,7 +50,7 @@ class _FirstReadsGate:
 
 
 class _ReadSynchronizingConnection:
-    def __init__(self, connection: Any, sql_prefix: str, gate: _FirstReadsGate):
+    def __init__(self, connection: Any, sql_prefix: str, gate: _FirstStatementsGate):
         self._connection = connection
         self._sql_prefix = sql_prefix
         self._gate = gate
@@ -62,11 +62,11 @@ class _ReadSynchronizingConnection:
         return result
 
 
-def _synchronize_first_reads(
+def _synchronize_first_matching_statements(
     monkeypatch: pytest.MonkeyPatch,
     catalog: SourceCatalog,
     sql_prefix: str,
-    gate: _FirstReadsGate,
+    gate: _FirstStatementsGate,
 ) -> None:
     transaction = catalog.store.transaction
 
@@ -172,17 +172,31 @@ def test_register_source_rejects_changed_checksum(catalog: SourceCatalog):
     )
 
 
+def test_register_source_propagates_invalid_source_constraint(catalog: SourceCatalog):
+    invalid = _approved_source().model_copy(update={"title": None})
+
+    with pytest.raises(duckdb.ConstraintException, match="NOT NULL"):
+        catalog.register_source(invalid)
+
+
 def test_concurrent_source_registration_is_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     first_catalog, second_catalog = _catalogs(tmp_path)
-    gate = _FirstReadsGate(readers=2)
+    read_gate = _FirstStatementsGate(readers=2)
+    write_gate = _FirstStatementsGate(readers=2)
     for catalog in (first_catalog, second_catalog):
-        _synchronize_first_reads(
+        _synchronize_first_matching_statements(
             monkeypatch,
             catalog,
             "SELECT sha256 FROM source_assets",
-            gate,
+            read_gate,
+        )
+        _synchronize_first_matching_statements(
+            monkeypatch,
+            catalog,
+            "INSERT INTO source_assets",
+            write_gate,
         )
 
     results, errors = _run_concurrently(
@@ -204,13 +218,20 @@ def test_concurrent_source_registration_with_changed_checksum_raises_value_error
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     first_catalog, second_catalog = _catalogs(tmp_path)
-    gate = _FirstReadsGate(readers=2)
+    read_gate = _FirstStatementsGate(readers=2)
+    write_gate = _FirstStatementsGate(readers=2)
     for catalog in (first_catalog, second_catalog):
-        _synchronize_first_reads(
+        _synchronize_first_matching_statements(
             monkeypatch,
             catalog,
             "SELECT sha256 FROM source_assets",
-            gate,
+            read_gate,
+        )
+        _synchronize_first_matching_statements(
+            monkeypatch,
+            catalog,
+            "INSERT INTO source_assets",
+            write_gate,
         )
 
     results, errors = _run_concurrently(
@@ -332,13 +353,20 @@ def test_concurrent_raw_snapshot_recording_returns_one_record_id(
     first_catalog, second_catalog = _catalogs(tmp_path)
     source = _approved_source()
     first_catalog.register_source(source)
-    gate = _FirstReadsGate(readers=2)
+    read_gate = _FirstStatementsGate(readers=2)
+    write_gate = _FirstStatementsGate(readers=2)
     for catalog in (first_catalog, second_catalog):
-        _synchronize_first_reads(
+        _synchronize_first_matching_statements(
             monkeypatch,
             catalog,
             "SELECT raw_record_id FROM raw_reference_records",
-            gate,
+            read_gate,
+        )
+        _synchronize_first_matching_statements(
+            monkeypatch,
+            catalog,
+            "INSERT INTO raw_reference_records",
+            write_gate,
         )
 
     results, errors = _run_concurrently(
