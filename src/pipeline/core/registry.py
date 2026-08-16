@@ -11,6 +11,7 @@ from src.pipeline.steps.ingest_wordnet import IngestWordNetStep
 from src.pipeline.steps.transform_linking import TransformLinkingStep
 from src.pipeline.steps.transform_phrases import TransformPhrasesStep
 from src.pipeline.steps.transform_relations import TransformRelationsStep
+from src.pipeline.steps.enrich_ipa import EnrichIPAStep
 from src.pipeline.steps.enrich_translation import EnrichTranslationStep
 from src.pipeline.steps.enrich_reflex import EnrichReflexStep
 from src.pipeline.steps.enrich_scenarios import EnrichScenariosStep
@@ -68,6 +69,7 @@ def get_default_registry() -> StepRegistry:
     registry.register(IngestTatoebaStep())
     registry.register(IngestOpusStep())
     registry.register(IngestWordNetStep())
+    registry.register(EnrichIPAStep())
     registry.register(TransformLinkingStep())
     registry.register(TransformPhrasesStep())
     registry.register(TransformRelationsStep())
@@ -79,3 +81,4 @@ def get_default_registry() -> StepRegistry:
     registry.register(ExportCore3000Step())
     registry.register(ExportJsonStep())
     return registry
+

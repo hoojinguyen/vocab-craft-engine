@@ -8,6 +8,7 @@ from src.pipeline.steps.ingest_wordnet import IngestWordNetStep
 from src.pipeline.steps.transform_linking import TransformLinkingStep
 from src.pipeline.steps.transform_phrases import TransformPhrasesStep
 from src.pipeline.steps.transform_relations import TransformRelationsStep
+from src.pipeline.steps.enrich_ipa import EnrichIPAStep
 from src.pipeline.steps.enrich_translation import EnrichTranslationStep
 from src.pipeline.steps.enrich_reflex import EnrichReflexStep
 from src.pipeline.steps.enrich_scenarios import EnrichScenariosStep
@@ -25,6 +26,7 @@ __all__ = [
     "TransformLinkingStep",
     "TransformPhrasesStep",
     "TransformRelationsStep",
+    "EnrichIPAStep",
     "EnrichTranslationStep",
     "EnrichReflexStep",
     "EnrichScenariosStep",
