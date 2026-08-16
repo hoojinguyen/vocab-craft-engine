@@ -1,8 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from src.learning.catalog import SourceCatalog
+from src.learning.composer import CurriculumComposer
 from src.learning.models import ReviewState, SourceAssetInput
 from src.learning.repository import ContentRepository
 from src.learning.store import LearningGraphStore
@@ -181,3 +183,19 @@ class GraphRepositoryFixture:
 @pytest.fixture
 def graph_repository(graph_catalog: SourceCatalog) -> GraphRepositoryFixture:
     return GraphRepositoryFixture(graph_catalog)
+
+
+@pytest.fixture
+def valid_pack_graph(graph_repository: GraphRepositoryFixture):
+    module_revision, _, _ = graph_repository.seed_minimum_valid_module()
+    return CurriculumComposer(graph_repository.repository).compose(
+        module_revision, "a0-a1-pilot", "0.1.0"
+    )
+
+
+@pytest.fixture
+def invalid_pack_graph(valid_pack_graph):
+    return replace(
+        valid_pack_graph,
+        quality_report={"passed": False, "failures": [{"code": "test.failed"}]},
+    )
