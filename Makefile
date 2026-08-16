@@ -68,7 +68,7 @@ dry-run:
 
 status:
 	@echo "==> Checking VocabCraft Pipeline V2 Steps Status..."
-	$(PYTHON) main.py --status
+	$(PYTHON) main.py status
 
 resume:
 	@echo "==> Resuming VocabCraft Pipeline V2 from last recorded checkpoint..."
