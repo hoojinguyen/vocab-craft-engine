@@ -1,9 +1,12 @@
 import json
-import pytest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
+
 from src.db.duckdb_manager import DuckDBManager
-from src.export.core_exporter import CoreExporter
 from src.export.json_exporter import JsonExporter
+from src.export.sqlite_exporter import SqliteExporter
 from src.pipeline.steps.export_core3000 import ExportCore3000Step
 from src.pipeline.steps.export_json import ExportJsonStep
 
@@ -13,20 +16,55 @@ def db_mgr(tmp_path: Path):
     mgr = DuckDBManager(db_path=tmp_path / "staging.duckdb")
     mgr.init_schema()
 
-    mgr.insert_batch_fast("words", [
-        {"lemma": "run", "pos": "verb", "frequency_rank": 100, "cefr_level": "A1", "source": "kaikki"},
-    ])
-    mgr.insert_batch_fast("definitions", [
-        {"word_id": 1, "definition_en": "to move fast", "definition_vi": "chạy nhanh", "source": "kaikki"},
-    ])
-    mgr.insert_batch_fast("sentences", [
-        {"text_en": "He runs fast.", "text_vi": "Anh ấy chạy nhanh.", "source": "tatoeba"},
-    ])
+    mgr.insert_batch_fast(
+        "words",
+        [
+            {
+                "lemma": "run",
+                "pos": "verb",
+                "frequency_rank": 100,
+                "cefr_level": "A1",
+                "source": "kaikki",
+            },
+        ],
+    )
+    mgr.insert_batch_fast(
+        "definitions",
+        [
+            {
+                "word_id": 1,
+                "definition_en": "to move fast",
+                "definition_vi": "chạy nhanh",
+                "source": "kaikki",
+            },
+        ],
+    )
+    mgr.insert_batch_fast(
+        "sentences",
+        [
+            {
+                "text_en": "He runs fast.",
+                "text_vi": "Anh ấy chạy nhanh.",
+                "source": "tatoeba",
+            },
+        ],
+    )
     mgr.insert_batch_fast("word_sentences", [{"word_id": 1, "sentence_id": 1}])
-    mgr.insert_batch_fast("phrases", [
-        {"phrase": "run away", "phrase_type": "phrasal_verb", "definition_en": "to escape", "definition_vi": "trốn thoát"},
-    ])
-    mgr.insert_batch_fast("word_topics", [{"word_id": 1, "topic": "Sports & Fitness", "raw_topic": "sports"}])
+    mgr.insert_batch_fast(
+        "phrases",
+        [
+            {
+                "phrase": "run away",
+                "phrase_type": "phrasal_verb",
+                "definition_en": "to escape",
+                "definition_vi": "trốn thoát",
+            },
+        ],
+    )
+    mgr.insert_batch_fast(
+        "word_topics",
+        [{"word_id": 1, "topic": "Sports & Fitness", "raw_topic": "sports"}],
+    )
 
     yield mgr, tmp_path
     mgr.close()
@@ -62,6 +100,30 @@ def test_json_exporter_hierarchical_structure(db_mgr):
     phrase_entry = payload["phrases"][0]
     assert phrase_entry["phrase"] == "run away"
     assert phrase_entry["definition_vi"] == "trốn thoát"
+
+
+def test_json_and_sqlite_exports_are_safe_on_shared_duckdb_manager(db_mgr):
+    staging_mgr, tmp_path = db_mgr
+    for iteration in range(20):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    JsonExporter().export,
+                    staging_mgr,
+                    tmp_path / f"concurrent-dataset-{iteration}.json",
+                ),
+                executor.submit(
+                    SqliteExporter().export,
+                    staging_mgr,
+                    tmp_path / f"concurrent-dataset-{iteration}.db",
+                ),
+            ]
+            results = [future.result() for future in futures]
+
+        assert results[0] == 1
+        assert results[1]["words"] == 1
+        assert (tmp_path / f"concurrent-dataset-{iteration}.json").exists()
+        assert (tmp_path / f"concurrent-dataset-{iteration}.db").exists()
 
 
 def test_export_step_classes():

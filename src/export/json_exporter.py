@@ -6,11 +6,12 @@ relations, thematic topics, linked parallel sentences, phrases, reflex drills,
 and dialogue trees.
 """
 
-from datetime import datetime, timezone
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
+
 import orjson
 
 from src.db.duckdb_manager import DuckDBManager
@@ -22,6 +23,16 @@ class JsonExporter:
     """Exports full nested vocabulary dataset into a structured dataset.json."""
 
     def export(
+        self,
+        db_mgr: DuckDBManager,
+        target_path: Path,
+        word_limit: int | None = None,
+    ) -> int:
+        """Export while serializing access to the shared DuckDB connection."""
+        with db_mgr.lock:
+            return self._export_unlocked(db_mgr, target_path, word_limit)
+
+    def _export_unlocked(
         self,
         db_mgr: DuckDBManager,
         target_path: Path,
@@ -44,7 +55,10 @@ class JsonExporter:
         words_rows = conn.execute(word_query).fetchall()
         if not words_rows:
             logger.warning("No words in staging DB to export to JSON")
-            payload = {"metadata": {"version": "2.0", "total_words": 0}, "vocabulary": []}
+            payload = {
+                "metadata": {"version": "2.0", "total_words": 0},
+                "vocabulary": [],
+            }
             target_file.write_bytes(orjson.dumps(payload, option=orjson.OPT_INDENT_2))
             return 0
 
@@ -57,16 +71,18 @@ class JsonExporter:
             FROM definitions
             WHERE word_id IN ({id_set_str})
         """).fetchall()
-        defs_by_word: Dict[int, List[Dict[str, Any]]] = {}
+        defs_by_word: dict[int, list[dict[str, Any]]] = {}
         for wid, def_en, def_vi, ex, src in defs_rows:
             if wid not in defs_by_word:
                 defs_by_word[wid] = []
-            defs_by_word[wid].append({
-                "definition_en": def_en,
-                "definition_vi": def_vi,
-                "example": ex,
-                "source": src,
-            })
+            defs_by_word[wid].append(
+                {
+                    "definition_en": def_en,
+                    "definition_vi": def_vi,
+                    "example": ex,
+                    "source": src,
+                }
+            )
 
         # Step 3: Query relations grouped by word_id
         rel_rows = conn.execute(f"""
@@ -74,16 +90,18 @@ class JsonExporter:
             FROM word_relations
             WHERE word_id IN ({id_set_str})
         """).fetchall()
-        rels_by_word: Dict[int, List[Dict[str, Any]]] = {}
+        rels_by_word: dict[int, list[dict[str, Any]]] = {}
         for wid, rtype, ttext, twid, inv in rel_rows:
             if wid not in rels_by_word:
                 rels_by_word[wid] = []
-            rels_by_word[wid].append({
-                "relation_type": rtype,
-                "target_text": ttext,
-                "target_word_id": twid,
-                "inverted": bool(inv),
-            })
+            rels_by_word[wid].append(
+                {
+                    "relation_type": rtype,
+                    "target_text": ttext,
+                    "target_word_id": twid,
+                    "inverted": bool(inv),
+                }
+            )
 
         # Step 4: Query topics grouped by word_id
         topics_rows = conn.execute(f"""
@@ -91,7 +109,7 @@ class JsonExporter:
             FROM word_topics
             WHERE word_id IN ({id_set_str})
         """).fetchall()
-        topics_by_word: Dict[int, List[str]] = {}
+        topics_by_word: dict[int, list[str]] = {}
         for wid, topic, raw in topics_rows:
             if wid not in topics_by_word:
                 topics_by_word[wid] = []
@@ -104,34 +122,38 @@ class JsonExporter:
             JOIN sentences s ON ws.sentence_id = s.id
             WHERE ws.word_id IN ({id_set_str})
         """).fetchall()
-        sents_by_word: Dict[int, List[Dict[str, Any]]] = {}
+        sents_by_word: dict[int, list[dict[str, Any]]] = {}
         for wid, ten, tvi, cefr in sent_links:
             if wid not in sents_by_word:
                 sents_by_word[wid] = []
-            sents_by_word[wid].append({
-                "text_en": ten,
-                "text_vi": tvi,
-                "cefr_level": cefr,
-            })
+            sents_by_word[wid].append(
+                {
+                    "text_en": ten,
+                    "text_vi": tvi,
+                    "cefr_level": cefr,
+                }
+            )
 
         # Assemble hierarchical vocabulary list
         vocabulary = []
         for wid, lemma, pos, ipa_uk, ipa_us, freq, cefr, src in words_rows:
-            vocabulary.append({
-                "id": wid,
-                "lemma": lemma,
-                "pos": pos,
-                "ipa": {
-                    "uk": ipa_uk,
-                    "us": ipa_us,
-                },
-                "frequency_rank": freq,
-                "cefr_level": cefr,
-                "definitions": defs_by_word.get(wid, []),
-                "relations": rels_by_word.get(wid, []),
-                "topics": topics_by_word.get(wid, []),
-                "example_sentences": sents_by_word.get(wid, []),
-            })
+            vocabulary.append(
+                {
+                    "id": wid,
+                    "lemma": lemma,
+                    "pos": pos,
+                    "ipa": {
+                        "uk": ipa_uk,
+                        "us": ipa_us,
+                    },
+                    "frequency_rank": freq,
+                    "cefr_level": cefr,
+                    "definitions": defs_by_word.get(wid, []),
+                    "relations": rels_by_word.get(wid, []),
+                    "topics": topics_by_word.get(wid, []),
+                    "example_sentences": sents_by_word.get(wid, []),
+                }
+            )
 
         # Step 6: Query phrases
         phrase_rows = conn.execute("""
@@ -162,23 +184,25 @@ class JsonExporter:
             if dist_json:
                 try:
                     distractors = json.loads(dist_json)
-                except Exception:
+                except (TypeError, json.JSONDecodeError):
                     distractors = []
-            drills_list.append({
-                "id": did,
-                "sentence_id": sid,
-                "drill_type": dtype,
-                "prompt": prompt,
-                "correct_answer": ans,
-                "distractors": distractors,
-                "target_time_ms": target_ms,
-            })
+            drills_list.append(
+                {
+                    "id": did,
+                    "sentence_id": sid,
+                    "drill_type": dtype,
+                    "prompt": prompt,
+                    "correct_answer": ans,
+                    "distractors": distractors,
+                    "target_time_ms": target_ms,
+                }
+            )
 
         # Assemble full dataset document
         full_payload = {
             "metadata": {
                 "version": "2.0",
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "total_words": len(vocabulary),
                 "total_phrases": len(phrases_list),
                 "total_reflex_drills": len(drills_list),

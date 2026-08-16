@@ -5,11 +5,12 @@ Streams all 11 staging tables from DuckDB into a self-contained, optimized SQLit
 with performance indexes, metadata, and foreign key verification.
 """
 
-from datetime import datetime, timezone
 import logging
-from pathlib import Path
 import sqlite3
-from typing import Dict
+from datetime import UTC, datetime
+from pathlib import Path
+
+import duckdb
 
 from src.db.duckdb_manager import DuckDBManager
 from src.export.schema import SQLITE_INDEXES, SQLITE_SCHEMA, SQLITE_TABLES
@@ -25,7 +26,17 @@ class SqliteExporter:
         db_mgr: DuckDBManager,
         target_sqlite_path: Path,
         batch_size: int = 10000,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
+        """Export while serializing access to the shared DuckDB connection."""
+        with db_mgr.lock:
+            return self._export_unlocked(db_mgr, target_sqlite_path, batch_size)
+
+    def _export_unlocked(
+        self,
+        db_mgr: DuckDBManager,
+        target_sqlite_path: Path,
+        batch_size: int = 10000,
+    ) -> dict[str, int]:
         target_path = Path(target_sqlite_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if target_path.exists():
@@ -47,7 +58,7 @@ class SqliteExporter:
         s_conn.commit()
 
         d_conn = db_mgr.get_connection()
-        exported_counts: Dict[str, int] = {}
+        exported_counts: dict[str, int] = {}
 
         for table in SQLITE_TABLES:
             try:
@@ -79,9 +90,11 @@ class SqliteExporter:
 
                 s_conn.commit()
                 exported_counts[table] = table_count
-                logger.info("Exported %d rows into SQLite table '%s'", table_count, table)
+                logger.info(
+                    "Exported %d rows into SQLite table '%s'", table_count, table
+                )
 
-            except Exception as e:
+            except (duckdb.Error, OSError, sqlite3.Error, TypeError, ValueError) as e:
                 logger.error("Failed to export table '%s': %s", table, e)
                 exported_counts[table] = 0
 
@@ -91,7 +104,7 @@ class SqliteExporter:
         s_conn.commit()
 
         # Populate dataset metadata
-        now_str = datetime.now(timezone.utc).isoformat()
+        now_str = datetime.now(UTC).isoformat()
         metadata_entries = [
             ("version", "2.0"),
             ("schema_version", "2.0"),
