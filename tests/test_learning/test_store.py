@@ -91,9 +91,14 @@ def test_fetch_value_and_close_allow_reopening(tmp_path: Path):
     store = LearningGraphStore(db_path)
     store.initialize()
     assert store.fetch_value("SELECT ?", ["scalar"]) == "scalar"
+    assert (
+        store.fetch_value(
+            "SELECT asset_id FROM source_assets WHERE asset_id = ?", ["missing"]
+        )
+        is None
+    )
 
     store.close()
-    reopened = LearningGraphStore(db_path)
-    assert reopened.fetch_value("SELECT count(*) FROM graph_schema_migrations") == len(
+    assert store.fetch_value("SELECT count(*) FROM graph_schema_migrations") == len(
         MIGRATIONS
     )
