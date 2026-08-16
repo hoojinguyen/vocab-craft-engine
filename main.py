@@ -25,9 +25,13 @@ logger = logging.getLogger(__name__)
 
 def handle_status(db_manager: DuckDBManager):
     conn = db_manager.get_connection()
-    rows = conn.execute("SELECT step_name, status, row_count, duration_secs, completed_at FROM _pipeline_meta ORDER BY started_at").fetchall()
+    rows = conn.execute(
+        "SELECT step_name, status, row_count, duration_secs, completed_at FROM _pipeline_meta ORDER BY started_at"
+    ).fetchall()
     print("\n=== PIPELINE STEP STATUS ===")
-    print(f"{'STEP NAME':<25} {'STATUS':<12} {'ITEMS':<10} {'TIME (s)':<10} {'COMPLETED AT'}")
+    print(
+        f"{'STEP NAME':<25} {'STATUS':<12} {'ITEMS':<10} {'TIME (s)':<10} {'COMPLETED AT'}"
+    )
     print("-" * 75)
     for r in rows:
         dur = r[3] if r[3] is not None else 0.0
@@ -35,10 +39,12 @@ def handle_status(db_manager: DuckDBManager):
     print()
 
 
-def handle_reset(db_manager: DuckDBManager, step_name: str | None = None, reset_all: bool = False):
+def handle_reset(
+    db_manager: DuckDBManager, step_name: str | None = None, reset_all: bool = False
+):
     state_mgr = StateManager(db_manager)
     registry = get_default_registry()
-    dag = orchestrator = PipelineOrchestrator(registry=registry).dag
+    dag = PipelineOrchestrator(registry=registry).dag
 
     if reset_all:
         conn = db_manager.get_connection()
@@ -67,6 +73,11 @@ def handle_export(db_manager: DuckDBManager, export_format: str):
 def main():
     args = parse_arguments()
 
+    if getattr(args, "command", None) == "curriculum":
+        from src.learning.cli import run_parsed_curriculum_command
+
+        raise SystemExit(run_parsed_curriculum_command(args))
+
     db_manager = DuckDBManager(db_path=config.settings.STAGING_DUCKDB_PATH)
     db_manager.init_schema()
 
@@ -76,7 +87,11 @@ def main():
             return
 
         if getattr(args, "command", None) == "reset":
-            handle_reset(db_manager, step_name=getattr(args, "step", None), reset_all=getattr(args, "all", False))
+            handle_reset(
+                db_manager,
+                step_name=getattr(args, "step", None),
+                reset_all=getattr(args, "all", False),
+            )
             return
 
         if getattr(args, "command", None) == "export":
@@ -100,7 +115,10 @@ def main():
             logger.error("Pipeline completed with errors.")
             sys.exit(1)
         else:
-            logger.info("Pipeline completed successfully in %.2f seconds.", summary.total_time_seconds)
+            logger.info(
+                "Pipeline completed successfully in %.2f seconds.",
+                summary.total_time_seconds,
+            )
     finally:
         db_manager.close()
 

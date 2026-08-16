@@ -20,6 +20,7 @@ THEME_MAP_PATH = CONFIG_DIR / "theme_map.yaml"
 def load_pipeline_config(config_path: Path | None = None) -> dict:
     """Loads and returns the pipeline configuration YAML."""
     import yaml
+
     path = config_path or PIPELINE_CONFIG_PATH
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
@@ -68,6 +69,8 @@ MAX_SENTENCES_PER_CORPUS = 500_000
 # Target Export Database Path
 EXPORT_SQLITE_PATH = OUTPUT_DIR / "english_dataset.db"
 STAGING_DUCKDB_PATH = PROCESSED_DATA_DIR / "staging.duckdb"
+LEARNING_GRAPH_DUCKDB_PATH = PROCESSED_DATA_DIR / "learning_graph.duckdb"
+CURRICULUM_OUTPUT_DIR = OUTPUT_DIR / "curriculum"
 
 
 # Pipeline Parameters
@@ -84,7 +87,7 @@ DEFAULT_CEFR_LEVEL = "B1"
 TTS_VOICES = {
     "US_FEMALE": "en-US-AriaNeural",
     "US_MALE": "en-US-GuyNeural",
-    "UK_FEMALE": "en-GB-SoniaNeural"
+    "UK_FEMALE": "en-GB-SoniaNeural",
 }
 TTS_SPEED_STANDARD = "+0%"
 TTS_SPEED_FAST_REFLEX = "+20%"
@@ -99,6 +102,7 @@ VENV_NLTK_DATA_DIR = BASE_DIR / ".venv" / "nltk_data"
 
 try:
     import nltk
+
     valid_paths = [str(VENV_NLTK_DATA_DIR), str(NLTK_DATA_DIR)]
     for p in nltk.data.path:
         if str(BASE_DIR) in p and p not in valid_paths:
@@ -106,4 +110,3 @@ try:
     nltk.data.path = valid_paths
 except ImportError:
     pass
-
