@@ -1,8 +1,10 @@
-import pytest
 from pathlib import Path
+
+import pytest
+
 from src.db.duckdb_manager import DuckDBManager
-from src.transform.phrase_extractor import PhraseExtractor
 from src.pipeline.steps.transform_phrases import TransformPhrasesStep
+from src.transform.phrase_extractor import PhraseExtractor, normalize_phrase_text
 
 
 @pytest.fixture
@@ -14,16 +16,35 @@ def db_mgr(tmp_path: Path):
 
 
 def test_phrase_extractor_comprehensive(db_mgr: DuckDBManager):
-    db_mgr.insert_batch_fast("sentences", [
-        {"text_en": "You should never give up on your dreams.", "text_vi": "Bạn không bao giờ nên từ bỏ ước mơ của mình.", "source": "tatoeba"},
-        {"text_en": "Good luck tonight, break a leg!", "text_vi": "Chúc may mắn tối nay, diễn tốt nhé!", "source": "tatoeba"},
-        {"text_en": "Better late than never is a great saying.", "text_vi": "Muộn còn hơn không là một câu tục ngữ tuyệt vời.", "source": "tatoeba"},
-        {"text_en": "He made a strong decision to take care of his family.", "text_vi": "Anh ấy đã đưa ra một quyết định mạnh mẽ để chăm sóc gia đình.", "source": "tatoeba"},
-    ])
+    db_mgr.insert_batch_fast(
+        "sentences",
+        [
+            {
+                "text_en": "You should never give up on your dreams.",
+                "text_vi": "Bạn không bao giờ nên từ bỏ ước mơ của mình.",
+                "source": "tatoeba",
+            },
+            {
+                "text_en": "Good luck tonight, break a leg!",
+                "text_vi": "Chúc may mắn tối nay, diễn tốt nhé!",
+                "source": "tatoeba",
+            },
+            {
+                "text_en": "Better late than never is a great saying.",
+                "text_vi": "Muộn còn hơn không là một câu tục ngữ tuyệt vời.",
+                "source": "tatoeba",
+            },
+            {
+                "text_en": "He made a strong decision to take care of his family.",
+                "text_vi": "Anh ấy đã đưa ra một quyết định mạnh mẽ để chăm sóc gia đình.",
+                "source": "tatoeba",
+            },
+        ],
+    )
 
     extractor = PhraseExtractor()
-    count = extractor.extract(db_mgr)
-    assert count >= 3
+    result = extractor.extract(db_mgr)
+    assert result.phrases_created >= 3
 
     conn = db_mgr.get_connection()
     phrases = conn.execute("SELECT id, phrase, phrase_type FROM phrases").fetchall()
@@ -33,13 +54,103 @@ def test_phrase_extractor_comprehensive(db_mgr: DuckDBManager):
     assert "phrasal_verb" in types or "idiom" in types
 
     # Verify foreign key integrity in phrase_sentences
-    links = conn.execute("SELECT phrase_id, sentence_id FROM phrase_sentences").fetchall()
+    links = conn.execute(
+        "SELECT phrase_id, sentence_id FROM phrase_sentences"
+    ).fetchall()
     assert len(links) >= 3
     for pid, sid in links:
         p_row = conn.execute("SELECT id FROM phrases WHERE id = ?", [pid]).fetchone()
         assert p_row is not None, f"phrase_id {pid} does not exist in phrases table!"
         s_row = conn.execute("SELECT id FROM sentences WHERE id = ?", [sid]).fetchone()
-        assert s_row is not None, f"sentence_id {sid} does not exist in sentences table!"
+        assert (
+            s_row is not None
+        ), f"sentence_id {sid} does not exist in sentences table!"
+
+
+def test_normalize_phrase_text_preserves_word_boundaries():
+    assert normalize_phrase_text("  Gave-up, now! ") == "gave up now"
+
+
+def test_phrase_extractor_returns_structured_result(db_mgr: DuckDBManager):
+    db_mgr.insert_batch_fast(
+        "sentences",
+        [
+            {
+                "text_en": "She gave up after the delay.",
+                "text_vi": "",
+                "source": "tatoeba",
+            },
+        ],
+    )
+
+    result = PhraseExtractor().extract(db_mgr, batch_size=1)
+
+    assert result.phrases_created == 1
+    assert db_mgr.fetch_all("SELECT phrase FROM phrases") == [("give up",)]
+    assert db_mgr.fetch_one("SELECT count(*) FROM phrase_sentences")[0] == 1
+
+
+def test_phrase_extractor_matches_batched_dynamic_lemmas_without_duplicates(
+    db_mgr: DuckDBManager,
+):
+    db_mgr.insert_batch_fast(
+        "words",
+        [
+            {"lemma": "at home", "pos": "adverb", "source": "test"},
+            {"lemma": "one", "pos": "noun", "source": "test"},
+            {
+                "lemma": "one two three four five six seven",
+                "pos": "noun",
+                "source": "test",
+            },
+        ],
+    )
+    db_mgr.insert_batch_fast(
+        "sentences",
+        [
+            {"text_en": "I am AT HOME today.", "text_vi": "", "source": "test"},
+            {
+                "text_en": "One two three four five six seven should not match.",
+                "text_vi": "",
+                "source": "test",
+            },
+            {
+                "text_en": "They stayed at home all weekend.",
+                "text_vi": "",
+                "source": "test",
+            },
+        ],
+    )
+
+    extractor = PhraseExtractor()
+    first_result = extractor.extract(db_mgr, batch_size=1)
+    second_result = extractor.extract(db_mgr, batch_size=1)
+
+    assert first_result.links_created == 2
+    assert second_result.links_created == 0
+    assert db_mgr.fetch_all("SELECT phrase FROM phrases ORDER BY phrase") == [
+        ("at home",)
+    ]
+    assert db_mgr.fetch_one("SELECT count(*) FROM phrase_sentences")[0] == 2
+
+
+def test_phrase_extractor_normalizes_punctuation_in_variants(db_mgr: DuckDBManager):
+    db_mgr.insert_batch_fast(
+        "sentences",
+        [
+            {
+                "text_en": "She GAVE-UP, after the delay.",
+                "text_vi": "",
+                "source": "test",
+            },
+        ],
+    )
+
+    result = PhraseExtractor().extract(db_mgr, batch_size=1)
+
+    assert result.phrases_created == 1
+    assert db_mgr.fetch_all("SELECT phrase FROM phrases") == [("give up",)]
+    assert db_mgr.fetch_one("SELECT count(*) FROM phrase_sentences")[0] == 1
 
 
 def test_transform_phrases_step():

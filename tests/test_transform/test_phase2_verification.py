@@ -93,8 +93,8 @@ def test_phase2_full_pipeline_verification(phase2_db: DuckDBManager):
 
     # 2. Test Phrase Extractor
     extractor = PhraseExtractor()
-    phrases_count = extractor.extract(phase2_db)
-    assert phrases_count >= 3
+    phrases_result = extractor.extract(phase2_db)
+    assert phrases_result.phrases_created >= 3
     assert phase2_db.count_rows("phrases") >= 3
     assert phase2_db.count_rows("phrase_sentences") >= 3
 

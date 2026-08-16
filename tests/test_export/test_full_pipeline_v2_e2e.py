@@ -115,8 +115,8 @@ def test_master_pipeline_v2_end_to_end_audit(master_env):
     assert links_count > 0
     assert mgr.count_rows("word_sentences") > 0
 
-    phrases_count = PhraseExtractor().extract(mgr)
-    assert phrases_count >= 1
+    phrases_result = PhraseExtractor().extract(mgr)
+    assert phrases_result.phrases_created >= 1
     assert mgr.count_rows("phrases") >= 1
     assert mgr.count_rows("phrase_sentences") >= 1
 
