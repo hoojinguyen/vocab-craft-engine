@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS sentences (
 CREATE TABLE IF NOT EXISTS word_sentences (
     word_id     INTEGER NOT NULL REFERENCES words(id),
     sentence_id INTEGER NOT NULL REFERENCES sentences(id),
+    rank        INTEGER DEFAULT 1,
     PRIMARY KEY (word_id, sentence_id)
 );
 
@@ -113,7 +114,7 @@ CREATE TABLE IF NOT EXISTS word_topics (
 CREATE SEQUENCE IF NOT EXISTS seq_reflex_drills_id START 1;
 CREATE TABLE IF NOT EXISTS reflex_drills (
     id               INTEGER PRIMARY KEY DEFAULT nextval('seq_reflex_drills_id'),
-    sentence_id      INTEGER NOT NULL REFERENCES sentences(id),
+    sentence_id      INTEGER REFERENCES sentences(id),
     drill_type       TEXT NOT NULL,
     prompt_text      TEXT,
     correct_answer   TEXT NOT NULL,
@@ -137,6 +138,9 @@ CREATE TABLE IF NOT EXISTS dialogue_nodes (
     parent_node_id INTEGER REFERENCES dialogue_nodes(id),
     choice_label   TEXT,
     speaker_role   TEXT NOT NULL,
+    text_en        TEXT,
+    text_vi        TEXT,
+    audio_path     TEXT,
     sentence_id    INTEGER REFERENCES sentences(id)
 );
 """

@@ -129,8 +129,8 @@ class CoreExporter:
         tree_rows = d_conn.execute("SELECT id, title, topic, cefr_level, root_node_id FROM dialogue_trees").fetchall()
         s_cursor.executemany("INSERT OR IGNORE INTO dialogue_trees (id, title, topic, cefr_level, root_node_id) VALUES (?, ?, ?, ?, ?)", tree_rows)
 
-        node_rows = d_conn.execute("SELECT id, tree_id, parent_node_id, choice_label, speaker_role, sentence_id FROM dialogue_nodes").fetchall()
-        s_cursor.executemany("INSERT OR IGNORE INTO dialogue_nodes (id, tree_id, parent_node_id, choice_label, speaker_role, sentence_id) VALUES (?, ?, ?, ?, ?, ?)", node_rows)
+        node_rows = d_conn.execute("SELECT id, tree_id, parent_node_id, choice_label, speaker_role, text_en, text_vi, audio_path, sentence_id FROM dialogue_nodes").fetchall()
+        s_cursor.executemany("INSERT OR IGNORE INTO dialogue_nodes (id, tree_id, parent_node_id, choice_label, speaker_role, text_en, text_vi, audio_path, sentence_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", node_rows)
 
         s_conn.commit()
         s_cursor.executescript(SQLITE_INDEXES)
