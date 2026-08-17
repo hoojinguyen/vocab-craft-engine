@@ -81,7 +81,27 @@ class GraphRepositoryFixture:
         )
         prerequisite = self._approved_revision(
             "sense",
-            {"stable_key": "sense.hello", "gloss": "greeting"},
+            {
+                "stable_key": "sense.hello.noun.123456789abc",
+                "lemma": "hello",
+                "pos": "noun",
+                "frequency_rank": 100,
+                "cefr_level": "A1",
+                "cefr_method": "frequency_rank_v1",
+                "definition_en": "an expression of greeting",
+                "definition_vi": "một lời chào",
+                "ipa_uk": "/həˈləʊ/",
+                "ipa_us": "/həˈloʊ/",
+                "ipa_source": "kaikki",
+                "ipa_confidence": 0.8,
+                "examples": [
+                    {
+                        "text_en": "Say hello to your friend.",
+                        "text_vi": "Hãy chào bạn của bạn.",
+                        "source": "fixture",
+                    }
+                ],
+            },
             "prerequisite",
         )
         sentence = self._approved_revision(
