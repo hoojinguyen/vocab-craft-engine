@@ -285,6 +285,50 @@ def test_import_vertical_slice_rejects_volatile_sqlite_sidecars(
         wal_path.unlink()
 
 
+@pytest.mark.parametrize(
+    "filename",
+    ["reference?version=1.db", "reference#fragment.db", "reference%percent.db"],
+)
+def test_import_vertical_slice_uses_the_verified_path_for_uri_special_characters(
+    catalog: SourceCatalog,
+    legacy_sqlite: Path,
+    tmp_path: Path,
+    filename: str,
+):
+    reference_path = tmp_path / filename
+    reference_path.write_bytes(legacy_sqlite.read_bytes())
+    checksum = hashlib.sha256(reference_path.read_bytes()).hexdigest()
+    catalog.register_source(
+        SourceAssetInput(
+            asset_id=f"sqlite-special-{len(filename)}",
+            title="Special-path SQLite reference",
+            locator="https://example.test/special-path",
+            asset_version="2026-08",
+            sha256=checksum,
+            license_id="CC-BY-4.0",
+            license_url="https://creativecommons.org/licenses/by/4.0/",
+            attribution="Example author",
+            redistribution_allowed=True,
+            validation_status=ReviewState.APPROVED,
+        )
+    )
+    snapshot_id = catalog.record_source_snapshot(
+        f"sqlite-special-{len(filename)}",
+        reference_path,
+        datetime(2026, 8, 17, tzinfo=UTC),
+    )
+
+    report = SQLiteLexicalReferenceImporter(catalog).import_vertical_slice(
+        reference_path, snapshot_id, "run-special-path"
+    )
+
+    assert report.eligible_words == 1
+    assert (
+        catalog.store.fetch_value("SELECT external_key FROM raw_reference_records")
+        == "sqlite-lexical:10"
+    )
+
+
 def test_append_raw_records_batches_250_records_and_is_idempotent(
     catalog: SourceCatalog,
     legacy_sqlite: Path,
