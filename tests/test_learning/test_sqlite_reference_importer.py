@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from src.learning import sqlite_reference_importer
 from src.learning.catalog import RawRecordInput, SourceCatalog
 from src.learning.models import ReviewState, SourceAssetInput
 from src.learning.sqlite_reference_importer import SQLiteLexicalReferenceImporter
@@ -327,6 +328,50 @@ def test_import_vertical_slice_uses_the_verified_path_for_uri_special_characters
         catalog.store.fetch_value("SELECT external_key FROM raw_reference_records")
         == "sqlite-lexical:10"
     )
+
+
+def test_import_vertical_slice_reads_only_the_verified_private_copy(
+    catalog: SourceCatalog,
+    legacy_sqlite: Path,
+    approved_snapshot_id: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    trusted_bytes = legacy_sqlite.read_bytes()
+    tampered_path = tmp_path / "tampered.db"
+    tampered_path.write_bytes(trusted_bytes)
+    connection = sqlite3.connect(tampered_path)
+    try:
+        connection.execute("UPDATE words SET lemma = 'tampered' WHERE id = 10")
+        connection.commit()
+    finally:
+        connection.close()
+    tampered_bytes = tampered_path.read_bytes()
+
+    original_connect = sqlite_reference_importer.sqlite3.connect
+
+    def swap_source_on_sqlite_open(
+        database: str | Path, *args: object, **kwargs: object
+    ) -> sqlite3.Connection:
+        if "lexical-reference-" in str(database):
+            legacy_sqlite.write_bytes(tampered_bytes)
+            connection = original_connect(database, *args, **kwargs)
+            legacy_sqlite.write_bytes(trusted_bytes)
+            return connection
+        return original_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(
+        sqlite_reference_importer.sqlite3, "connect", swap_source_on_sqlite_open
+    )
+
+    SQLiteLexicalReferenceImporter(catalog).import_vertical_slice(
+        legacy_sqlite, approved_snapshot_id, "run-swap-on-open"
+    )
+
+    payload_json = catalog.store.fetch_value(
+        "SELECT payload_json FROM raw_reference_records"
+    )
+    assert json.loads(payload_json)["word"]["lemma"] == "book"
 
 
 def test_append_raw_records_batches_250_records_and_is_idempotent(

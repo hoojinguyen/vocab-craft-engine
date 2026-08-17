@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import sqlite3
 import tempfile
 from dataclasses import dataclass
@@ -68,51 +69,57 @@ class SQLiteLexicalReferenceImporter:
         self._assert_stable_source(source_path, snapshot_sha256)
         scanned_words = 0
         eligible_words = 0
-        with tempfile.SpooledTemporaryFile(
-            max_size=8 * 1024 * 1024, mode="w+", encoding="utf-8"
-        ) as spool:
-            connection = sqlite3.connect(
-                f"{source_path.resolve().as_uri()}?mode=ro", uri=True
-            )
-            try:
-                connection.execute("PRAGMA query_only = ON")
-                connection.execute("BEGIN")
-                cursor = connection.execute(
-                    """
-                    SELECT id, lemma, pos, frequency_rank, cefr_level, ipa_uk, ipa_us, source
-                    FROM words
-                    WHERE frequency_rank >= 1 AND frequency_rank <= ?
-                    ORDER BY frequency_rank, id
-                    """,
-                    [MAX_FREQUENCY_RANK],
-                )
-                while words := cursor.fetchmany(IMPORT_BATCH_SIZE):
-                    scanned_words += len(words)
-                    for word in words:
-                        if not self._is_eligible(word[1], word[2]):
-                            continue
-                        record = self._raw_record_for_word(
-                            connection, asset_id, word, import_run_id
-                        )
-                        spool.write(
-                            json.dumps(record.__dict__, ensure_ascii=False) + "\n"
-                        )
-                        eligible_words += 1
-                connection.rollback()
-            finally:
-                connection.close()
+        with tempfile.TemporaryDirectory(prefix="lexical-reference-") as staging_dir:
+            staged_path = Path(staging_dir) / "reference.db"
+            shutil.copyfile(source_path, staged_path)
+            if self._hash_file(staged_path) != snapshot_sha256:
+                raise ValueError("source snapshot changed while staging reference")
 
-            self._assert_stable_source(source_path, snapshot_sha256)
-            spool.seek(0)
-            batch: list[RawRecordInput] = []
-            for line in spool:
-                values = json.loads(line)
-                batch.append(RawRecordInput(**values))
-                if len(batch) == IMPORT_BATCH_SIZE:
+            with tempfile.SpooledTemporaryFile(
+                max_size=8 * 1024 * 1024, mode="w+", encoding="utf-8"
+            ) as spool:
+                connection = sqlite3.connect(
+                    f"{staged_path.resolve().as_uri()}?mode=ro", uri=True
+                )
+                try:
+                    connection.execute("PRAGMA query_only = ON")
+                    connection.execute("BEGIN")
+                    cursor = connection.execute(
+                        """
+                        SELECT id, lemma, pos, frequency_rank, cefr_level, ipa_uk, ipa_us, source
+                        FROM words
+                        WHERE frequency_rank >= 1 AND frequency_rank <= ?
+                        ORDER BY frequency_rank, id
+                        """,
+                        [MAX_FREQUENCY_RANK],
+                    )
+                    while words := cursor.fetchmany(IMPORT_BATCH_SIZE):
+                        scanned_words += len(words)
+                        for word in words:
+                            if not self._is_eligible(word[1], word[2]):
+                                continue
+                            record = self._raw_record_for_word(
+                                connection, asset_id, word, import_run_id
+                            )
+                            spool.write(
+                                json.dumps(record.__dict__, ensure_ascii=False) + "\n"
+                            )
+                            eligible_words += 1
+                    connection.rollback()
+                finally:
+                    connection.close()
+
+                self._assert_stable_source(source_path, snapshot_sha256)
+                spool.seek(0)
+                batch: list[RawRecordInput] = []
+                for line in spool:
+                    values = json.loads(line)
+                    batch.append(RawRecordInput(**values))
+                    if len(batch) == IMPORT_BATCH_SIZE:
+                        self.catalog.append_raw_records(batch)
+                        batch = []
+                if batch:
                     self.catalog.append_raw_records(batch)
-                    batch = []
-            if batch:
-                self.catalog.append_raw_records(batch)
         return SQLiteLexicalImportReport(
             source_snapshot_id=snapshot_id,
             import_run_id=import_run_id,
