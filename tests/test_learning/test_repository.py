@@ -1,9 +1,11 @@
 import json
+from threading import Barrier, Thread
 
 import pytest
 
 from src.learning.catalog import SourceCatalog
 from src.learning.repository import ContentRepository
+from src.learning.store import LearningGraphStore
 
 
 def _candidate(repo: ContentRepository, catalog: SourceCatalog) -> str:
@@ -100,6 +102,68 @@ def test_create_candidate_returns_existing_id_for_same_normalized_payload(
     )
 
     assert second == first
+    assert (
+        graph_catalog.store.fetch_value("SELECT count(*) FROM content_candidates") == 1
+    )
+
+
+def test_duplicate_candidate_still_validates_evidence(graph_catalog: SourceCatalog):
+    repo = ContentRepository(graph_catalog.store)
+    raw_id = graph_catalog.record_raw_snapshot(
+        "human-authored-a0", "sense:book", {"v": 1}
+    )
+    payload = {
+        "stable_key": "sense.book.noun.123456789abc",
+        "definition_en": "a set of pages",
+    }
+    repo.create_candidate(raw_id, "sense", payload, {"source": "fixture"}, 1.0)
+
+    with pytest.raises(ValueError, match="JSON-compatible"):
+        repo.create_candidate(raw_id, "sense", payload, {"source": float("nan")}, 1.0)
+
+
+def test_concurrent_candidate_creation_returns_one_shared_id(
+    graph_catalog: SourceCatalog,
+):
+    raw_id = graph_catalog.record_raw_snapshot(
+        "human-authored-a0", "sense:book", {"v": 1}
+    )
+    db_path = graph_catalog.store._db_path
+    repositories = [ContentRepository(LearningGraphStore(db_path)) for _ in range(2)]
+    barrier = Barrier(2)
+    results: list[str] = []
+    errors: list[BaseException] = []
+
+    def create(repository: ContentRepository) -> None:
+        try:
+            barrier.wait()
+            results.append(
+                repository.create_candidate(
+                    raw_id,
+                    "sense",
+                    {
+                        "stable_key": "sense.book.noun.123456789abc",
+                        "definition_en": "a set of pages",
+                    },
+                    {"source": "fixture"},
+                    1.0,
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        Thread(target=create, args=(repository,), daemon=True)
+        for repository in repositories
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not errors
+    assert len(results) == 2
+    assert len(set(results)) == 1
     assert (
         graph_catalog.store.fetch_value("SELECT count(*) FROM content_candidates") == 1
     )

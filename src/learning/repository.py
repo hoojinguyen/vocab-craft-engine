@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
+
+import duckdb
 
 from src.learning.models import (
     CandidateState,
@@ -24,6 +28,11 @@ _VALIDATION_RUN_CANDIDATE_COLUMNS = (
     "content_type",
     "state",
 )
+_CANDIDATE_WRITE_RETRY_ATTEMPTS = 4
+
+
+class _ConcurrentCandidateWrite(RuntimeError):
+    pass
 
 
 class ContentRepository:
@@ -38,6 +47,25 @@ class ContentRepository:
         content_type: str,
         payload: dict[str, Any],
         evidence: dict[str, Any],
+        confidence: float,
+    ) -> str:
+        evidence_json = canonical_json(evidence)
+        return self._retry_candidate_write(
+            lambda: self._create_candidate_once(
+                raw_record_id,
+                content_type,
+                payload,
+                evidence_json,
+                confidence,
+            )
+        )
+
+    def _create_candidate_once(
+        self,
+        raw_record_id: str,
+        content_type: str,
+        payload: dict[str, Any],
+        evidence_json: str,
         confidence: float,
     ) -> str:
         with self.store.transaction() as connection:
@@ -67,13 +95,13 @@ class ContentRepository:
                 return str(existing[0])
 
             candidate_id = str(uuid4())
-            evidence_json = canonical_json(evidence)
             connection.execute(
                 """
                 INSERT INTO content_candidates (
                     candidate_id, raw_record_id, content_type, normalized_payload_json,
                     evidence_json, confidence
                 ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
                 """,
                 [
                     candidate_id,
@@ -84,7 +112,32 @@ class ContentRepository:
                     confidence,
                 ],
             )
-        return candidate_id
+            stored_candidate = connection.execute(
+                """
+                SELECT candidate_id FROM content_candidates
+                WHERE raw_record_id = ? AND content_type = ? AND normalized_payload_json = ?
+                """,
+                [raw_record_id, content_type, normalized_payload_json],
+            ).fetchone()
+            if stored_candidate is None:
+                raise _ConcurrentCandidateWrite
+            return str(stored_candidate[0])
+
+    @staticmethod
+    def _retry_candidate_write(operation: Callable[[], str]) -> str:
+        last_error: Exception | None = None
+        for attempt in range(_CANDIDATE_WRITE_RETRY_ATTEMPTS):
+            try:
+                return operation()
+            except (
+                _ConcurrentCandidateWrite,
+                duckdb.ConstraintException,
+                duckdb.TransactionException,
+            ) as exc:
+                last_error = exc
+                if attempt + 1 < _CANDIDATE_WRITE_RETRY_ATTEMPTS:
+                    time.sleep(0.01 * (attempt + 1))
+        raise RuntimeError("concurrent candidate write did not settle") from last_error
 
     def mark_candidate_validated(self, candidate_id: str) -> None:
         with self.store.transaction() as connection:

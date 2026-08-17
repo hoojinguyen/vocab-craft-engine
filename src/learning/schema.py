@@ -196,10 +196,16 @@ CREATE TABLE candidate_gate_results (
 );
 """
 
+MIGRATION_004 = """
+CREATE UNIQUE INDEX IF NOT EXISTS content_candidates_identity_idx
+ON content_candidates (raw_record_id, content_type, normalized_payload_json);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
+    (4, MIGRATION_004),
 ]
 
 _TABLE_COLUMNS: dict[str, tuple[str, ...]] = {

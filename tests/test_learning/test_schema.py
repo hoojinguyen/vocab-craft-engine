@@ -51,6 +51,16 @@ def test_migration_v3_creates_validation_tables_and_validated_candidate_state():
     assert conn.execute(
         "SELECT state FROM content_candidates WHERE candidate_id = 'candidate-1'"
     ).fetchone() == ("validated",)
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute(
+            """
+            INSERT INTO content_candidates
+                (candidate_id, raw_record_id, content_type, normalized_payload_json,
+                 evidence_json, confidence, state)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ["candidate-2", "raw-1", "sense", "{}", "{}", 0.5, "candidate"],
+        )
 
 
 def test_migration_v3_preserves_the_existing_candidate_graph(monkeypatch):
@@ -107,7 +117,7 @@ def test_migration_v3_preserves_the_existing_candidate_graph(monkeypatch):
 
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,)]
     assert {
         table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         for table in (
@@ -208,7 +218,7 @@ def test_migration_v2_quarantines_invalid_approved_sources_and_is_idempotent():
     ).fetchone() == ("quarantined",)
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,)]
 
     apply_migrations(conn)
     assert conn.execute(
@@ -251,7 +261,7 @@ def test_migration_v2_rejects_mismatched_legacy_review_and_rolls_back():
     conn.execute("""
         INSERT INTO content_candidates VALUES
         ('candidate-a', 'raw-1', 'objective', '{}', '{}', 1.0, 'candidate', current_timestamp),
-        ('candidate-b', 'raw-1', 'objective', '{}', '{}', 1.0, 'candidate', current_timestamp)
+        ('candidate-b', 'raw-1', 'objective', '{\"variant\":1}', '{}', 1.0, 'candidate', current_timestamp)
         """)
     conn.execute(
         "INSERT INTO canonical_content VALUES ('content-1', 'objective.greet', 'objective', current_timestamp)"
@@ -297,7 +307,7 @@ def test_migration_v2_enforces_composite_review_foreign_key():
     conn.execute("""
         INSERT INTO content_candidates VALUES
         ('candidate-a', 'raw-1', 'objective', '{}', '{}', 1.0, 'candidate', current_timestamp),
-        ('candidate-b', 'raw-1', 'objective', '{}', '{}', 1.0, 'candidate', current_timestamp)
+        ('candidate-b', 'raw-1', 'objective', '{\"variant\":1}', '{}', 1.0, 'candidate', current_timestamp)
         """)
     conn.execute(
         "INSERT INTO canonical_content VALUES ('content-1', 'objective.greet', 'objective', current_timestamp)"
