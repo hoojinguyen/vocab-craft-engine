@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from typing import Any
 
@@ -373,6 +374,14 @@ _MIGRATION_004_RESTORE_ORDER = (
     "candidate_gate_results",
 )
 
+_CANDIDATE_STATE_PRIORITY = {
+    "approved": 4,
+    "validated": 3,
+    "candidate": 2,
+    "quarantined": 1,
+    "rejected": 1,
+}
+
 
 def _snapshot_graph(
     conn: duckdb.DuckDBPyConnection,
@@ -472,30 +481,58 @@ def _candidate_identity_duplicates(conn: duckdb.DuckDBPyConnection) -> bool:
 def _merge_duplicate_candidates(
     snapshots: dict[str, list[tuple[Any, ...]]],
 ) -> None:
+    candidates_by_identity: dict[tuple[Any, ...], list[tuple[Any, ...]]] = {}
+    for row in snapshots["content_candidates"]:
+        candidates_by_identity.setdefault(tuple(row[1:4]), []).append(row)
+
     winners: dict[tuple[Any, ...], str] = {}
     redirects: dict[str, str] = {}
     retained_candidates: list[tuple[Any, ...]] = []
-    for row in sorted(snapshots["content_candidates"], key=lambda item: str(item[0])):
-        identity = tuple(row[1:4])
-        candidate_id = str(row[0])
-        winner = winners.get(identity)
-        if winner is None:
-            winners[identity] = candidate_id
-            retained_candidates.append(row)
-        else:
-            redirects[candidate_id] = winner
+    for identity in sorted(candidates_by_identity, key=str):
+        rows = sorted(
+            candidates_by_identity[identity],
+            key=lambda item: (
+                -_CANDIDATE_STATE_PRIORITY.get(str(item[6]), -1),
+                str(item[0]),
+            ),
+        )
+        winner = str(rows[0][0])
+        winners[identity] = winner
+        retained_candidates.append(rows[0])
+        for row in rows[1:]:
+            redirects[str(row[0])] = winner
     snapshots["content_candidates"] = retained_candidates
 
-    merged_gates: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+    merged_gates: dict[tuple[Any, ...], tuple[list[Any], list[dict[str, object]]]] = {}
     for row in sorted(
         snapshots["candidate_gate_results"],
         key=lambda item: (str(item[0]), str(item[1]), str(item[2])),
     ):
+        original_candidate_id = str(row[1])
         row_values = list(row)
-        row_values[1] = redirects.get(str(row_values[1]), str(row_values[1]))
+        row_values[1] = redirects.get(original_candidate_id, original_candidate_id)
         gate_key = (row_values[0], row_values[1], row_values[2])
-        merged_gates.setdefault(gate_key, tuple(row_values))
-    snapshots["candidate_gate_results"] = list(merged_gates.values())
+        detail_entry: dict[str, object] = {
+            "candidate_id": original_candidate_id,
+            "passed": bool(row[3]),
+            "message": str(row[4]),
+            "details": _decode_gate_details(row[5]),
+        }
+        existing = merged_gates.get(gate_key)
+        if existing is None:
+            merged_gates[gate_key] = (row_values, [detail_entry])
+            continue
+        merged_row, detail_entries = existing
+        merged_row[3] = bool(merged_row[3]) and bool(row[3])
+        messages = [str(merged_row[4]), str(row[4])]
+        merged_row[4] = "; ".join(
+            dict.fromkeys(message for message in messages if message)
+        )
+        detail_entries.append(detail_entry)
+        merged_row[5] = _encode_gate_details(detail_entries)
+    snapshots["candidate_gate_results"] = [
+        tuple(row_values) for row_values, _ in merged_gates.values()
+    ]
 
     revisions = []
     for row in snapshots["content_revisions"]:
@@ -510,6 +547,22 @@ def _merge_duplicate_candidates(
         row_values[1] = redirects.get(str(row_values[1]), str(row_values[1]))
         reviews.append(tuple(row_values))
     snapshots["content_reviews"] = reviews
+
+
+def _decode_gate_details(details_json: Any) -> object:
+    try:
+        return json.loads(str(details_json))
+    except (TypeError, ValueError):
+        return str(details_json)
+
+
+def _encode_gate_details(entries: list[dict[str, object]]) -> str:
+    return json.dumps(
+        {"merged_candidates": entries},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _apply_migration_004(conn: duckdb.DuckDBPyConnection) -> None:

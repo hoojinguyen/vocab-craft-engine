@@ -1,3 +1,5 @@
+import json
+
 import duckdb
 import pytest
 
@@ -219,9 +221,77 @@ def test_migration_v4_merges_duplicate_candidates_and_repoints_dependents(monkey
     assert conn.execute(
         "SELECT candidate_id FROM content_reviews ORDER BY review_id"
     ).fetchall() == [("candidate-a",), ("candidate-a",)]
+    gate = conn.execute(
+        "SELECT candidate_id, passed, message, details_json FROM candidate_gate_results"
+    ).fetchone()
+    assert gate[:2] == ("candidate-a", False)
+    assert "winner" in gate[2]
+    assert "loser" in gate[2]
+    merged_details = json.loads(gate[3])
+    assert [entry["candidate_id"] for entry in merged_details["merged_candidates"]] == [
+        "candidate-a",
+        "candidate-b",
+    ]
+
+
+def test_migration_v4_prefers_approved_duplicate_candidate(monkeypatch):
+    conn = duckdb.connect(":memory:")
+    all_migrations = schema.MIGRATIONS
+    v3_migrations = [migration for migration in all_migrations if migration[0] <= 3]
+    monkeypatch.setattr(schema, "MIGRATIONS", v3_migrations)
+    schema.apply_migrations(conn)
+    conn.execute(
+        "INSERT INTO source_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        [
+            "source-1",
+            "Source",
+            "https://example.test",
+            "1",
+            "a" * 64,
+            "CC-BY-4.0",
+            "https://example.test/license",
+            "Fixture",
+            True,
+            "approved",
+        ],
+    )
+    conn.execute(
+        "INSERT INTO raw_reference_records VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        ["raw-1", "source-1", "fixture:1", "bundle", "{}", "b" * 64, "test"],
+    )
+    conn.execute("""
+        INSERT INTO content_candidates VALUES
+        ('candidate-a', 'raw-1', 'sense', '{"stable_key":"sense.book"}', '{}', 0.9, 'candidate', current_timestamp),
+        ('candidate-b', 'raw-1', 'sense', '{"stable_key":"sense.book"}', '{}', 1.0, 'approved', current_timestamp)
+        """)
+    conn.execute(
+        "INSERT INTO canonical_content VALUES (?, ?, ?, current_timestamp)",
+        ["content-1", "sense.book", "sense"],
+    )
+    conn.execute(
+        """
+        INSERT INTO content_revisions VALUES
+        ('revision-b', 'content-1', 1, '{"stable_key":"sense.book"}', ?, 'approved', 'candidate-b', current_timestamp)
+        """,
+        ["c" * 64],
+    )
+    conn.execute("""
+        INSERT INTO content_reviews VALUES
+        ('review-b', 'candidate-b', 'revision-b', 'approved', 'reviewer', 'legacy', current_timestamp)
+        """)
+
+    monkeypatch.setattr(schema, "MIGRATIONS", all_migrations)
+    schema.apply_migrations(conn)
+
     assert conn.execute(
-        "SELECT candidate_id, passed, message FROM candidate_gate_results"
-    ).fetchall() == [("candidate-a", False, "winner")]
+        "SELECT candidate_id, state FROM content_candidates"
+    ).fetchall() == [("candidate-b", "approved")]
+    assert conn.execute(
+        "SELECT source_candidate_id FROM content_revisions"
+    ).fetchall() == [("candidate-b",)]
+    assert conn.execute("SELECT candidate_id FROM content_reviews").fetchall() == [
+        ("candidate-b",)
+    ]
 
 
 def test_approved_source_assets_require_rights_evidence():
