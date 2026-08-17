@@ -4,7 +4,12 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from src.learning.models import ContentRevisionInput, ReviewState, canonical_json
+from src.learning.models import (
+    CandidateState,
+    ContentRevisionInput,
+    ReviewState,
+    canonical_json,
+)
 from src.learning.store import LearningGraphStore
 
 _REVIEW_DECISIONS = {
@@ -12,6 +17,13 @@ _REVIEW_DECISIONS = {
     ReviewState.REJECTED.value,
     ReviewState.QUARANTINED.value,
 }
+
+_VALIDATION_RUN_CANDIDATE_COLUMNS = (
+    "candidate_id",
+    "raw_record_id",
+    "content_type",
+    "state",
+)
 
 
 class ContentRepository:
@@ -28,9 +40,6 @@ class ContentRepository:
         evidence: dict[str, Any],
         confidence: float,
     ) -> str:
-        evidence_json = canonical_json(evidence)
-        candidate_id = str(uuid4())
-
         with self.store.transaction() as connection:
             raw_record = connection.execute(
                 """
@@ -46,7 +55,19 @@ class ContentRepository:
             revision_input = self._revision_input_from_payload(
                 content_type, payload, "candidate"
             )
+            normalized_payload_json = canonical_json(revision_input.payload)
+            existing = connection.execute(
+                """
+                SELECT candidate_id FROM content_candidates
+                WHERE raw_record_id = ? AND content_type = ? AND normalized_payload_json = ?
+                """,
+                [raw_record_id, content_type, normalized_payload_json],
+            ).fetchone()
+            if existing is not None:
+                return str(existing[0])
 
+            candidate_id = str(uuid4())
+            evidence_json = canonical_json(evidence)
             connection.execute(
                 """
                 INSERT INTO content_candidates (
@@ -58,12 +79,29 @@ class ContentRepository:
                     candidate_id,
                     raw_record_id,
                     content_type,
-                    canonical_json(revision_input.payload),
+                    normalized_payload_json,
                     evidence_json,
                     confidence,
                 ],
             )
         return candidate_id
+
+    def mark_candidate_validated(self, candidate_id: str) -> None:
+        with self.store.transaction() as connection:
+            candidate = connection.execute(
+                "SELECT state FROM content_candidates WHERE candidate_id = ?",
+                [candidate_id],
+            ).fetchone()
+            if candidate is None:
+                raise ValueError(f"candidate {candidate_id!r} does not exist")
+            if candidate[0] != CandidateState.CANDIDATE.value:
+                raise ValueError(
+                    f"candidate {candidate_id!r} must be in candidate state before validation"
+                )
+            connection.execute(
+                "UPDATE content_candidates SET state = ? WHERE candidate_id = ?",
+                [CandidateState.VALIDATED.value, candidate_id],
+            )
 
     def review_candidate(
         self, candidate_id: str, decision: str, reviewer_id: str, rationale: str
@@ -80,9 +118,19 @@ class ContentRepository:
             if candidate is None:
                 raise ValueError(f"candidate {candidate_id!r} does not exist")
             content_type, payload_json, state = candidate
-            if state != ReviewState.CANDIDATE.value:
+            if state not in {
+                CandidateState.CANDIDATE.value,
+                CandidateState.VALIDATED.value,
+            }:
                 raise ValueError(
                     f"candidate {candidate_id!r} has already been reviewed"
+                )
+            if (
+                decision == ReviewState.APPROVED.value
+                and state != CandidateState.VALIDATED.value
+            ):
+                raise ValueError(
+                    f"candidate {candidate_id!r} must be validated before approval"
                 )
 
             review_id = str(uuid4())
@@ -141,9 +189,47 @@ class ContentRepository:
             )
             connection.execute(
                 "UPDATE content_candidates SET state = ? WHERE candidate_id = ?",
-                [ReviewState.APPROVED.value, candidate_id],
+                [CandidateState.APPROVED.value, candidate_id],
             )
             return revision_id
+
+    def candidate_payload(self, candidate_id: str) -> dict[str, object]:
+        payload_json = self.store.fetch_value(
+            """
+            SELECT normalized_payload_json FROM content_candidates
+            WHERE candidate_id = ?
+            """,
+            [candidate_id],
+        )
+        if payload_json is None:
+            raise ValueError(f"candidate {candidate_id!r} does not exist")
+        payload = json.loads(str(payload_json))
+        if not isinstance(payload, dict):
+            raise TypeError(f"candidate {candidate_id!r} has an invalid payload")
+        return payload
+
+    def candidates_for_validation_run(
+        self, validation_run_id: str
+    ) -> list[dict[str, object]]:
+        rows = (
+            self.store.connection()
+            .execute(
+                """
+            SELECT DISTINCT candidate.candidate_id, candidate.raw_record_id,
+                   candidate.content_type, candidate.state
+            FROM candidate_gate_results AS gate
+            JOIN content_candidates AS candidate ON candidate.candidate_id = gate.candidate_id
+            WHERE gate.validation_run_id = ?
+            ORDER BY candidate.candidate_id
+            """,
+                [validation_run_id],
+            )
+            .fetchall()
+        )
+        return [
+            dict(zip(_VALIDATION_RUN_CANDIDATE_COLUMNS, row, strict=True))
+            for row in rows
+        ]
 
     def create_revision(
         self,

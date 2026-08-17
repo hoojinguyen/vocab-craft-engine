@@ -47,6 +47,7 @@ class GraphRepositoryFixture:
         candidate_id = self.repository.create_candidate(
             raw_id, content_type, payload, {"source": "fixture"}, 1.0
         )
+        self.repository.mark_candidate_validated(candidate_id)
         revision_id = self.repository.review_candidate(
             candidate_id, "approved", "fixture-editor", "Approved fixture content"
         )
