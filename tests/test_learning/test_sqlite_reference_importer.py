@@ -271,6 +271,20 @@ def test_import_vertical_slice_rejects_a_snapshot_path_mismatch(
         )
 
 
+def test_import_vertical_slice_rejects_volatile_sqlite_sidecars(
+    catalog: SourceCatalog, legacy_sqlite: Path, approved_snapshot_id: str
+):
+    wal_path = Path(f"{legacy_sqlite}-wal")
+    wal_path.write_bytes(b"volatile wal")
+    try:
+        with pytest.raises(ValueError, match="volatile sidecar"):
+            SQLiteLexicalReferenceImporter(catalog).import_vertical_slice(
+                legacy_sqlite, approved_snapshot_id, "run-wal"
+            )
+    finally:
+        wal_path.unlink()
+
+
 def test_append_raw_records_batches_250_records_and_is_idempotent(
     catalog: SourceCatalog,
     legacy_sqlite: Path,
