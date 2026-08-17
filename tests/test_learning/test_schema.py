@@ -1,9 +1,11 @@
 import json
+from pathlib import Path
 
 import duckdb
 import pytest
 
 from src.learning import schema
+from src.learning.repository import ContentRepository
 from src.learning.schema import (
     GRAPH_TABLES,
     MIGRATION_001,
@@ -292,6 +294,62 @@ def test_migration_v4_prefers_approved_duplicate_candidate(monkeypatch):
     assert conn.execute("SELECT candidate_id FROM content_reviews").fetchall() == [
         ("candidate-b",)
     ]
+
+
+def test_migration_v4_quarantines_terminal_conflict_before_future_approval(
+    monkeypatch, tmp_path: Path
+):
+    from src.learning.store import LearningGraphStore
+
+    store = LearningGraphStore(tmp_path / "graph.duckdb")
+    all_migrations = schema.MIGRATIONS
+    v3_migrations = [migration for migration in all_migrations if migration[0] <= 3]
+    monkeypatch.setattr(schema, "MIGRATIONS", v3_migrations)
+    store.initialize()
+    conn = store.connection()
+    conn.execute(
+        "INSERT INTO source_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        [
+            "source-1",
+            "Source",
+            "https://example.test",
+            "1",
+            "a" * 64,
+            "CC-BY-4.0",
+            "https://example.test/license",
+            "Fixture",
+            True,
+            "approved",
+        ],
+    )
+    conn.execute(
+        "INSERT INTO raw_reference_records VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        ["raw-1", "source-1", "fixture:1", "bundle", "{}", "b" * 64, "test"],
+    )
+    conn.execute("""
+        INSERT INTO content_candidates VALUES
+        ('candidate-a', 'raw-1', 'sense', '{"stable_key":"sense.book"}', '{}', 0.9, 'validated', current_timestamp),
+        ('candidate-b', 'raw-1', 'sense', '{"stable_key":"sense.book"}', '{}', 1.0, 'rejected', current_timestamp)
+        """)
+    conn.execute("""
+        INSERT INTO content_reviews VALUES
+        ('review-b', 'candidate-b', NULL, 'rejected', 'reviewer', 'terminal failure', current_timestamp)
+        """)
+
+    monkeypatch.setattr(schema, "MIGRATIONS", all_migrations)
+    schema.apply_migrations(conn)
+    repository = ContentRepository(store)
+
+    assert conn.execute(
+        "SELECT candidate_id, state FROM content_candidates"
+    ).fetchall() == [("candidate-a", "quarantined")]
+    assert conn.execute(
+        "SELECT candidate_id, decision, rationale FROM content_reviews"
+    ).fetchall() == [("candidate-a", "rejected", "terminal failure")]
+    with pytest.raises(ValueError, match="already been reviewed"):
+        repository.review_candidate(
+            "candidate-a", "approved", "reviewer-2", "Attempted approval"
+        )
 
 
 def test_approved_source_assets_require_rights_evidence():

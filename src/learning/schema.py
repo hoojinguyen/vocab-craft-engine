@@ -381,6 +381,7 @@ _CANDIDATE_STATE_PRIORITY = {
     "quarantined": 1,
     "rejected": 1,
 }
+_TERMINAL_CANDIDATE_STATES = frozenset({"rejected", "quarantined"})
 
 
 def _snapshot_graph(
@@ -485,7 +486,6 @@ def _merge_duplicate_candidates(
     for row in snapshots["content_candidates"]:
         candidates_by_identity.setdefault(tuple(row[1:4]), []).append(row)
 
-    winners: dict[tuple[Any, ...], str] = {}
     redirects: dict[str, str] = {}
     retained_candidates: list[tuple[Any, ...]] = []
     for identity in sorted(candidates_by_identity, key=str):
@@ -497,8 +497,14 @@ def _merge_duplicate_candidates(
             ),
         )
         winner = str(rows[0][0])
-        winners[identity] = winner
-        retained_candidates.append(rows[0])
+        winner_row = list(rows[0])
+        states = {str(row[6]) for row in rows}
+        terminal_states = states & _TERMINAL_CANDIDATE_STATES
+        if terminal_states and (
+            states - _TERMINAL_CANDIDATE_STATES or len(terminal_states) > 1
+        ):
+            winner_row[6] = "quarantined"
+        retained_candidates.append(tuple(winner_row))
         for row in rows[1:]:
             redirects[str(row[0])] = winner
     snapshots["content_candidates"] = retained_candidates
