@@ -353,12 +353,10 @@ def test_import_vertical_slice_reads_only_the_verified_private_copy(
     def swap_source_on_sqlite_open(
         database: str | Path, *args: object, **kwargs: object
     ) -> sqlite3.Connection:
-        if "lexical-reference-" in str(database):
-            legacy_sqlite.write_bytes(tampered_bytes)
-            connection = original_connect(database, *args, **kwargs)
-            legacy_sqlite.write_bytes(trusted_bytes)
-            return connection
-        return original_connect(database, *args, **kwargs)
+        legacy_sqlite.write_bytes(tampered_bytes)
+        connection = original_connect(database, *args, **kwargs)
+        legacy_sqlite.write_bytes(trusted_bytes)
+        return connection
 
     monkeypatch.setattr(
         sqlite_reference_importer.sqlite3, "connect", swap_source_on_sqlite_open
