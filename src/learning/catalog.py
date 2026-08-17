@@ -3,16 +3,24 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
 import duckdb
 
-from src.learning.models import ReviewState, SourceAssetInput, canonical_json
+from src.learning.models import (
+    ReviewState,
+    SourceAssetInput,
+    SourceSnapshotInput,
+    canonical_json,
+)
 from src.learning.store import LearningGraphStore
 
 _Result = TypeVar("_Result")
 _WRITE_RETRY_ATTEMPTS = 4
+_SOURCE_SNAPSHOT_HASH_CHUNK_SIZE = 64 * 1024
 
 
 class _ConcurrentCatalogWrite(RuntimeError):
@@ -83,6 +91,74 @@ class SourceCatalog:
             payload=payload,
             import_run_id=str(uuid4()),
         )
+
+    def record_source_snapshot(
+        self, asset_id: str, local_path: Path, retrieved_at: datetime | str
+    ) -> str:
+        """Persist a local source file only when it matches its registered checksum."""
+        path = Path(local_path)
+        source_snapshot = SourceSnapshotInput(
+            asset_id=asset_id,
+            local_path=path,
+            retrieved_at=retrieved_at,
+            file_sha256=self._hash_file(path),
+        )
+        return self._retry_catalog_write(
+            lambda: self._record_source_snapshot_once(source_snapshot)
+        )
+
+    def _record_source_snapshot_once(self, source_snapshot: SourceSnapshotInput) -> str:
+        with self.store.transaction() as connection:
+            stored_source = connection.execute(
+                "SELECT sha256 FROM source_assets WHERE asset_id = ?",
+                [source_snapshot.asset_id],
+            ).fetchone()
+            if stored_source is None:
+                raise ValueError(
+                    "source snapshots require a registered source asset: "
+                    f"{source_snapshot.asset_id!r}"
+                )
+            self._ensure_matching_checksum(
+                source_snapshot.asset_id,
+                source_snapshot.file_sha256,
+                str(stored_source[0]),
+            )
+
+            existing_snapshot = connection.execute(
+                """
+                SELECT snapshot_id FROM source_snapshots
+                WHERE asset_id = ? AND file_sha256 = ?
+                """,
+                [source_snapshot.asset_id, source_snapshot.file_sha256],
+            ).fetchone()
+            if existing_snapshot is not None:
+                return str(existing_snapshot[0])
+
+            connection.execute(
+                """
+                INSERT INTO source_snapshots (
+                    snapshot_id, asset_id, local_path, retrieved_at, file_sha256
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """,
+                [
+                    str(uuid4()),
+                    source_snapshot.asset_id,
+                    str(source_snapshot.local_path),
+                    self._duckdb_timestamp(source_snapshot.retrieved_at),
+                    source_snapshot.file_sha256,
+                ],
+            )
+            stored_snapshot = connection.execute(
+                """
+                SELECT snapshot_id FROM source_snapshots
+                WHERE asset_id = ? AND file_sha256 = ?
+                """,
+                [source_snapshot.asset_id, source_snapshot.file_sha256],
+            ).fetchone()
+            if stored_snapshot is None:
+                raise _ConcurrentCatalogWrite
+            return str(stored_snapshot[0])
 
     def append_raw_record(
         self,
@@ -183,6 +259,20 @@ class SourceCatalog:
         raise RuntimeError(
             "concurrent source catalog write did not settle"
         ) from last_error
+
+    @staticmethod
+    def _hash_file(local_path: Path) -> str:
+        digest = hashlib.sha256()
+        with local_path.open("rb") as source_file:
+            while chunk := source_file.read(_SOURCE_SNAPSHOT_HASH_CHUNK_SIZE):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _duckdb_timestamp(value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value
+        return value.astimezone(UTC).replace(tzinfo=None)
 
     @staticmethod
     def _ensure_matching_checksum(

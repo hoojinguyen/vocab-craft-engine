@@ -1,6 +1,7 @@
 import duckdb
 import pytest
 
+from src.learning import schema
 from src.learning.schema import (
     GRAPH_TABLES,
     MIGRATION_001,
@@ -14,6 +15,119 @@ def test_initial_graph_migration_creates_every_graph_table():
     tables = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
     assert set(GRAPH_TABLES).issubset(tables)
     assert "graph_schema_migrations" in tables
+
+
+def test_migration_v3_creates_validation_tables_and_validated_candidate_state():
+    conn = duckdb.connect(":memory:")
+    apply_migrations(conn)
+
+    assert {"source_snapshots", "validation_runs", "candidate_gate_results"}.issubset(
+        {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
+    )
+    conn.execute(
+        "INSERT INTO source_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        [
+            "fixture-source",
+            "Fixture",
+            "https://example.test",
+            "1",
+            "a" * 64,
+            "LicenseRef-Test",
+            "https://example.test/license",
+            "Fixture",
+            True,
+            "approved",
+        ],
+    )
+    conn.execute(
+        "INSERT INTO raw_reference_records VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        ["raw-1", "fixture-source", "fixture:1", "bundle", "{}", "b" * 64, "test"],
+    )
+    conn.execute(
+        "INSERT INTO content_candidates VALUES (?, ?, ?, ?, ?, ?, 'validated', current_timestamp)",
+        ["candidate-1", "raw-1", "sense", "{}", "{}", 1.0],
+    )
+
+    assert conn.execute(
+        "SELECT state FROM content_candidates WHERE candidate_id = 'candidate-1'"
+    ).fetchone() == ("validated",)
+
+
+def test_migration_v3_preserves_the_existing_candidate_graph(monkeypatch):
+    conn = duckdb.connect(":memory:")
+    all_migrations = schema.MIGRATIONS
+    v2_migrations = [migration for migration in all_migrations if migration[0] < 3]
+    assert len(v2_migrations) == 2
+    assert any(version == 3 for version, _ in all_migrations)
+
+    monkeypatch.setattr(schema, "MIGRATIONS", v2_migrations)
+    schema.apply_migrations(conn)
+    conn.execute(
+        "INSERT INTO source_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        [
+            "legacy-source",
+            "Legacy",
+            "https://example.test",
+            "1",
+            "a" * 64,
+            "LicenseRef-Test",
+            "https://example.test/license",
+            "Fixture",
+            True,
+            "approved",
+        ],
+    )
+    conn.execute(
+        "INSERT INTO raw_reference_records VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        ["raw-1", "legacy-source", "fixture:1", "bundle", "{}", "b" * 64, "test"],
+    )
+    conn.execute(
+        "INSERT INTO content_candidates VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        ["candidate-1", "raw-1", "sense", "{}", "{}", 1.0, "candidate"],
+    )
+    conn.execute(
+        "INSERT INTO canonical_content VALUES (?, ?, ?, current_timestamp)",
+        ["content-1", "sense.fixture", "sense"],
+    )
+    conn.execute(
+        "INSERT INTO content_revisions VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        ["revision-1", "content-1", 1, "{}", "c" * 64, "candidate", "candidate-1"],
+    )
+    conn.execute(
+        "INSERT INTO content_reviews VALUES (?, ?, ?, ?, ?, ?, current_timestamp)",
+        ["review-1", "candidate-1", "revision-1", "approved", "reviewer", "legacy"],
+    )
+    conn.execute(
+        "INSERT INTO content_edges VALUES (?, ?, ?, ?, ?)",
+        ["edge-1", "revision-1", "revision-1", "supports", "{}"],
+    )
+
+    monkeypatch.setattr(schema, "MIGRATIONS", all_migrations)
+    schema.apply_migrations(conn)
+
+    assert conn.execute(
+        "SELECT version FROM graph_schema_migrations ORDER BY version"
+    ).fetchall() == [(1,), (2,), (3,)]
+    assert {
+        table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        for table in (
+            "source_assets",
+            "raw_reference_records",
+            "content_candidates",
+            "canonical_content",
+            "content_revisions",
+            "content_reviews",
+            "content_edges",
+        )
+    } == {
+        "source_assets": 1,
+        "raw_reference_records": 1,
+        "content_candidates": 1,
+        "canonical_content": 1,
+        "content_revisions": 1,
+        "content_reviews": 1,
+        "content_edges": 1,
+    }
 
 
 def test_approved_source_assets_require_rights_evidence():
@@ -94,7 +208,7 @@ def test_migration_v2_quarantines_invalid_approved_sources_and_is_idempotent():
     ).fetchone() == ("quarantined",)
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,)]
+    ).fetchall() == [(1,), (2,), (3,)]
 
     apply_migrations(conn)
     assert conn.execute(

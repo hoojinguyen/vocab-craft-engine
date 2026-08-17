@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from pydantic import (
@@ -58,6 +60,14 @@ class ReviewState(StrEnum):
     QUARANTINED = "quarantined"
 
 
+class CandidateState(StrEnum):
+    CANDIDATE = "candidate"
+    VALIDATED = "validated"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    QUARANTINED = "quarantined"
+
+
 class ContentType(StrEnum):
     MODULE = "module"
     OBJECTIVE = "objective"
@@ -100,6 +110,15 @@ class SourceAssetInput(BaseModel):
                 "license_id, attribution, and redistribution_allowed are required for approval"
             )
         return self
+
+
+class SourceSnapshotInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    asset_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,127}$")
+    local_path: Path
+    retrieved_at: datetime
+    file_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ContentRevisionInput(BaseModel):

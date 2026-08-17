@@ -1,6 +1,7 @@
 import hashlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier, Lock, Thread
 from typing import Any
@@ -170,6 +171,58 @@ def test_register_source_rejects_changed_checksum(catalog: SourceCatalog):
         )
         == "a" * 64
     )
+
+
+def test_record_source_snapshot_persists_checksum_and_is_idempotent(
+    catalog: SourceCatalog, tmp_path: Path
+):
+    source_file = tmp_path / "reference.db"
+    contents = b"reference snapshot"
+    source_file.write_bytes(contents)
+    checksum = hashlib.sha256(contents).hexdigest()
+    source = _approved_source().model_copy(update={"sha256": checksum})
+    catalog.register_source(source)
+    retrieved_at = datetime(2026, 8, 17, 7, 0, tzinfo=timezone(timedelta(hours=7)))
+
+    first_snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, source_file, retrieved_at
+    )
+    second_snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, source_file, retrieved_at
+    )
+
+    assert second_snapshot_id == first_snapshot_id
+    assert source_file.read_bytes() == contents
+    assert catalog.store.connection().execute(
+        "SELECT asset_id, local_path, retrieved_at, file_sha256 "
+        "FROM source_snapshots WHERE snapshot_id = ?",
+        [first_snapshot_id],
+    ).fetchone() == (
+        source.asset_id,
+        str(source_file),
+        datetime.fromisoformat("2026-08-17T00:00:00"),
+        checksum,
+    )
+
+
+def test_record_source_snapshot_rejects_unregistered_or_mismatched_files(
+    catalog: SourceCatalog, tmp_path: Path
+):
+    source_file = tmp_path / "reference.db"
+    source_file.write_bytes(b"reference snapshot")
+    catalog.register_source(_approved_source())
+
+    with pytest.raises(ValueError, match="checksum"):
+        catalog.record_source_snapshot(
+            "approved-source", source_file, datetime(2026, 8, 17, tzinfo=UTC)
+        )
+
+    with pytest.raises(ValueError, match="registered"):
+        catalog.record_source_snapshot(
+            "missing-source", source_file, datetime(2026, 8, 17, tzinfo=UTC)
+        )
+
+    assert catalog.store.fetch_value("SELECT count(*) FROM source_snapshots") == 0
 
 
 def test_register_source_propagates_invalid_source_constraint(catalog: SourceCatalog):
