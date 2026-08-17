@@ -140,6 +140,90 @@ def test_migration_v3_preserves_the_existing_candidate_graph(monkeypatch):
     }
 
 
+def test_migration_v4_merges_duplicate_candidates_and_repoints_dependents(monkeypatch):
+    conn = duckdb.connect(":memory:")
+    all_migrations = schema.MIGRATIONS
+    v3_migrations = [migration for migration in all_migrations if migration[0] <= 3]
+    monkeypatch.setattr(schema, "MIGRATIONS", v3_migrations)
+    schema.apply_migrations(conn)
+    conn.execute(
+        "INSERT INTO source_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        [
+            "legacy-source",
+            "Legacy",
+            "https://example.test",
+            "1",
+            "a" * 64,
+            "CC-BY-4.0",
+            "https://example.test/license",
+            "Fixture",
+            True,
+            "approved",
+        ],
+    )
+    conn.execute(
+        "INSERT INTO raw_reference_records VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        ["raw-1", "legacy-source", "fixture:1", "bundle", "{}", "b" * 64, "test"],
+    )
+    conn.execute("""
+        INSERT INTO content_candidates VALUES
+        ('candidate-b', 'raw-1', 'sense', '{"stable_key":"sense.book"}', '{}', 0.9, 'validated', current_timestamp),
+        ('candidate-a', 'raw-1', 'sense', '{"stable_key":"sense.book"}', '{}', 1.0, 'validated', current_timestamp)
+        """)
+    conn.execute(
+        "INSERT INTO canonical_content VALUES (?, ?, ?, current_timestamp)",
+        ["content-1", "sense.book", "sense"],
+    )
+    conn.execute(
+        """
+        INSERT INTO content_revisions VALUES
+        ('revision-b', 'content-1', 1, '{"stable_key":"sense.book"}', ?, 'candidate', 'candidate-b', current_timestamp),
+        ('revision-a', 'content-1', 2, '{"stable_key":"sense.book"}', ?, 'candidate', 'candidate-a', current_timestamp)
+        """,
+        ["c" * 64, "d" * 64],
+    )
+    conn.execute("""
+        INSERT INTO content_reviews VALUES
+        ('review-b', 'candidate-b', 'revision-b', 'approved', 'reviewer', 'legacy', current_timestamp),
+        ('review-a', 'candidate-a', 'revision-a', 'approved', 'reviewer', 'legacy', current_timestamp)
+        """)
+    conn.execute(
+        """
+        INSERT INTO source_snapshots VALUES
+        ('snapshot-1', 'legacy-source', '/tmp/source.json', current_timestamp, ?, current_timestamp)
+        """,
+        ["e" * 64],
+    )
+    conn.execute("""
+        INSERT INTO validation_runs VALUES
+        ('validation-1', 'snapshot-1', 'v1', '{}', current_timestamp, NULL)
+        """)
+    conn.execute("""
+        INSERT INTO candidate_gate_results VALUES
+        ('validation-1', 'candidate-b', 'sense.complete', TRUE, 'loser', '{}'),
+        ('validation-1', 'candidate-a', 'sense.complete', FALSE, 'winner', '{}')
+        """)
+
+    monkeypatch.setattr(schema, "MIGRATIONS", all_migrations)
+    schema.apply_migrations(conn)
+
+    assert conn.execute(
+        "SELECT version FROM graph_schema_migrations ORDER BY version"
+    ).fetchall() == [(1,), (2,), (3,), (4,)]
+    assert conn.execute("SELECT candidate_id FROM content_candidates").fetchall() == [
+        ("candidate-a",)
+    ]
+    assert conn.execute(
+        "SELECT source_candidate_id FROM content_revisions ORDER BY revision_id"
+    ).fetchall() == [("candidate-a",), ("candidate-a",)]
+    assert conn.execute(
+        "SELECT candidate_id FROM content_reviews ORDER BY review_id"
+    ).fetchall() == [("candidate-a",), ("candidate-a",)]
+    assert conn.execute(
+        "SELECT candidate_id, passed, message FROM candidate_gate_results"
+    ).fetchall() == [("candidate-a", False, "winner")]
+
+
 def test_approved_source_assets_require_rights_evidence():
     conn = duckdb.connect(":memory:")
     apply_migrations(conn)

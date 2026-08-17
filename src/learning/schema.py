@@ -340,6 +340,39 @@ _MIGRATION_003_DROP_ORDER = (
 
 _MIGRATION_003_RESTORE_ORDER = tuple(reversed(_MIGRATION_003_DROP_ORDER))
 
+_MIGRATION_004_SNAPSHOT_TABLES = (
+    "content_edges",
+    "content_reviews",
+    "content_revisions",
+    "canonical_content",
+    "content_candidates",
+    "source_snapshots",
+    "validation_runs",
+    "candidate_gate_results",
+)
+
+_MIGRATION_004_DROP_ORDER = (
+    "candidate_gate_results",
+    "content_edges",
+    "content_reviews",
+    "content_revisions",
+    "canonical_content",
+    "content_candidates",
+    "validation_runs",
+    "source_snapshots",
+)
+
+_MIGRATION_004_RESTORE_ORDER = (
+    "source_snapshots",
+    "validation_runs",
+    "content_candidates",
+    "canonical_content",
+    "content_revisions",
+    "content_reviews",
+    "content_edges",
+    "candidate_gate_results",
+)
+
 
 def _snapshot_graph(
     conn: duckdb.DuckDBPyConnection,
@@ -426,6 +459,74 @@ def _apply_migration_003(conn: duckdb.DuckDBPyConnection) -> None:
         _restore_rows(conn, table, snapshots[table])
 
 
+def _candidate_identity_duplicates(conn: duckdb.DuckDBPyConnection) -> bool:
+    return conn.execute("""
+            SELECT 1
+            FROM content_candidates
+            GROUP BY raw_record_id, content_type, normalized_payload_json
+            HAVING count(*) > 1
+            LIMIT 1
+            """).fetchone() is not None
+
+
+def _merge_duplicate_candidates(
+    snapshots: dict[str, list[tuple[Any, ...]]],
+) -> None:
+    winners: dict[tuple[Any, ...], str] = {}
+    redirects: dict[str, str] = {}
+    retained_candidates: list[tuple[Any, ...]] = []
+    for row in sorted(snapshots["content_candidates"], key=lambda item: str(item[0])):
+        identity = tuple(row[1:4])
+        candidate_id = str(row[0])
+        winner = winners.get(identity)
+        if winner is None:
+            winners[identity] = candidate_id
+            retained_candidates.append(row)
+        else:
+            redirects[candidate_id] = winner
+    snapshots["content_candidates"] = retained_candidates
+
+    merged_gates: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+    for row in sorted(
+        snapshots["candidate_gate_results"],
+        key=lambda item: (str(item[0]), str(item[1]), str(item[2])),
+    ):
+        row_values = list(row)
+        row_values[1] = redirects.get(str(row_values[1]), str(row_values[1]))
+        gate_key = (row_values[0], row_values[1], row_values[2])
+        merged_gates.setdefault(gate_key, tuple(row_values))
+    snapshots["candidate_gate_results"] = list(merged_gates.values())
+
+    revisions = []
+    for row in snapshots["content_revisions"]:
+        row_values = list(row)
+        row_values[6] = redirects.get(str(row_values[6]), str(row_values[6]))
+        revisions.append(tuple(row_values))
+    snapshots["content_revisions"] = revisions
+
+    reviews = []
+    for row in snapshots["content_reviews"]:
+        row_values = list(row)
+        row_values[1] = redirects.get(str(row_values[1]), str(row_values[1]))
+        reviews.append(tuple(row_values))
+    snapshots["content_reviews"] = reviews
+
+
+def _apply_migration_004(conn: duckdb.DuckDBPyConnection) -> None:
+    if not _candidate_identity_duplicates(conn):
+        conn.execute(MIGRATION_004)
+        return
+
+    snapshots = _snapshot_graph(conn, _MIGRATION_004_SNAPSHOT_TABLES)
+    _merge_duplicate_candidates(snapshots)
+    for table in _MIGRATION_004_DROP_ORDER:
+        conn.execute(f"DROP TABLE {table}")
+    conn.execute(MIGRATION_003)
+    for table in _MIGRATION_004_RESTORE_ORDER:
+        _restore_rows(conn, table, snapshots[table])
+    conn.execute(MIGRATION_004)
+
+
 def apply_migrations(conn: duckdb.DuckDBPyConnection) -> None:
     """Apply unapplied graph migrations in one transactional operation."""
     conn.execute("BEGIN TRANSACTION")
@@ -458,6 +559,8 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> None:
                 _apply_migration_002(conn)
             elif version == 3:
                 _apply_migration_003(conn)
+            elif version == 4:
+                _apply_migration_004(conn)
             else:
                 conn.execute(sql)
             conn.execute(
