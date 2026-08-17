@@ -82,6 +82,53 @@ def parse_arguments(args_list: list[str] | None = None):
     snapshot.add_argument("--reference-db", required=True)
     snapshot.add_argument("--source-id", required=True)
     snapshot.add_argument("--import-run-id", required=True)
+    snapshot_source = curriculum_subparsers.add_parser(
+        "snapshot-source", help="Register a verified local source snapshot"
+    )
+    snapshot_source.add_argument("--db-path")
+    snapshot_source.add_argument("--asset-id", required=True)
+    snapshot_source.add_argument("--local-path", required=True)
+    snapshot_source.add_argument("--retrieved-at", required=True)
+    snapshot_lexical = curriculum_subparsers.add_parser(
+        "snapshot-lexical-reference",
+        help="Import a bounded lexical slice from a reference SQLite database",
+    )
+    snapshot_lexical.add_argument("--db-path")
+    snapshot_lexical.add_argument("--reference-db", required=True)
+    snapshot_lexical.add_argument("--snapshot-id", required=True)
+    snapshot_lexical.add_argument("--import-run-id", required=True)
+    audit_lexical = curriculum_subparsers.add_parser(
+        "audit-lexical", help="Audit imported lexical bundles"
+    )
+    audit_lexical.add_argument("--db-path")
+    audit_lexical.add_argument("--snapshot-id", required=True)
+    review_candidate = curriculum_subparsers.add_parser(
+        "review-candidate", help="Record a human decision for a candidate"
+    )
+    review_candidate.add_argument("--db-path")
+    review_candidate.add_argument("--candidate-id", required=True)
+    review_candidate.add_argument(
+        "--decision", required=True, choices=["approved", "rejected", "quarantined"]
+    )
+    review_candidate.add_argument("--reviewer-id", required=True)
+    review_candidate.add_argument("--rationale", required=True)
+    report_lexical = curriculum_subparsers.add_parser(
+        "report-lexical", help="Write a deterministic lexical audit report"
+    )
+    report_lexical.add_argument("--db-path")
+    report_lexical.add_argument("--validation-run-id", required=True)
+    report_lexical.add_argument("--output-path", required=True)
+    compose_lexical = curriculum_subparsers.add_parser(
+        "compose-lexical", help="Compose and export an approved lexical pack"
+    )
+    compose_lexical.add_argument("--db-path")
+    compose_lexical.add_argument("--validation-run-id", required=True)
+    compose_lexical.add_argument("--pack-id", required=True)
+    compose_lexical.add_argument("--version", required=True)
+    compose_lexical.add_argument(
+        "--cefr-level", required=True, choices=["A1", "A2", "B1"]
+    )
+    compose_lexical.add_argument("--output-dir", required=True)
     compose = curriculum_subparsers.add_parser(
         "compose", help="Validate and export one approved curriculum module"
     )
