@@ -85,6 +85,20 @@ def run_parsed_curriculum_command(args: Any) -> int:
             )
             print(args.output_path)
             return 0
+        if command == "compose-lexical":
+            from src.learning.lexical_exporter import LexicalPackExporter
+            from src.learning.lexical_pack import LexicalPackComposer
+
+            repository = ContentRepository(store)
+            pack = LexicalPackComposer(repository).compose(
+                args.validation_run_id,
+                args.pack_id,
+                args.version,
+                args.cefr_level,
+            )
+            result = LexicalPackExporter().export(pack, Path(args.output_dir))
+            print(result.manifest_path)
+            return 0
         if command == "compose":
             repository = ContentRepository(store)
             module_revision_id = repository.get_latest_approved_revision(args.module)
