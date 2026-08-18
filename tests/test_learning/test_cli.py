@@ -149,6 +149,68 @@ def test_lexical_curriculum_commands_parse_the_controlled_workflow():
         assert args.curriculum_command == command
 
 
+def test_lexical_53k_commands_parse_only_explicit_operator_inputs():
+    commands = {
+        "materialize-lexical-reference": [
+            "--reference-db",
+            "reference.db",
+            "--asset-id",
+            "legacy-sqlite",
+            "--output-path",
+            "data/processed/lexical-53k/snapshots",
+        ],
+        "import-ranked-lexical-reference": [
+            "--reference-db",
+            "materialized.db",
+            "--snapshot-id",
+            "snapshot-1",
+            "--import-run-id",
+            "import-1",
+        ],
+        "remediate-lexical": [
+            "--snapshot-id",
+            "snapshot-1",
+            "--validation-run-id",
+            "run-1",
+            "--resume",
+        ],
+        "retry-lexical-quarantine": [
+            "--validation-run-id",
+            "run-1",
+            "--input-id",
+            "input-1",
+        ],
+        "report-lexical-remediation": [
+            "--validation-run-id",
+            "run-1",
+            "--output-dir",
+            "data/processed/lexical-53k/run-1",
+        ],
+    }
+
+    for command, command_args in commands.items():
+        args = parse_arguments(["curriculum", command, *command_args])
+        assert args.curriculum_command == command
+
+
+def test_remediation_resume_cli_returns_blocked_contract_exit_code(tmp_path):
+    from src.learning import cli
+
+    assert (
+        cli.run_curriculum_command(
+            [
+                "remediate-lexical",
+                "--db-path",
+                str(tmp_path / "graph.duckdb"),
+                "--snapshot-id",
+                "snapshot-1",
+                "--resume",
+            ]
+        )
+        == 2
+    )
+
+
 def test_snapshot_source_cli_records_a_verified_local_snapshot(tmp_path: Path, capsys):
     from src.learning import cli
 

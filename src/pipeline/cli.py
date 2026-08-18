@@ -102,6 +102,43 @@ def parse_arguments(args_list: list[str] | None = None):
     )
     audit_lexical.add_argument("--db-path")
     audit_lexical.add_argument("--snapshot-id", required=True)
+    materialize_lexical = curriculum_subparsers.add_parser(
+        "materialize-lexical-reference",
+        help="Materialize an immutable reference before ranked lexical import",
+    )
+    materialize_lexical.add_argument("--db-path")
+    materialize_lexical.add_argument("--reference-db", required=True)
+    materialize_lexical.add_argument("--asset-id", required=True)
+    materialize_lexical.add_argument("--output-path", required=True)
+    import_ranked_lexical = curriculum_subparsers.add_parser(
+        "import-ranked-lexical-reference",
+        help="Import every rank 1-3500 lexical definition from a materialized snapshot",
+    )
+    import_ranked_lexical.add_argument("--db-path")
+    import_ranked_lexical.add_argument("--reference-db", required=True)
+    import_ranked_lexical.add_argument("--snapshot-id", required=True)
+    import_ranked_lexical.add_argument("--import-run-id", required=True)
+    remediate_lexical = curriculum_subparsers.add_parser(
+        "remediate-lexical",
+        help="Deterministically validate or quarantine lexical inputs",
+    )
+    remediate_lexical.add_argument("--db-path")
+    remediate_lexical.add_argument("--snapshot-id", required=True)
+    remediate_lexical.add_argument("--validation-run-id")
+    remediate_lexical.add_argument("--resume", action="store_true")
+    retry_lexical = curriculum_subparsers.add_parser(
+        "retry-lexical-quarantine", help="Retry one open lexical quarantine case"
+    )
+    retry_lexical.add_argument("--db-path")
+    retry_lexical.add_argument("--validation-run-id", required=True)
+    retry_lexical.add_argument("--input-id", required=True)
+    report_remediation = curriculum_subparsers.add_parser(
+        "report-lexical-remediation",
+        help="Write reconciled remediation and internal quarantine artifacts",
+    )
+    report_remediation.add_argument("--db-path")
+    report_remediation.add_argument("--validation-run-id", required=True)
+    report_remediation.add_argument("--output-dir", required=True)
     review_candidate = curriculum_subparsers.add_parser(
         "review-candidate", help="Record a human decision for a candidate"
     )

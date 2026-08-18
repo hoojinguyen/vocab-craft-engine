@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from config.settings import LEARNING_GRAPH_DUCKDB_PATH
+from config.settings import LEARNING_GRAPH_DUCKDB_PATH, LEXICAL_53K_RUN_DIR
 from src.learning.catalog import SourceCatalog
 from src.learning.composer import CurriculumComposer
 from src.learning.exporter import CurriculumPackExporter
@@ -68,6 +68,72 @@ def run_parsed_curriculum_command(args: Any) -> int:
         if command == "audit-lexical":
             report = LexicalAuditService(store).audit(args.snapshot_id)
             print(report.validation_run_id)
+            return 0
+        if command == "materialize-lexical-reference":
+            from src.learning.sqlite_reference_importer import (
+                SQLiteReferenceMaterializer,
+            )
+
+            catalog = SourceCatalog(store)
+            source_snapshot_id = catalog.record_source_snapshot(
+                args.asset_id, Path(args.reference_db), datetime.now(UTC)
+            )
+            result = SQLiteReferenceMaterializer(
+                catalog, Path(args.output_path)
+            ).materialize(Path(args.reference_db), source_snapshot_id)
+            print(result.snapshot_id)
+            print(result.materialized_path)
+            return 0
+        if command == "import-ranked-lexical-reference":
+            from src.learning.lexical_reporting import LexicalRunReporter
+            from src.learning.sqlite_reference_importer import (
+                SQLiteLexicalReferenceImporter,
+            )
+
+            report = SQLiteLexicalReferenceImporter(
+                SourceCatalog(store)
+            ).import_ranked_definitions(
+                Path(args.reference_db), args.snapshot_id, args.import_run_id
+            )
+            manifest_path = LexicalRunReporter(store).write_input_manifest(
+                args.snapshot_id, LEXICAL_53K_RUN_DIR / args.import_run_id
+            )
+            print(args.import_run_id)
+            print(manifest_path)
+            return 0
+        if command == "remediate-lexical":
+            from src.learning.lexical_remediation import LexicalRemediationService
+
+            if args.resume and not args.validation_run_id:
+                raise ValueError("--resume requires --validation-run-id")
+            report = LexicalRemediationService(store).run(
+                args.snapshot_id, validation_run_id=args.validation_run_id
+            )
+            print(report.validation_run_id)
+            return 0
+        if command == "retry-lexical-quarantine":
+            from src.learning.lexical_remediation import LexicalRemediationService
+
+            LexicalRemediationService(store).retry_input(
+                args.validation_run_id, args.input_id
+            )
+            print(args.input_id)
+            return 0
+        if command == "report-lexical-remediation":
+            from src.learning.lexical_reporting import (
+                LexicalRunReporter,
+                QuarantineExporter,
+            )
+
+            output_dir = Path(args.output_dir)
+            report_path = LexicalRunReporter(store).write_remediation_report(
+                args.validation_run_id, output_dir
+            )
+            quarantine = QuarantineExporter(store).export(
+                args.validation_run_id, output_dir
+            )
+            print(report_path)
+            print(quarantine.database_path)
             return 0
         if command == "review-candidate":
             revision_id = ContentRepository(store).review_candidate(
