@@ -214,3 +214,28 @@ def test_duplicate_inputs_map_to_one_canonical_key_and_retry_keeps_alternatives(
         [input_ids[0]],
     )
     assert '"evidence_id"' in str(alternatives)
+
+
+def test_retry_rejects_an_input_that_is_not_quarantined(graph_catalog):
+    snapshot_id = _snapshot(graph_catalog)
+    input_id = _append_input(
+        graph_catalog,
+        snapshot_id,
+        external_key="retry:validated",
+        word_id=1,
+        definition_id=1,
+        examples=[
+            {
+                "id": 1,
+                "source_row_id": 1,
+                "text_en": "Read this book.",
+                "text_vi": "Hãy đọc quyển sách này.",
+                "source": "tatoeba",
+            }
+        ],
+    )
+    service = LexicalRemediationService(graph_catalog.store)
+    service.run(snapshot_id, validation_run_id="run-1")
+
+    with pytest.raises(ValueError, match="quarantined"):
+        service.retry_input("run-1", input_id)

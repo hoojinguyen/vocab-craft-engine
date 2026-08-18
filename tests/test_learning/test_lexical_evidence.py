@@ -9,6 +9,7 @@ from src.learning.lexical_evidence import (
     LexicalEvidenceRepository,
     LexicalEvidenceSelector,
 )
+from src.learning.lexical_remediation import LexicalRemediationService
 from src.learning.quality import QualityGate
 
 
@@ -234,6 +235,45 @@ def test_source_evidence_policy_quarantines_semantically_unproven_examples(
 
     assert expected_code in {failure.code for failure in report.failures}
     assert report.passed is False
+
+
+def test_semantic_gate_rejects_auxiliary_do_after_legacy_structural_gate_passes(
+    graph_catalog: SourceCatalog,
+):
+    snapshot_id = _snapshot(graph_catalog)
+    input_id = _append_input(
+        graph_catalog,
+        snapshot_id,
+        external_key="pilot:do:structural-pass",
+        word_id=10,
+        definition_id=1,
+        lemma="do",
+        pos="verb",
+        definition_en="perform an action",
+        examples=[
+            {
+                "id": 10,
+                "source_row_id": 10,
+                "text_en": "I do not know the answer.",
+                "text_vi": "Tôi không biết câu trả lời.",
+                "source": "tatoeba",
+            }
+        ],
+    )
+    selection = LexicalEvidenceSelector().select(
+        LexicalEvidenceRepository(graph_catalog.store).get_input(input_id)
+    )
+    payload = LexicalRemediationService._candidate_payload(selection)
+    payload["examples"] = [
+        {
+            "text_en": "I do not know the answer.",
+            "text_vi": "Tôi không biết câu trả lời.",
+            "source": "tatoeba",
+        }
+    ]
+
+    assert QualityGate().validate_payload("sense", payload).passed is True
+    assert "example.pos_or_form_mismatch" in selection.failure_codes
 
 
 def test_source_evidence_gate_reports_missing_translation_ipa_and_conflicting_metadata(

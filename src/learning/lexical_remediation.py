@@ -121,6 +121,8 @@ class LexicalRemediationService:
         existing = self.evidence_repository.get_disposition(validation_run_id, input_id)
         if existing is None:
             raise ValueError("cannot retry an input without a prior disposition")
+        if existing.state is not InputDispositionState.QUARANTINED:
+            raise ValueError("only a quarantined input may be retried")
         bundle = self.evidence_repository.get_input(input_id)
         return self._remediate(bundle, validation_run_id, retry=True)
 
