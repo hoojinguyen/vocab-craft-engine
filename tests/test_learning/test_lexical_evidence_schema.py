@@ -190,6 +190,9 @@ def test_migration_v5_to_v6_preserves_inputs_and_enforces_frozen_rank(
     assert conn.execute(
         "SELECT evidence_id FROM lexical_evidence_items"
     ).fetchall() == [("evidence-1",)]
+    assert conn.execute(
+        "SELECT last_input_key FROM lexical_run_checkpoints"
+    ).fetchall() == [("source-1:snapshot-1:external-1",)]
     assert {
         table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         for table in LEXICAL_TABLES

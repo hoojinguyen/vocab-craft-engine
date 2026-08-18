@@ -256,7 +256,12 @@ class SQLiteReferenceMaterializer:
             or str(registered_sha256) != file_sha256
         ):
             raise RuntimeError("materialized source snapshot identity has changed")
-        return Path(str(local_path))
+        registered_path = Path(str(local_path))
+        if not registered_path.is_file():
+            raise ValueError("registered materialized snapshot path is unavailable")
+        if self.hash_file(registered_path) != file_sha256:
+            raise ValueError("registered materialized snapshot checksum has changed")
+        return registered_path
 
     @classmethod
     def _stage_consistent_source(

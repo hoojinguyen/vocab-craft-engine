@@ -813,6 +813,7 @@ def _rekey_migration_006_input_keys(
 
     rekeyed_rows: list[tuple[Any, ...]] = []
     rekeyed_input_keys: set[str] = set()
+    rekeyed_input_keys_by_legacy_key: dict[str, str] = {}
     for row in rows:
         input_id = str(row[input_id_index])
         asset_id, snapshot_id, external_key = lineage_by_input_id[input_id]
@@ -822,10 +823,28 @@ def _rekey_migration_006_input_keys(
         if input_key in rekeyed_input_keys:
             raise ValueError(f"lexical input rekey collision for {input_key!r}")
         rekeyed_input_keys.add(input_key)
+        legacy_input_key = str(row[input_key_index])
+        rekeyed_input_keys_by_legacy_key[legacy_input_key] = input_key
         row_values = list(row)
         row_values[input_key_index] = input_key
         rekeyed_rows.append(tuple(row_values))
     snapshots["lexical_definition_inputs"] = (columns, rekeyed_rows)
+
+    checkpoint_columns, checkpoint_rows = snapshots["lexical_run_checkpoints"]
+    checkpoint_indexes = {
+        column: index for index, column in enumerate(checkpoint_columns)
+    }
+    last_input_key_index = checkpoint_indexes["last_input_key"]
+    rekeyed_checkpoints: list[tuple[Any, ...]] = []
+    for row in checkpoint_rows:
+        row_values = list(row)
+        last_input_key = row_values[last_input_key_index]
+        if last_input_key is not None:
+            row_values[last_input_key_index] = rekeyed_input_keys_by_legacy_key.get(
+                str(last_input_key), str(last_input_key)
+            )
+        rekeyed_checkpoints.append(tuple(row_values))
+    snapshots["lexical_run_checkpoints"] = (checkpoint_columns, rekeyed_checkpoints)
 
 
 def _apply_migration_006(conn: duckdb.DuckDBPyConnection) -> None:

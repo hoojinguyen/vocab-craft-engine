@@ -301,6 +301,75 @@ def test_materializer_reuses_the_canonical_snapshot_path_across_output_roots(
     assert report.imported_or_existing_raw_records == 1
 
 
+def test_materializer_rejects_a_stale_canonical_snapshot_path(
+    catalog: SourceCatalog, tmp_path: Path
+):
+    reference_path = tmp_path / "stale-reference.db"
+    with sqlite3.connect(reference_path) as connection:
+        connection.executescript("""
+            CREATE TABLE words (
+                id INTEGER PRIMARY KEY,
+                lemma TEXT NOT NULL,
+                pos TEXT NOT NULL,
+                ipa_uk TEXT,
+                ipa_us TEXT,
+                frequency_rank INTEGER,
+                cefr_level TEXT,
+                source TEXT
+            );
+            CREATE TABLE definitions (
+                id INTEGER PRIMARY KEY,
+                word_id INTEGER NOT NULL,
+                definition_en TEXT,
+                definition_vi TEXT,
+                example TEXT,
+                source TEXT
+            );
+            CREATE TABLE sentences (
+                id INTEGER PRIMARY KEY,
+                text_en TEXT NOT NULL,
+                text_vi TEXT,
+                difficulty_score REAL,
+                cefr_level TEXT,
+                audio_path TEXT,
+                source TEXT
+            );
+            CREATE TABLE word_sentences (
+                word_id INTEGER NOT NULL,
+                sentence_id INTEGER NOT NULL,
+                rank INTEGER NOT NULL,
+                PRIMARY KEY (word_id, sentence_id)
+            );
+            INSERT INTO words VALUES (1, 'book', 'noun', NULL, NULL, 1, 'A1', 'fixture');
+            INSERT INTO definitions VALUES (1, 1, 'A written work.', 'sách', NULL, 'fixture');
+            """)
+    source = SourceAssetInput(
+        asset_id="stale-source",
+        title="Stale reference",
+        locator="https://example.test/stale-reference",
+        asset_version="2026-08",
+        sha256=SQLiteReferenceMaterializer.hash_file(reference_path),
+        license_id="CC-BY-4.0",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+        attribution="Fixture",
+        redistribution_allowed=True,
+        validation_status=ReviewState.APPROVED,
+    )
+    catalog.register_source(source)
+    source_snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, reference_path, datetime.now(UTC)
+    )
+    first = SQLiteReferenceMaterializer(catalog, tmp_path / "root-a").materialize(
+        reference_path, source_snapshot_id
+    )
+    first.materialized_path.rename(tmp_path / "archived-reference.db")
+
+    with pytest.raises(ValueError, match="registered materialized snapshot path"):
+        SQLiteReferenceMaterializer(catalog, tmp_path / "root-b").materialize(
+            reference_path, source_snapshot_id
+        )
+
+
 def test_materializer_preserves_a_maximum_length_source_asset_id(
     catalog: SourceCatalog, wal_reference: Path, tmp_path: Path
 ):
