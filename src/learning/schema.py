@@ -18,6 +18,15 @@ GRAPH_TABLES: tuple[str, ...] = (
     "content_edges",
     "validation_runs",
     "candidate_gate_results",
+    "lexical_definition_inputs",
+    "lexical_evidence_items",
+    "lexical_evidence_rankings",
+    "lexical_input_canonical_map",
+    "lexical_input_dispositions",
+    "lexical_remediation_attempts",
+    "lexical_quarantine_cases",
+    "lexical_run_checkpoints",
+    "lexical_release_builds",
 )
 
 MIGRATION_001 = """
@@ -202,11 +211,119 @@ CREATE UNIQUE INDEX IF NOT EXISTS content_candidates_identity_idx
 ON content_candidates (raw_record_id, content_type, normalized_payload_json);
 """
 
+MIGRATION_005 = """
+CREATE TABLE IF NOT EXISTS lexical_definition_inputs (
+ input_id TEXT PRIMARY KEY,
+ snapshot_id TEXT NOT NULL REFERENCES source_snapshots(snapshot_id),
+ raw_record_id TEXT NOT NULL UNIQUE REFERENCES raw_reference_records(raw_record_id),
+ source_word_id BIGINT,
+ source_definition_id BIGINT,
+ input_key TEXT NOT NULL UNIQUE,
+ source_definition_sha256 TEXT NOT NULL,
+ lemma TEXT NOT NULL,
+ pos TEXT NOT NULL,
+ frequency_rank BIGINT NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+CREATE TABLE IF NOT EXISTS lexical_evidence_items (
+ evidence_id TEXT PRIMARY KEY,
+ input_id TEXT NOT NULL REFERENCES lexical_definition_inputs(input_id),
+ evidence_role TEXT NOT NULL,
+ source_row_id BIGINT NOT NULL,
+ source_name TEXT NOT NULL,
+ value_json TEXT NOT NULL,
+ value_sha256 TEXT NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+ UNIQUE(input_id, evidence_role, source_row_id, value_sha256),
+ CHECK (evidence_role IN ('definition', 'translation', 'ipa', 'example'))
+);
+CREATE TABLE IF NOT EXISTS lexical_evidence_rankings (
+ validation_run_id TEXT NOT NULL REFERENCES validation_runs(validation_run_id),
+ input_id TEXT NOT NULL REFERENCES lexical_definition_inputs(input_id),
+ evidence_id TEXT NOT NULL REFERENCES lexical_evidence_items(evidence_id),
+ evidence_role TEXT NOT NULL,
+ rank BIGINT NOT NULL,
+ selected BOOLEAN NOT NULL,
+ eligible BOOLEAN NOT NULL,
+ reason_json TEXT NOT NULL,
+ PRIMARY KEY(validation_run_id, input_id, evidence_id),
+ CHECK (evidence_role IN ('definition', 'translation', 'ipa', 'example'))
+);
+CREATE TABLE IF NOT EXISTS lexical_input_canonical_map (
+ input_id TEXT PRIMARY KEY REFERENCES lexical_definition_inputs(input_id),
+ canonical_key TEXT NOT NULL,
+ candidate_id TEXT REFERENCES content_candidates(candidate_id),
+ mapped_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+CREATE TABLE IF NOT EXISTS lexical_input_dispositions (
+ validation_run_id TEXT NOT NULL REFERENCES validation_runs(validation_run_id),
+ input_id TEXT NOT NULL REFERENCES lexical_definition_inputs(input_id),
+ state TEXT NOT NULL,
+ candidate_id TEXT REFERENCES content_candidates(candidate_id),
+ failure_codes_json TEXT NOT NULL,
+ rationale_json TEXT NOT NULL,
+ updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+ PRIMARY KEY(validation_run_id, input_id),
+ CHECK (state IN ('validated', 'quarantined', 'rejected'))
+);
+CREATE TABLE IF NOT EXISTS lexical_remediation_attempts (
+ attempt_id TEXT PRIMARY KEY,
+ validation_run_id TEXT NOT NULL REFERENCES validation_runs(validation_run_id),
+ input_id TEXT NOT NULL REFERENCES lexical_definition_inputs(input_id),
+ attempt_number BIGINT NOT NULL,
+ selection_json TEXT NOT NULL,
+ outcome TEXT NOT NULL,
+ failure_codes_json TEXT NOT NULL,
+ rationale_json TEXT NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+ UNIQUE(validation_run_id, input_id, attempt_number),
+ CHECK (outcome IN ('validated', 'quarantined', 'rejected'))
+);
+CREATE TABLE IF NOT EXISTS lexical_quarantine_cases (
+ case_id TEXT PRIMARY KEY,
+ input_id TEXT NOT NULL UNIQUE REFERENCES lexical_definition_inputs(input_id),
+ latest_validation_run_id TEXT NOT NULL REFERENCES validation_runs(validation_run_id),
+ status TEXT NOT NULL,
+ retry_count BIGINT NOT NULL,
+ failure_codes_json TEXT NOT NULL,
+ alternatives_json TEXT NOT NULL,
+ updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+ CHECK (status IN ('open', 'resolved', 'rejected'))
+);
+CREATE TABLE IF NOT EXISTS lexical_run_checkpoints (
+ validation_run_id TEXT NOT NULL REFERENCES validation_runs(validation_run_id),
+ phase TEXT NOT NULL,
+ last_input_key TEXT,
+ processed_count BIGINT NOT NULL,
+ completed_at TIMESTAMP,
+ updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+ PRIMARY KEY(validation_run_id, phase)
+);
+CREATE TABLE IF NOT EXISTS lexical_release_builds (
+ release_build_id TEXT PRIMARY KEY,
+ validation_run_id TEXT NOT NULL REFERENCES validation_runs(validation_run_id),
+ release_version TEXT NOT NULL UNIQUE,
+ manifest_sha256 TEXT NOT NULL,
+ counts_json TEXT NOT NULL,
+ output_path TEXT NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+CREATE INDEX IF NOT EXISTS lexical_definition_inputs_enumeration_idx
+ON lexical_definition_inputs (snapshot_id, frequency_rank, input_key);
+CREATE INDEX IF NOT EXISTS lexical_evidence_items_lookup_idx
+ON lexical_evidence_items (input_id, evidence_role);
+CREATE INDEX IF NOT EXISTS lexical_input_dispositions_run_idx
+ON lexical_input_dispositions (validation_run_id, state, input_id);
+CREATE INDEX IF NOT EXISTS lexical_quarantine_cases_open_idx
+ON lexical_quarantine_cases (status, updated_at, input_id);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
     (4, MIGRATION_004),
+    (5, MIGRATION_005),
 ]
 
 _TABLE_COLUMNS: dict[str, tuple[str, ...]] = {

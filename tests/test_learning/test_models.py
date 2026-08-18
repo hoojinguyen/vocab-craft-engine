@@ -8,6 +8,12 @@ from src.learning.models import (
     CandidateState,
     ContentRevisionInput,
     ContentType,
+    EvidenceItem,
+    EvidenceRanking,
+    InputDisposition,
+    LexicalDefinitionInput,
+    RemediationAttempt,
+    RemediationRunReport,
     ReviewState,
     SourceAssetInput,
     SourceSnapshotInput,
@@ -149,3 +155,143 @@ def test_revision_payload_accepts_only_finite_json_values(payload):
             content_type=ContentType.OBJECTIVE,
             payload=payload,
         )
+
+
+def test_lexical_evidence_models_are_frozen_and_canonicalize_json_values():
+    created_at = datetime(2026, 8, 18, 0, 0, tzinfo=UTC)
+    lexical_input = LexicalDefinitionInput(
+        input_id="input-1",
+        snapshot_id="snapshot-1",
+        raw_record_id="raw-1",
+        source_word_id=10,
+        source_definition_id=11,
+        input_key="lexical.book.noun.11",
+        source_definition_sha256="a" * 64,
+        lemma="book",
+        pos="noun",
+        frequency_rank=42,
+        created_at=created_at,
+    )
+    evidence = EvidenceItem(
+        evidence_id="evidence-1",
+        input_id=lexical_input.input_id,
+        evidence_role="definition",
+        source_row_id=11,
+        source_name="reference.db",
+        value={"text": "a set of pages", "lang": "en"},
+        created_at=created_at,
+    )
+    ranking = EvidenceRanking(
+        validation_run_id="run-1",
+        input_id=lexical_input.input_id,
+        evidence_id=evidence.evidence_id,
+        evidence_role="definition",
+        rank=1,
+        selected=True,
+        eligible=True,
+        reason={"score": 1.0},
+    )
+    disposition = InputDisposition(
+        validation_run_id="run-1",
+        input_id=lexical_input.input_id,
+        state="quarantined",
+        candidate_id=None,
+        failure_codes=["missing_translation"],
+        rationale={"source": "gate.translation"},
+        updated_at=created_at,
+    )
+    attempt = RemediationAttempt(
+        attempt_id="attempt-1",
+        validation_run_id="run-1",
+        input_id=lexical_input.input_id,
+        attempt_number=1,
+        selection={"definition": evidence.evidence_id},
+        outcome="validated",
+        failure_codes=[],
+        rationale={"strategy": "highest-ranked"},
+        created_at=created_at,
+    )
+    report = RemediationRunReport(
+        validation_run_id="run-1",
+        snapshot_id="snapshot-1",
+        processed_count=1,
+        validated_count=1,
+        quarantined_count=0,
+        rejected_count=0,
+        failure_counts={},
+        completed_at=created_at,
+    )
+
+    assert evidence.value_json == '{"lang":"en","text":"a set of pages"}'
+    assert (
+        evidence.value_sha256
+        == "2f82c361cc7b4eda30f49f0aa4dba348f3b16d5d9d11dbab2f999727542e4f07"
+    )
+    assert ranking.reason_json == '{"score":1.0}'
+    assert disposition.failure_codes_json == '["missing_translation"]'
+    assert attempt.selection_json == '{"definition":"evidence-1"}'
+    assert report.failure_counts_json == "{}"
+    with pytest.raises(ValidationError):
+        lexical_input.lemma = "novel"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: LexicalDefinitionInput(
+            input_id="input-1",
+            snapshot_id="snapshot-1",
+            raw_record_id="raw-1",
+            source_word_id=10,
+            source_definition_id=11,
+            input_key="lexical.book.noun.11",
+            source_definition_sha256="A" * 64,
+            lemma="book",
+            pos="noun",
+            frequency_rank=42,
+            created_at=datetime(2026, 8, 18, tzinfo=UTC),
+        ),
+        lambda: EvidenceItem(
+            evidence_id="evidence-1",
+            input_id="input-1",
+            evidence_role="definition",
+            source_row_id=11,
+            source_name="reference.db",
+            value={"not": object()},
+            created_at=datetime(2026, 8, 18, tzinfo=UTC),
+        ),
+        lambda: EvidenceRanking(
+            validation_run_id="run-1",
+            input_id="input-1",
+            evidence_id="evidence-1",
+            evidence_role="audio",
+            rank=1,
+            selected=True,
+            eligible=True,
+            reason={},
+        ),
+        lambda: InputDisposition(
+            validation_run_id="run-1",
+            input_id="input-1",
+            state="approved",
+            candidate_id=None,
+            failure_codes=[],
+            rationale={},
+            updated_at=datetime(2026, 8, 18, tzinfo=UTC),
+        ),
+        lambda: RemediationAttempt(
+            attempt_id="attempt-1",
+            validation_run_id="run-1",
+            input_id="input-1",
+            attempt_number=1,
+            selection={},
+            outcome="approved",
+            failure_codes=[],
+            rationale={},
+            created_at=datetime(2026, 8, 18, tzinfo=UTC),
+        ),
+    ],
+)
+def test_lexical_evidence_models_reject_invalid_hashes_json_and_approval(factory):
+    with pytest.raises(ValidationError):
+        factory()
