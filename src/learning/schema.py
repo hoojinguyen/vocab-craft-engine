@@ -318,12 +318,18 @@ CREATE INDEX IF NOT EXISTS lexical_quarantine_cases_open_idx
 ON lexical_quarantine_cases (status, updated_at, input_id);
 """
 
+MIGRATION_006 = MIGRATION_005.replace(
+    "frequency_rank BIGINT NOT NULL,",
+    "frequency_rank BIGINT NOT NULL CHECK (frequency_rank BETWEEN 1 AND 3500),",
+)
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
     (4, MIGRATION_004),
     (5, MIGRATION_005),
+    (6, MIGRATION_006),
 ]
 
 _TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -490,6 +496,32 @@ _MIGRATION_004_RESTORE_ORDER = (
     "content_edges",
     "candidate_gate_results",
 )
+
+_MIGRATION_006_TABLES = (
+    "lexical_definition_inputs",
+    "lexical_evidence_items",
+    "lexical_evidence_rankings",
+    "lexical_input_canonical_map",
+    "lexical_input_dispositions",
+    "lexical_remediation_attempts",
+    "lexical_quarantine_cases",
+    "lexical_run_checkpoints",
+    "lexical_release_builds",
+)
+
+_MIGRATION_006_DROP_ORDER = (
+    "lexical_evidence_rankings",
+    "lexical_input_canonical_map",
+    "lexical_input_dispositions",
+    "lexical_remediation_attempts",
+    "lexical_quarantine_cases",
+    "lexical_evidence_items",
+    "lexical_definition_inputs",
+    "lexical_run_checkpoints",
+    "lexical_release_builds",
+)
+
+_MIGRATION_006_RESTORE_ORDER = _MIGRATION_006_TABLES
 
 _CANDIDATE_STATE_PRIORITY = {
     "approved": 4,
@@ -703,6 +735,119 @@ def _apply_migration_004(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(MIGRATION_004)
 
 
+def _snapshot_tables(
+    conn: duckdb.DuckDBPyConnection, tables: Iterable[str]
+) -> dict[str, tuple[tuple[str, ...], list[tuple[Any, ...]]]]:
+    snapshots: dict[str, tuple[tuple[str, ...], list[tuple[Any, ...]]]] = {}
+    for table in tables:
+        columns = tuple(
+            str(row[1])
+            for row in conn.execute(f"PRAGMA table_info('{table}')").fetchall()
+        )
+        column_list = ", ".join(columns)
+        snapshots[table] = (
+            columns,
+            conn.execute(f"SELECT {column_list} FROM {table}").fetchall(),
+        )
+    return snapshots
+
+
+def _restore_table_snapshot(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    snapshot: tuple[tuple[str, ...], list[tuple[Any, ...]]],
+) -> None:
+    columns, rows = snapshot
+    column_list = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    for row in rows:
+        conn.execute(
+            f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})", row
+        )
+
+
+def _rekey_migration_006_input_keys(
+    conn: duckdb.DuckDBPyConnection,
+    snapshots: dict[str, tuple[tuple[str, ...], list[tuple[Any, ...]]]],
+) -> None:
+    columns, rows = snapshots["lexical_definition_inputs"]
+    column_indexes = {column: index for index, column in enumerate(columns)}
+    input_id_index = column_indexes["input_id"]
+    snapshot_id_index = column_indexes["snapshot_id"]
+    input_key_index = column_indexes["input_key"]
+    lineage_rows = conn.execute("""
+        SELECT inputs.input_id, snapshots.asset_id, inputs.snapshot_id,
+               raw_records.asset_id, raw_records.external_key
+        FROM lexical_definition_inputs AS inputs
+        LEFT JOIN source_snapshots AS snapshots
+          ON snapshots.snapshot_id = inputs.snapshot_id
+        LEFT JOIN raw_reference_records AS raw_records
+          ON raw_records.raw_record_id = inputs.raw_record_id
+        """).fetchall()
+    lineage_by_input_id: dict[str, tuple[str, str, str]] = {}
+    for input_id, asset_id, snapshot_id, raw_asset_id, external_key in lineage_rows:
+        if (
+            input_id is None
+            or asset_id is None
+            or snapshot_id is None
+            or raw_asset_id is None
+            or external_key is None
+        ):
+            raise ValueError("cannot rekey lexical input without source lineage")
+        if str(asset_id) != str(raw_asset_id):
+            raise ValueError(
+                "cannot rekey lexical input with mismatched source lineage"
+            )
+        input_id_text = str(input_id)
+        if input_id_text in lineage_by_input_id:
+            raise ValueError("cannot rekey lexical input with ambiguous source lineage")
+        lineage_by_input_id[input_id_text] = (
+            str(asset_id),
+            str(snapshot_id),
+            str(external_key),
+        )
+
+    input_ids = {str(row[input_id_index]) for row in rows}
+    if input_ids != set(lineage_by_input_id):
+        raise ValueError("cannot rekey lexical input without complete source lineage")
+
+    rekeyed_rows: list[tuple[Any, ...]] = []
+    rekeyed_input_keys: set[str] = set()
+    for row in rows:
+        input_id = str(row[input_id_index])
+        asset_id, snapshot_id, external_key = lineage_by_input_id[input_id]
+        if str(row[snapshot_id_index]) != snapshot_id:
+            raise ValueError("cannot rekey lexical input with ambiguous source lineage")
+        input_key = f"{asset_id}:{snapshot_id}:{external_key}"
+        if input_key in rekeyed_input_keys:
+            raise ValueError(f"lexical input rekey collision for {input_key!r}")
+        rekeyed_input_keys.add(input_key)
+        row_values = list(row)
+        row_values[input_key_index] = input_key
+        rekeyed_rows.append(tuple(row_values))
+    snapshots["lexical_definition_inputs"] = (columns, rekeyed_rows)
+
+
+def _apply_migration_006(conn: duckdb.DuckDBPyConnection) -> None:
+    invalid_rank = conn.execute("""
+        SELECT frequency_rank FROM lexical_definition_inputs
+        WHERE frequency_rank < 1 OR frequency_rank > 3500
+        LIMIT 1
+        """).fetchone()
+    if invalid_rank is not None:
+        raise ValueError(
+            "cannot enforce lexical rank scope for existing frequency rank "
+            f"{invalid_rank[0]!r}"
+        )
+    snapshots = _snapshot_tables(conn, _MIGRATION_006_TABLES)
+    _rekey_migration_006_input_keys(conn, snapshots)
+    for table in _MIGRATION_006_DROP_ORDER:
+        conn.execute(f"DROP TABLE {table}")
+    conn.execute(MIGRATION_006)
+    for table in _MIGRATION_006_RESTORE_ORDER:
+        _restore_table_snapshot(conn, table, snapshots[table])
+
+
 def apply_migrations(conn: duckdb.DuckDBPyConnection) -> None:
     """Apply unapplied graph migrations in one transactional operation."""
     conn.execute("BEGIN TRANSACTION")
@@ -737,6 +882,8 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> None:
                 _apply_migration_003(conn)
             elif version == 4:
                 _apply_migration_004(conn)
+            elif version == 6:
+                _apply_migration_006(conn)
             else:
                 conn.execute(sql)
             conn.execute(

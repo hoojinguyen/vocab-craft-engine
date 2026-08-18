@@ -101,7 +101,7 @@ class ContentType(StrEnum):
 class SourceAssetInput(BaseModel):
     model_config = ConfigDict(frozen=True, validate_assignment=True)
 
-    asset_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,127}$")
+    asset_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,254}$")
     title: str = Field(min_length=1)
     locator: HttpUrl
     asset_version: str = Field(min_length=1)
@@ -128,7 +128,7 @@ class SourceAssetInput(BaseModel):
 class SourceSnapshotInput(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    asset_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,127}$")
+    asset_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,254}$")
     local_path: Path
     retrieved_at: datetime
     file_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -170,7 +170,7 @@ class LexicalDefinitionInput(BaseModel):
     source_definition_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     lemma: str = Field(min_length=1)
     pos: str = Field(min_length=1)
-    frequency_rank: int = Field(ge=1)
+    frequency_rank: int = Field(ge=1, le=3500)
     created_at: datetime
 
 

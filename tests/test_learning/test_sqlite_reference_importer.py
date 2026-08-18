@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -13,7 +14,10 @@ import pytest
 from src.learning import sqlite_reference_importer
 from src.learning.catalog import RawRecordInput, SourceCatalog
 from src.learning.models import ReviewState, SourceAssetInput
-from src.learning.sqlite_reference_importer import SQLiteLexicalReferenceImporter
+from src.learning.sqlite_reference_importer import (
+    SQLiteLexicalReferenceImporter,
+    SQLiteReferenceMaterializer,
+)
 from src.learning.store import LearningGraphStore
 
 
@@ -175,6 +179,7 @@ def test_import_vertical_slice_snapshots_only_policy_eligible_lexical_bundles(
     assert report.import_run_id == "run-2026-08-17"
     assert report.scanned_words == 2
     assert report.eligible_words == 1
+    assert report.eligible_definitions is None
     assert report.imported_or_existing_raw_records == 1
     raw_record = catalog.store.connection().execute("""
         SELECT external_key, record_type, payload_json
@@ -410,4 +415,305 @@ def test_append_raw_records_batches_250_records_and_is_idempotent(
     assert catalog.append_raw_records(records) == first_ids
     assert (
         catalog.store.fetch_value("SELECT count(*) FROM raw_reference_records") == 251
+    )
+
+
+def test_import_ranked_definitions_is_available_for_materialized_snapshots(
+    catalog: SourceCatalog, legacy_sqlite: Path, approved_snapshot_id: str
+):
+    materialized = SQLiteReferenceMaterializer(
+        catalog, legacy_sqlite.parent / "snapshots"
+    ).materialize(legacy_sqlite, approved_snapshot_id)
+    report = SQLiteLexicalReferenceImporter(catalog).import_ranked_definitions(
+        materialized.materialized_path, materialized.snapshot_id, "ranked-run"
+    )
+
+    assert report.imported_or_existing_raw_records == 2
+    assert report.eligible_definitions == 2
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs") == 2
+    )
+    assert (
+        catalog.store.fetch_value(
+            "SELECT count(*) FROM lexical_evidence_items "
+            "WHERE evidence_role = 'definition'"
+        )
+        == 4
+    )
+
+
+def test_import_ranked_definitions_rejects_a_forged_materialized_snapshot(
+    catalog: SourceCatalog, legacy_sqlite: Path
+):
+    checksum = hashlib.sha256(legacy_sqlite.read_bytes()).hexdigest()
+    forged_asset_id = f"forged-reference.materialized.{checksum[:12]}"
+    catalog.register_source(
+        SourceAssetInput(
+            asset_id=forged_asset_id,
+            title="Forged materialized reference",
+            locator="https://example.test/forged-reference",
+            asset_version="2026-08+materialized.forged",
+            sha256=checksum,
+            license_id="CC-BY-4.0",
+            license_url="https://creativecommons.org/licenses/by/4.0/",
+            attribution="Example author",
+            redistribution_allowed=True,
+            validation_status=ReviewState.APPROVED,
+        )
+    )
+    snapshot_id = catalog.record_source_snapshot(
+        forged_asset_id, legacy_sqlite, datetime(2026, 8, 17, tzinfo=UTC)
+    )
+    catalog.append_raw_record(
+        forged_asset_id,
+        f"sqlite-materialization:{checksum}",
+        "sqlite_reference_materialization",
+        {
+            "materialized_asset_id": forged_asset_id,
+            "materialized_sha256": checksum,
+            "materialized_snapshot_id": snapshot_id,
+            "materialized_path": str(legacy_sqlite),
+            "original_asset_id": "missing-source",
+            "original_snapshot_id": "missing-snapshot",
+            "original_main_path": str(legacy_sqlite),
+            "original_main_sha256": checksum,
+        },
+        "forged-materialization",
+    )
+
+    with pytest.raises(ValueError, match="materialization provenance"):
+        SQLiteLexicalReferenceImporter(catalog).import_ranked_definitions(
+            legacy_sqlite, snapshot_id, "forged-materialized-import"
+        )
+
+    assert catalog.store.fetch_value("SELECT count(*) FROM raw_reference_records") == 1
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs") == 0
+    )
+
+
+def test_import_ranked_definitions_qualifies_overlapping_source_definition_ids(
+    catalog: SourceCatalog, legacy_sqlite: Path, tmp_path: Path
+):
+    source_snapshot_ids: dict[str, str] = {}
+    for asset_id in ("first-overlap-source", "second-overlap-source"):
+        catalog.register_source(
+            SourceAssetInput(
+                asset_id=asset_id,
+                title=asset_id,
+                locator=f"https://example.test/{asset_id}",
+                asset_version="2026-08",
+                sha256=hashlib.sha256(legacy_sqlite.read_bytes()).hexdigest(),
+                license_id="CC-BY-4.0",
+                license_url="https://creativecommons.org/licenses/by/4.0/",
+                attribution="Example author",
+                redistribution_allowed=True,
+                validation_status=ReviewState.APPROVED,
+            )
+        )
+        source_snapshot_ids[asset_id] = catalog.record_source_snapshot(
+            asset_id, legacy_sqlite, datetime(2026, 8, 17, tzinfo=UTC)
+        )
+
+    materializer = SQLiteReferenceMaterializer(catalog, tmp_path / "snapshots")
+    first = materializer.materialize(
+        legacy_sqlite, source_snapshot_ids["first-overlap-source"]
+    )
+    second = materializer.materialize(
+        legacy_sqlite, source_snapshot_ids["second-overlap-source"]
+    )
+    importer = SQLiteLexicalReferenceImporter(catalog)
+
+    importer.import_ranked_definitions(
+        first.materialized_path, first.snapshot_id, "first-overlap-import"
+    )
+    importer.import_ranked_definitions(
+        second.materialized_path, second.snapshot_id, "second-overlap-import"
+    )
+
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs") == 4
+    )
+    assert {
+        row[0]
+        for row in catalog.store.connection()
+        .execute("SELECT input_key FROM lexical_definition_inputs")
+        .fetchall()
+    } == {
+        f"{materialized.derived_asset_id}:{materialized.snapshot_id}:"
+        f"sqlite-lexical-definition:{word_id}:{definition_id}"
+        for materialized in (first, second)
+        for word_id, definition_id in ((10, 1), (10, 2))
+    }
+    assert (
+        catalog.store.connection().execute("""
+            SELECT asset_id, external_key
+            FROM raw_reference_records
+            WHERE record_type = 'sqlite_lexical_definition_evidence'
+            ORDER BY asset_id, external_key
+            """).fetchall()
+        == [
+            (first.derived_asset_id, "sqlite-lexical-definition:10:1"),
+            (first.derived_asset_id, "sqlite-lexical-definition:10:2"),
+            (second.derived_asset_id, "sqlite-lexical-definition:10:1"),
+            (second.derived_asset_id, "sqlite-lexical-definition:10:2"),
+        ]
+    )
+
+    importer.import_ranked_definitions(
+        first.materialized_path, first.snapshot_id, "first-overlap-rerun"
+    )
+
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs") == 4
+    )
+
+
+def test_import_ranked_definitions_includes_every_ranked_definition_regardless_of_policy(
+    catalog: SourceCatalog, legacy_sqlite: Path, tmp_path: Path
+):
+    reference_path = tmp_path / "policy-independent.db"
+    shutil.copyfile(legacy_sqlite, reference_path)
+    with sqlite3.connect(reference_path) as connection:
+        connection.execute(
+            "INSERT INTO definitions VALUES (3, 11, 'A book title.', 'tên sách', NULL, 'kaikki')"
+        )
+        connection.executemany(
+            "INSERT INTO sentences VALUES (?, ?, ?, NULL, 'A1', NULL, 'tatoeba')",
+            [
+                (40, "A fourth book sentence.", "Câu sách thứ tư."),
+                (50, "A fifth book sentence.", "Câu sách thứ năm."),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO word_sentences VALUES (10, ?, ?)", [(40, 4), (50, 5)]
+        )
+    checksum = hashlib.sha256(reference_path.read_bytes()).hexdigest()
+    source = SourceAssetInput(
+        asset_id="policy-independent-reference",
+        title="Policy independent reference",
+        locator="https://example.test/policy-independent",
+        asset_version="2026-08",
+        sha256=checksum,
+        license_id="CC-BY-4.0",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+        attribution="Example author",
+        redistribution_allowed=True,
+        validation_status=ReviewState.APPROVED,
+    )
+    catalog.register_source(source)
+    source_snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, reference_path, datetime(2026, 8, 17, tzinfo=UTC)
+    )
+    materialized = SQLiteReferenceMaterializer(
+        catalog, tmp_path / "snapshots"
+    ).materialize(reference_path, source_snapshot_id)
+
+    report = SQLiteLexicalReferenceImporter(catalog).import_ranked_definitions(
+        materialized.materialized_path, materialized.snapshot_id, "all-ranked"
+    )
+
+    assert report.imported_or_existing_raw_records == 3
+    assert report.eligible_definitions == 3
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs") == 3
+    )
+    book_payload = catalog.store.fetch_value(
+        "SELECT payload_json FROM raw_reference_records "
+        "WHERE external_key = 'sqlite-lexical-definition:10:1'"
+    )
+    assert len(json.loads(book_payload)["examples"]) == 5
+    assert (
+        catalog.store.fetch_value(
+            "SELECT input_key FROM lexical_definition_inputs "
+            "WHERE source_definition_id = 3"
+        )
+        == f"{materialized.derived_asset_id}:{materialized.snapshot_id}:"
+        "sqlite-lexical-definition:11:3"
+    )
+
+
+def test_import_ranked_definitions_batches_251_records_and_is_idempotent(
+    catalog: SourceCatalog,
+    legacy_sqlite: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    reference_path = tmp_path / "batch-reference.db"
+    shutil.copyfile(legacy_sqlite, reference_path)
+    with sqlite3.connect(reference_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO words VALUES (?, ?, 'noun', NULL, NULL, ?, 'A1', 'kaikki')
+            """,
+            [(1000 + index, f"batchword{index}", 300 + index) for index in range(249)],
+        )
+        connection.executemany(
+            """
+            INSERT INTO definitions VALUES (?, ?, ?, 'bản dịch', NULL, 'kaikki')
+            """,
+            [
+                (1000 + index, 1000 + index, f"Batch definition {index}")
+                for index in range(249)
+            ],
+        )
+    checksum = hashlib.sha256(reference_path.read_bytes()).hexdigest()
+    source = SourceAssetInput(
+        asset_id="batch-reference",
+        title="Batch reference",
+        locator="https://example.test/batch-reference",
+        asset_version="2026-08",
+        sha256=checksum,
+        license_id="CC-BY-4.0",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+        attribution="Example author",
+        redistribution_allowed=True,
+        validation_status=ReviewState.APPROVED,
+    )
+    catalog.register_source(source)
+    source_snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, reference_path, datetime(2026, 8, 17, tzinfo=UTC)
+    )
+    materialized = SQLiteReferenceMaterializer(
+        catalog, tmp_path / "snapshots"
+    ).materialize(reference_path, source_snapshot_id)
+    transaction_calls = 0
+    transaction = catalog.store.transaction
+
+    @contextmanager
+    def counting_transaction() -> Iterator[object]:
+        nonlocal transaction_calls
+        transaction_calls += 1
+        with transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(catalog.store, "transaction", counting_transaction)
+    importer = SQLiteLexicalReferenceImporter(catalog)
+
+    first = importer.import_ranked_definitions(
+        materialized.materialized_path, materialized.snapshot_id, "batch-first"
+    )
+
+    assert first.imported_or_existing_raw_records == 251
+    assert transaction_calls == 2
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM raw_reference_records") == 252
+    )
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs")
+        == 251
+    )
+
+    second = importer.import_ranked_definitions(
+        materialized.materialized_path, materialized.snapshot_id, "batch-second"
+    )
+
+    assert second.imported_or_existing_raw_records == 251
+    assert transaction_calls == 4
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM raw_reference_records") == 252
+    )
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs")
+        == 251
     )

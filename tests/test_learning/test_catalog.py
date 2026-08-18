@@ -9,7 +9,8 @@ from typing import Any
 import duckdb
 import pytest
 
-from src.learning.catalog import SourceCatalog
+from src.learning import schema
+from src.learning.catalog import RawRecordInput, SourceCatalog
 from src.learning.models import ReviewState, SourceAssetInput, canonical_json
 from src.learning.store import LearningGraphStore
 
@@ -223,6 +224,145 @@ def test_record_source_snapshot_rejects_unregistered_or_mismatched_files(
         )
 
     assert catalog.store.fetch_value("SELECT count(*) FROM source_snapshots") == 0
+
+
+@pytest.mark.parametrize("frequency_rank", [0, -1, 3501])
+def test_lexical_definition_records_reject_out_of_scope_frequency_ranks(
+    catalog: SourceCatalog, tmp_path: Path, frequency_rank: int
+):
+    source_file = tmp_path / "reference.db"
+    source_file.write_bytes(b"verified materialized database")
+    source = _approved_source().model_copy(
+        update={"sha256": hashlib.sha256(source_file.read_bytes()).hexdigest()}
+    )
+    catalog.register_source(source)
+    snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, source_file, datetime(2026, 8, 18, tzinfo=UTC)
+    )
+    record = RawRecordInput(
+        asset_id=source.asset_id,
+        external_key=f"sqlite-lexical-definition:1:{frequency_rank}",
+        record_type="sqlite_lexical_definition_evidence",
+        payload={
+            "word": {
+                "source_row_id": 1,
+                "lemma": "book",
+                "pos": "noun",
+                "frequency_rank": frequency_rank,
+            },
+            "definition": {"source_row_id": 1, "source": "fixture"},
+            "definitions": [{"source_row_id": 1, "source": "fixture"}],
+            "translations": [],
+            "examples": [],
+        },
+        import_run_id="invalid-rank",
+    )
+
+    with pytest.raises(ValueError, match="frequency rank"):
+        catalog.append_lexical_definition_record(record, snapshot_id)
+
+    assert catalog.store.fetch_value("SELECT count(*) FROM raw_reference_records") == 0
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs") == 0
+    )
+
+
+def test_migration_v6_rekeys_a_v5_lexical_input_for_idempotent_reappend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    all_migrations = schema.MIGRATIONS
+    monkeypatch.setattr(
+        schema,
+        "MIGRATIONS",
+        [migration for migration in all_migrations if migration[0] <= 5],
+    )
+    store = LearningGraphStore(tmp_path / "v5-graph.duckdb")
+    store.initialize()
+    catalog = SourceCatalog(store)
+    reference_path = tmp_path / "materialized-reference.db"
+    reference_path.write_bytes(b"verified materialized database")
+    source = _approved_source().model_copy(
+        update={"sha256": hashlib.sha256(reference_path.read_bytes()).hexdigest()}
+    )
+    catalog.register_source(source)
+    snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, reference_path, datetime(2026, 8, 18, tzinfo=UTC)
+    )
+    record = RawRecordInput(
+        asset_id=source.asset_id,
+        external_key="sqlite-lexical-definition:10:11",
+        record_type="sqlite_lexical_definition_evidence",
+        payload={
+            "word": {
+                "source_row_id": 10,
+                "lemma": "book",
+                "pos": "noun",
+                "frequency_rank": 100,
+            },
+            "definition": {
+                "source_row_id": 11,
+                "definition_en": "A written work.",
+                "source": "fixture",
+            },
+            "definitions": [
+                {
+                    "source_row_id": 11,
+                    "definition_en": "A written work.",
+                    "source": "fixture",
+                }
+            ],
+            "translations": [],
+            "examples": [],
+        },
+        import_run_id="legacy-import",
+    )
+    raw_record_id = catalog.append_raw_record(
+        record.asset_id,
+        record.external_key,
+        record.record_type,
+        record.payload,
+        record.import_run_id,
+    )
+    definition = record.payload["definition"]
+    definition_sha256 = hashlib.sha256(
+        canonical_json(definition).encode("utf-8")
+    ).hexdigest()
+    connection = store.connection()
+    connection.execute(
+        """
+        INSERT INTO lexical_definition_inputs (
+            input_id, snapshot_id, raw_record_id, source_word_id,
+            source_definition_id, input_key, source_definition_sha256, lemma,
+            pos, frequency_rank
+        ) VALUES ('legacy-input', ?, ?, 10, 11, ?, ?, 'book', 'noun', 100)
+        """,
+        [snapshot_id, raw_record_id, record.external_key, definition_sha256],
+    )
+    connection.execute(
+        """
+        INSERT INTO lexical_evidence_items (
+            evidence_id, input_id, evidence_role, source_row_id, source_name,
+            value_json, value_sha256
+        ) VALUES ('legacy-evidence', 'legacy-input', 'definition', 11, 'fixture', ?, ?)
+        """,
+        [canonical_json(definition), definition_sha256],
+    )
+
+    monkeypatch.setattr(schema, "MIGRATIONS", all_migrations)
+    store.initialize()
+
+    assert (
+        catalog.append_lexical_definition_record(record, snapshot_id) == raw_record_id
+    )
+    assert catalog.store.fetch_value("SELECT count(*) FROM raw_reference_records") == 1
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_definition_inputs") == 1
+    )
+    assert catalog.store.fetch_value("SELECT count(*) FROM lexical_evidence_items") == 1
+    assert (
+        catalog.store.fetch_value("SELECT input_key FROM lexical_definition_inputs")
+        == f"{source.asset_id}:{snapshot_id}:{record.external_key}"
+    )
 
 
 def test_register_source_propagates_invalid_source_constraint(catalog: SourceCatalog):

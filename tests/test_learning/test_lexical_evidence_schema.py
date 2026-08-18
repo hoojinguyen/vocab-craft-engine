@@ -83,37 +83,7 @@ def _insert_evidence(
     )
 
 
-def test_fresh_v5_graph_persists_the_lexical_evidence_graph():
-    conn = duckdb.connect(":memory:")
-    apply_migrations(conn)
-
-    assert MIGRATIONS[-1][0] == 5
-    assert LEXICAL_TABLES.issubset(GRAPH_TABLES)
-    assert conn.execute(
-        "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,)]
-    assert {
-        row[1]
-        for row in conn.execute(
-            "PRAGMA table_info('lexical_definition_inputs')"
-        ).fetchall()
-    } >= {
-        "input_id",
-        "snapshot_id",
-        "raw_record_id",
-        "source_word_id",
-        "source_definition_id",
-        "input_key",
-        "source_definition_sha256",
-        "lemma",
-        "pos",
-        "frequency_rank",
-        "created_at",
-    }
-
-    _seed_dependencies(conn)
-    _insert_input(conn)
-    _insert_evidence(conn)
+def _insert_lexical_dependents(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("""
         INSERT INTO lexical_evidence_rankings VALUES
         ('run-1', 'input-1', 'evidence-1', 'definition', 1, TRUE, TRUE, '{}')
@@ -146,6 +116,40 @@ def test_fresh_v5_graph_persists_the_lexical_evidence_graph():
         ["f" * 64],
     )
 
+
+def test_fresh_v6_graph_persists_the_lexical_evidence_graph():
+    conn = duckdb.connect(":memory:")
+    apply_migrations(conn)
+
+    assert MIGRATIONS[-1][0] == 6
+    assert LEXICAL_TABLES.issubset(GRAPH_TABLES)
+    assert conn.execute(
+        "SELECT version FROM graph_schema_migrations ORDER BY version"
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    assert {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info('lexical_definition_inputs')"
+        ).fetchall()
+    } >= {
+        "input_id",
+        "snapshot_id",
+        "raw_record_id",
+        "source_word_id",
+        "source_definition_id",
+        "input_key",
+        "source_definition_sha256",
+        "lemma",
+        "pos",
+        "frequency_rank",
+        "created_at",
+    }
+
+    _seed_dependencies(conn)
+    _insert_input(conn)
+    _insert_evidence(conn)
+    _insert_lexical_dependents(conn)
+
     assert conn.execute("""
         SELECT input.lemma, evidence.evidence_role, disposition.state, build.release_version
         FROM lexical_definition_inputs AS input
@@ -155,13 +159,18 @@ def test_fresh_v5_graph_persists_the_lexical_evidence_graph():
         """).fetchall() == [("book", "definition", "validated", "2026.08.18")]
 
 
-def test_migration_v5_adds_tables_without_changing_existing_v4_data(monkeypatch):
+def test_migration_v5_to_v6_preserves_inputs_and_enforces_frozen_rank(
+    monkeypatch: pytest.MonkeyPatch,
+):
     conn = duckdb.connect(":memory:")
     all_migrations = MIGRATIONS
-    v4_migrations = [migration for migration in all_migrations if migration[0] <= 4]
-    monkeypatch.setattr("src.learning.schema.MIGRATIONS", v4_migrations)
+    v5_migrations = [migration for migration in all_migrations if migration[0] <= 5]
+    monkeypatch.setattr("src.learning.schema.MIGRATIONS", v5_migrations)
     apply_migrations(conn)
     _seed_dependencies(conn)
+    _insert_input(conn)
+    _insert_evidence(conn)
+    _insert_lexical_dependents(conn)
 
     monkeypatch.setattr("src.learning.schema.MIGRATIONS", all_migrations)
     apply_migrations(conn)
@@ -174,11 +183,113 @@ def test_migration_v5_adds_tables_without_changing_existing_v4_data(monkeypatch)
     ).fetchall() == [("snapshot-1", "lexical-v1")]
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,)]
-    _insert_input(conn)
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
     assert conn.execute(
         "SELECT input_key FROM lexical_definition_inputs"
-    ).fetchall() == [("lexical.book.noun.input-1",)]
+    ).fetchall() == [("source-1:snapshot-1:external-1",)]
+    assert conn.execute(
+        "SELECT evidence_id FROM lexical_evidence_items"
+    ).fetchall() == [("evidence-1",)]
+    assert {
+        table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        for table in LEXICAL_TABLES
+    } == {table: 1 for table in LEXICAL_TABLES}
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute(
+            """
+            INSERT INTO lexical_definition_inputs (
+                input_id, snapshot_id, raw_record_id, source_word_id,
+                source_definition_id, input_key, source_definition_sha256, lemma,
+                pos, frequency_rank
+            ) VALUES ('invalid-v6-rank', 'snapshot-1', 'raw-1', 10, 12,
+                      'lexical.book.noun.invalid-v6-rank', ?, 'book', 'noun', 0)
+            """,
+            ["d" * 64],
+        )
+
+
+def test_migration_v6_rejects_colliding_rekeyed_input_identities(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conn = duckdb.connect(":memory:")
+    all_migrations = MIGRATIONS
+    v5_migrations = [migration for migration in all_migrations if migration[0] <= 5]
+    monkeypatch.setattr("src.learning.schema.MIGRATIONS", v5_migrations)
+    apply_migrations(conn)
+    _seed_dependencies(conn)
+    _insert_input(conn)
+    conn.execute(
+        """
+        INSERT INTO raw_reference_records VALUES
+        ('raw-2', 'source-1', 'external-1', 'sqlite_lexical_definition_evidence',
+         '{"definition":2}', ?, 'import-2', current_timestamp)
+        """,
+        ["f" * 64],
+    )
+    conn.execute(
+        """
+        INSERT INTO lexical_definition_inputs (
+            input_id, snapshot_id, raw_record_id, source_word_id,
+            source_definition_id, input_key, source_definition_sha256, lemma,
+            pos, frequency_rank
+        ) VALUES ('input-2', 'snapshot-1', 'raw-2', 10, 12, 'legacy-input-2', ?,
+                  'book', 'noun', 42)
+        """,
+        ["e" * 64],
+    )
+
+    monkeypatch.setattr("src.learning.schema.MIGRATIONS", all_migrations)
+
+    with pytest.raises(ValueError, match="rekey.*collision"):
+        apply_migrations(conn)
+
+    assert conn.execute(
+        "SELECT version FROM graph_schema_migrations ORDER BY version"
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,)]
+
+
+def test_migration_v6_rejects_input_with_mismatched_raw_asset_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conn = duckdb.connect(":memory:")
+    all_migrations = MIGRATIONS
+    v5_migrations = [migration for migration in all_migrations if migration[0] <= 5]
+    monkeypatch.setattr("src.learning.schema.MIGRATIONS", v5_migrations)
+    apply_migrations(conn)
+    _seed_dependencies(conn)
+    conn.execute(
+        """
+        INSERT INTO source_assets VALUES
+        ('source-2', 'Other Source', 'https://example.test/other', '1', ?,
+         'CC-BY-4.0', 'https://example.test/license', 'Fixture', TRUE,
+         'approved', current_timestamp)
+        """,
+        ["d" * 64],
+    )
+    conn.execute(
+        """
+        INSERT INTO raw_reference_records VALUES
+        ('raw-2', 'source-2', 'external-2', 'sqlite_lexical_definition_evidence',
+         '{"definition":2}', ?, 'import-2', current_timestamp)
+        """,
+        ["f" * 64],
+    )
+    conn.execute(
+        """
+        INSERT INTO lexical_definition_inputs (
+            input_id, snapshot_id, raw_record_id, source_word_id,
+            source_definition_id, input_key, source_definition_sha256, lemma,
+            pos, frequency_rank
+        ) VALUES ('input-2', 'snapshot-1', 'raw-2', 10, 12, 'legacy-input-2', ?,
+                  'book', 'noun', 42)
+        """,
+        ["e" * 64],
+    )
+
+    monkeypatch.setattr("src.learning.schema.MIGRATIONS", all_migrations)
+
+    with pytest.raises(ValueError, match="source lineage"):
+        apply_migrations(conn)
 
 
 def test_lexical_evidence_tables_enforce_foreign_key_relationships():
@@ -288,6 +399,28 @@ def test_lexical_definition_inputs_require_positive_source_identifiers_in_sql(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             list(input_values.values()),
+        )
+
+
+@pytest.mark.parametrize("frequency_rank", [0, -1, 3501])
+def test_lexical_definition_inputs_require_rank_in_frozen_scope_in_sql(
+    frequency_rank: int,
+):
+    conn = duckdb.connect(":memory:")
+    apply_migrations(conn)
+    _seed_dependencies(conn)
+
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute(
+            """
+            INSERT INTO lexical_definition_inputs (
+                input_id, snapshot_id, raw_record_id, source_word_id,
+                source_definition_id, input_key, source_definition_sha256, lemma,
+                pos, frequency_rank
+            ) VALUES ('invalid-rank', 'snapshot-1', 'raw-1', 10, 11,
+                      'lexical.book.noun.invalid-rank', ?, 'book', 'noun', ?)
+            """,
+            ["d" * 64, frequency_rank],
         )
 
 

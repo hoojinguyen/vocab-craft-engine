@@ -23,6 +23,111 @@ _Result = TypeVar("_Result")
 _WRITE_RETRY_ATTEMPTS = 4
 _SOURCE_SNAPSHOT_HASH_CHUNK_SIZE = 64 * 1024
 _RAW_RECORD_BATCH_SIZE = 250
+_MAX_LEXICAL_FREQUENCY_RANK = 3500
+
+
+def _positive_source_id(value: Any) -> int:
+    try:
+        source_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "lexical source identifiers must be positive integers"
+        ) from exc
+    if source_id <= 0:
+        raise ValueError("lexical source identifiers must be positive integers")
+    return source_id
+
+
+def _frozen_lexical_frequency_rank(value: Any) -> int:
+    try:
+        frequency_rank = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("lexical frequency rank must be between 1 and 3500") from exc
+    if not 1 <= frequency_rank <= _MAX_LEXICAL_FREQUENCY_RANK:
+        raise ValueError("lexical frequency rank must be between 1 and 3500")
+    return frequency_rank
+
+
+def _lexical_evidence_payload(
+    payload: dict[str, Any], word_id: int, definition_id: int
+) -> list[dict[str, Any]]:
+    """Normalize importer payload fields to catalog evidence rows."""
+    definition = payload["definition"]
+    definitions: list[dict[str, Any]] = [definition]
+    definitions.extend(
+        item for item in payload.get("definitions", []) if isinstance(item, dict)
+    )
+    definition_source_ids: set[int] = set()
+    evidence: list[dict[str, Any]] = []
+    for alternative in definitions:
+        source_row_id = _positive_source_id(
+            alternative.get("source_row_id", alternative.get("id", definition_id))
+        )
+        if source_row_id in definition_source_ids:
+            continue
+        definition_source_ids.add(source_row_id)
+        evidence.append(
+            {
+                "evidence_role": "definition",
+                "source_row_id": source_row_id,
+                "source_name": alternative.get("source") or "sqlite-definitions",
+                "value": alternative,
+            }
+        )
+    for translation in payload.get("translations", []):
+        if not isinstance(translation, dict):
+            continue
+        text = translation.get("text", translation.get("definition_vi"))
+        if text is None:
+            continue
+        evidence.append(
+            {
+                "evidence_role": "translation",
+                "source_row_id": translation.get("source_row_id", definition_id),
+                "source_name": translation.get("source") or "sqlite-definitions",
+                "value": translation,
+            }
+        )
+    for field in ("ipa_uk", "ipa_us"):
+        value = payload.get("word", {}).get(field)
+        if value:
+            evidence.append(
+                {
+                    "evidence_role": "ipa",
+                    "source_row_id": word_id,
+                    "source_name": payload.get("word", {}).get("source")
+                    or "sqlite-words",
+                    "value": {"kind": field, "value": value},
+                }
+            )
+    if definition.get("example"):
+        evidence.append(
+            {
+                "evidence_role": "example",
+                "source_row_id": definition_id,
+                "source_name": definition.get("source") or "sqlite-definitions",
+                "value": {
+                    "kind": "definition",
+                    "text": definition.get("example"),
+                    "definition_id": definition_id,
+                },
+            }
+        )
+    for example in payload.get("examples", []):
+        if not isinstance(example, dict):
+            continue
+        sentence_id = example.get("source_row_id", example.get("id"))
+        if example.get("text_en") is None or example.get("text_vi") is None:
+            continue
+        evidence.append(
+            {
+                "evidence_role": "example",
+                "source_row_id": sentence_id,
+                "source_name": example.get("source") or "sqlite-sentences",
+                "value": example,
+            }
+        )
+    return evidence
 
 
 class _ConcurrentCatalogWrite(RuntimeError):
@@ -104,6 +209,72 @@ class SourceCatalog:
             payload=payload,
             import_run_id=str(uuid4()),
         )
+
+    def record_immutable_raw_snapshot(
+        self,
+        asset_id: str,
+        external_key: str,
+        payload: dict[str, Any],
+        record_type: str = "snapshot",
+    ) -> str:
+        """Record provenance once per source/key, retaining the first payload."""
+        payload_json = canonical_json(payload)
+        payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+        def write_once() -> str:
+            with self.store.transaction() as connection:
+                approved_source = connection.execute(
+                    """
+                    SELECT asset_id FROM source_assets
+                    WHERE asset_id = ? AND validation_status = ?
+                    """,
+                    [asset_id, ReviewState.APPROVED.value],
+                ).fetchone()
+                if approved_source is None:
+                    raise ValueError(
+                        "raw snapshots require an approved source asset: "
+                        f"{asset_id!r}"
+                    )
+                existing = connection.execute(
+                    """
+                    SELECT raw_record_id FROM raw_reference_records
+                    WHERE asset_id = ? AND external_key = ?
+                    """,
+                    [asset_id, external_key],
+                ).fetchone()
+                if existing is not None:
+                    return str(existing[0])
+                raw_record_id = str(uuid4())
+                connection.execute(
+                    """
+                    INSERT INTO raw_reference_records (
+                        raw_record_id, asset_id, external_key, record_type,
+                        payload_json, payload_sha256, import_run_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    [
+                        raw_record_id,
+                        asset_id,
+                        external_key,
+                        record_type,
+                        payload_json,
+                        payload_sha256,
+                        str(uuid4()),
+                    ],
+                )
+                stored = connection.execute(
+                    """
+                    SELECT raw_record_id FROM raw_reference_records
+                    WHERE asset_id = ? AND external_key = ?
+                    """,
+                    [asset_id, external_key],
+                ).fetchone()
+                if stored is None:
+                    raise _ConcurrentCatalogWrite
+                return str(stored[0])
+
+        return self._retry_catalog_write(write_once)
 
     def record_source_snapshot(
         self, asset_id: str, local_path: Path, retrieved_at: datetime | str
@@ -215,6 +386,224 @@ class SourceCatalog:
                 )
             )
         return raw_record_ids
+
+    def append_lexical_definition_records(
+        self, records: Sequence[RawRecordInput], snapshot_id: str
+    ) -> list[str]:
+        """Append ranked SQLite definition records and their evidence atomically.
+
+        Raw records, their one-to-one lexical inputs, and evidence rows are written
+        in the same bounded transaction.  The input key is the stable identity, so
+        repeating an import returns the existing rows without creating duplicates.
+        """
+        prepared_records: list[tuple[RawRecordInput, str, str]] = []
+        for record in records:
+            payload_json = canonical_json(record.payload)
+            prepared_records.append(
+                (
+                    record,
+                    payload_json,
+                    hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+                )
+            )
+        raw_record_ids: list[str] = []
+        for start in range(0, len(prepared_records), _RAW_RECORD_BATCH_SIZE):
+            batch = prepared_records[start : start + _RAW_RECORD_BATCH_SIZE]
+            raw_record_ids.extend(
+                self._retry_catalog_write(
+                    lambda batch=batch: self._append_lexical_records_once(
+                        batch, snapshot_id
+                    )
+                )
+            )
+        return raw_record_ids
+
+    def append_lexical_definition_record(
+        self, record: RawRecordInput, snapshot_id: str
+    ) -> str:
+        """Singular convenience wrapper for :meth:`append_lexical_definition_records`."""
+        return self.append_lexical_definition_records([record], snapshot_id)[0]
+
+    def _append_lexical_records_once(
+        self,
+        records: list[tuple[RawRecordInput, str, str]],
+        snapshot_id: str,
+    ) -> list[str]:
+        with self.store.transaction() as connection:
+            snapshot = connection.execute(
+                "SELECT asset_id FROM source_snapshots WHERE snapshot_id = ?",
+                [snapshot_id],
+            ).fetchone()
+            if snapshot is None:
+                raise ValueError(f"source snapshot does not exist: {snapshot_id!r}")
+
+            approved_asset_ids: set[str] = set()
+            raw_record_ids: list[str] = []
+            for record, payload_json, payload_sha256 in records:
+                word = record.payload.get("word")
+                definition = record.payload.get("definition")
+                if not isinstance(word, dict) or not isinstance(definition, dict):
+                    raise TypeError(
+                        "lexical definition payload must contain word and definition"
+                    )
+                frequency_rank = _frozen_lexical_frequency_rank(
+                    word.get("frequency_rank")
+                )
+                if record.asset_id not in approved_asset_ids:
+                    approved_source = connection.execute(
+                        """
+                        SELECT asset_id FROM source_assets
+                        WHERE asset_id = ? AND validation_status = ?
+                        """,
+                        [record.asset_id, ReviewState.APPROVED.value],
+                    ).fetchone()
+                    if approved_source is None:
+                        raise ValueError(
+                            "raw snapshots require an approved source asset: "
+                            f"{record.asset_id!r}"
+                        )
+                    if str(snapshot[0]) != record.asset_id:
+                        raise ValueError(
+                            "lexical definition record asset does not match source snapshot"
+                        )
+                    approved_asset_ids.add(record.asset_id)
+
+                existing_raw = connection.execute(
+                    """
+                    SELECT raw_record_id, payload_sha256
+                    FROM raw_reference_records
+                    WHERE asset_id = ? AND external_key = ?
+                    """,
+                    [record.asset_id, record.external_key],
+                ).fetchone()
+                if existing_raw is not None and str(existing_raw[1]) != payload_sha256:
+                    raise ValueError(
+                        "lexical definition external key has an immutable payload"
+                    )
+                if existing_raw is None:
+                    raw_record_id = str(uuid4())
+                    connection.execute(
+                        """
+                        INSERT INTO raw_reference_records (
+                            raw_record_id, asset_id, external_key, record_type,
+                            payload_json, payload_sha256, import_run_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        [
+                            raw_record_id,
+                            record.asset_id,
+                            record.external_key,
+                            record.record_type,
+                            payload_json,
+                            payload_sha256,
+                            record.import_run_id,
+                        ],
+                    )
+                    stored_raw = connection.execute(
+                        """
+                        SELECT raw_record_id FROM raw_reference_records
+                        WHERE asset_id = ? AND external_key = ? AND payload_sha256 = ?
+                        """,
+                        [record.asset_id, record.external_key, payload_sha256],
+                    ).fetchone()
+                    if stored_raw is None:
+                        raise _ConcurrentCatalogWrite
+                    raw_record_id = str(stored_raw[0])
+                else:
+                    raw_record_id = str(existing_raw[0])
+                raw_record_ids.append(raw_record_id)
+
+                word_id = _positive_source_id(
+                    word.get(
+                        "source_row_id", word.get("legacy_word_id", word.get("id"))
+                    )
+                )
+                definition_id = _positive_source_id(
+                    definition.get("source_row_id", definition.get("id"))
+                )
+                input_key = f"{record.asset_id}:{snapshot_id}:{record.external_key}"
+                source_definition_sha256 = hashlib.sha256(
+                    canonical_json(definition).encode("utf-8")
+                ).hexdigest()
+                existing_input = connection.execute(
+                    """
+                    SELECT input_id, raw_record_id, snapshot_id
+                    FROM lexical_definition_inputs WHERE input_key = ?
+                    """,
+                    [input_key],
+                ).fetchone()
+                if existing_input is None:
+                    input_id = str(uuid4())
+                    connection.execute(
+                        """
+                        INSERT INTO lexical_definition_inputs (
+                            input_id, snapshot_id, raw_record_id, source_word_id,
+                            source_definition_id, input_key, source_definition_sha256,
+                            lemma, pos, frequency_rank
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        [
+                            input_id,
+                            snapshot_id,
+                            raw_record_id,
+                            word_id,
+                            definition_id,
+                            input_key,
+                            source_definition_sha256,
+                            str(word.get("lemma", "")),
+                            str(word.get("pos", "")),
+                            frequency_rank,
+                        ],
+                    )
+                    stored_input = connection.execute(
+                        """
+                        SELECT input_id, raw_record_id, snapshot_id
+                        FROM lexical_definition_inputs WHERE input_key = ?
+                        """,
+                        [input_key],
+                    ).fetchone()
+                    if stored_input is None:
+                        raise _ConcurrentCatalogWrite
+                    existing_input = stored_input
+                if (
+                    str(existing_input[1]) != raw_record_id
+                    or str(existing_input[2]) != snapshot_id
+                ):
+                    raise ValueError("lexical definition input identity has changed")
+                input_id = str(existing_input[0])
+
+                for evidence in _lexical_evidence_payload(
+                    record.payload, word_id, definition_id
+                ):
+                    source_row_id = _positive_source_id(evidence.get("source_row_id"))
+                    role = str(evidence.get("evidence_role", ""))
+                    source_name = str(evidence.get("source_name") or "sqlite")
+                    value = evidence.get("value")
+                    value_json = canonical_json(value)
+                    value_sha256 = hashlib.sha256(
+                        value_json.encode("utf-8")
+                    ).hexdigest()
+                    connection.execute(
+                        """
+                        INSERT INTO lexical_evidence_items (
+                            evidence_id, input_id, evidence_role, source_row_id,
+                            source_name, value_json, value_sha256
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        [
+                            str(uuid4()),
+                            input_id,
+                            role,
+                            source_row_id,
+                            source_name,
+                            value_json,
+                            value_sha256,
+                        ],
+                    )
+            return raw_record_ids
 
     def _append_raw_records_once(
         self,
