@@ -96,7 +96,9 @@ class LexicalRemediationService:
                 self._complete_validation_run(run_id)
                 return self._report(run_id, snapshot_id, processed_count)
             for input_id in input_ids:
-                bundle = self.evidence_repository.get_input(input_id)
+                bundle = self.evidence_repository.get_input(
+                    input_id, include_source_examples=False
+                )
                 existing = self.evidence_repository.get_disposition(run_id, input_id)
                 if existing is None:
                     self._remediate(bundle, run_id, retry=False)
@@ -138,7 +140,9 @@ class LexicalRemediationService:
         *,
         retry: bool,
     ) -> InputDisposition:
-        selection = self.selector.select(bundle)
+        selection = self.selector.select_streaming(
+            bundle, self.evidence_repository.iter_source_examples(bundle)
+        )
         self.evidence_repository.upsert_rankings(
             validation_run_id, selection.rankings(validation_run_id)
         )

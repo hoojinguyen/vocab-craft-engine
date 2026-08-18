@@ -358,6 +358,68 @@ def test_source_ranking_rejects_evidence_not_linked_to_its_input_word(
         )
 
 
+def test_remediation_streams_large_normalized_example_inventory(
+    graph_catalog: SourceCatalog,
+):
+    snapshot_id = _snapshot(graph_catalog)
+    _append_input(
+        graph_catalog,
+        snapshot_id,
+        external_key="book:streamed",
+        word_id=10,
+        definition_id=1,
+    )
+    graph_catalog.append_source_example_links(
+        [
+            SourceEvidenceLinkInput(
+                snapshot_id=snapshot_id,
+                source_word_id=10,
+                source_row_id=sentence_id,
+                source_name="tatoeba",
+                source_table="sentences",
+                link_rank=sentence_id,
+                value={
+                    "kind": "linked",
+                    "sentence_id": sentence_id,
+                    "text_en": f"This book example {sentence_id} is useful.",
+                    "text_vi": f"Ví dụ sách {sentence_id} hữu ích.",
+                    "source": "tatoeba",
+                },
+            )
+            for sentence_id in range(1, 1002)
+        ]
+    )
+    repository = LexicalEvidenceRepository(graph_catalog.store)
+    input_id = repository.list_input_ids(snapshot_id)[0]
+    assert not any(
+        item.evidence_role is EvidenceRole.EXAMPLE
+        for item in repository.get_input(
+            input_id, include_source_examples=False
+        ).evidence
+    )
+
+    LexicalRemediationService(graph_catalog.store).run(
+        snapshot_id, validation_run_id="streamed-source-run"
+    )
+
+    rationale = json.loads(
+        str(
+            graph_catalog.store.fetch_value(
+                "SELECT rationale_json FROM lexical_input_dispositions WHERE validation_run_id = ?",
+                ["streamed-source-run"],
+            )
+        )
+    )
+    assert rationale["source_evidence_inventory"]["example"]["count"] == 1001
+    assert (
+        graph_catalog.store.fetch_value(
+            "SELECT count(*) FROM lexical_source_evidence_rankings WHERE validation_run_id = ?",
+            ["streamed-source-run"],
+        )
+        == 1
+    )
+
+
 def test_remediation_persists_only_selected_normalized_example_rankings(
     graph_catalog: SourceCatalog,
 ):
