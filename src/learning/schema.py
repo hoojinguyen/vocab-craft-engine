@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 import duckdb
 
@@ -371,6 +373,8 @@ CREATE INDEX IF NOT EXISTS lexical_source_evidence_rankings_lookup_idx
 ON lexical_source_evidence_rankings (validation_run_id, input_id, evidence_role, rank);
 """
 
+MIGRATION_009 = """-- normalize legacy linked lexical examples in Python"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -380,6 +384,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (6, MIGRATION_006),
     (7, MIGRATION_007),
     (8, MIGRATION_008),
+    (9, MIGRATION_009),
 ]
 
 _TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -917,6 +922,125 @@ def _apply_migration_006(conn: duckdb.DuckDBPyConnection) -> None:
         _restore_table_snapshot(conn, table, snapshots[table])
 
 
+def _apply_migration_009(conn: duckdb.DuckDBPyConnection) -> None:
+    """Move legacy per-input linked examples into the shared source inventory."""
+    rows = conn.execute("""
+        SELECT item.evidence_id, item.input_id, item.source_row_id, item.source_name,
+               item.value_json, input.snapshot_id, input.source_word_id
+        FROM lexical_evidence_items AS item
+        JOIN lexical_definition_inputs AS input ON input.input_id = item.input_id
+        WHERE item.evidence_role = 'example'
+        ORDER BY item.evidence_id
+        """).fetchall()
+    for (
+        evidence_id,
+        input_id,
+        source_row_id,
+        source_name,
+        value_json,
+        snapshot_id,
+        word_id,
+    ) in rows:
+        value = json.loads(str(value_json))
+        if not isinstance(value, dict) or value.get("kind") != "linked":
+            continue
+        encoded = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        value_sha256 = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        source_evidence_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                ":".join(
+                    (
+                        str(snapshot_id),
+                        "example",
+                        "legacy_lexical_evidence_items",
+                        str(source_row_id),
+                        value_sha256,
+                    )
+                ),
+            )
+        )
+        link_rank = int(value.get("link_rank", 1))
+        conn.execute(
+            """
+            INSERT INTO lexical_source_evidence (
+                source_evidence_id, snapshot_id, evidence_role, source_table,
+                source_row_id, source_name, value_json, value_sha256
+            ) VALUES (?, ?, 'example', 'legacy_lexical_evidence_items', ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
+            """,
+            [
+                source_evidence_id,
+                snapshot_id,
+                source_row_id,
+                source_name,
+                encoded,
+                value_sha256,
+            ],
+        )
+        existing_link = conn.execute(
+            """
+            SELECT link_rank FROM lexical_word_evidence_links
+            WHERE snapshot_id = ? AND source_word_id = ? AND source_evidence_id = ?
+            """,
+            [snapshot_id, word_id, source_evidence_id],
+        ).fetchone()
+        if existing_link is None:
+            conn.execute(
+                """
+                INSERT INTO lexical_word_evidence_links (
+                    snapshot_id, source_word_id, source_evidence_id, link_rank
+                ) VALUES (?, ?, ?, ?)
+                """,
+                [snapshot_id, word_id, source_evidence_id, link_rank],
+            )
+        elif int(existing_link[0]) > link_rank:
+            conn.execute(
+                """
+                UPDATE lexical_word_evidence_links SET link_rank = ?
+                WHERE snapshot_id = ? AND source_word_id = ? AND source_evidence_id = ?
+                """,
+                [link_rank, snapshot_id, word_id, source_evidence_id],
+            )
+        rankings = conn.execute(
+            """
+            SELECT validation_run_id, input_id, evidence_role, rank, selected, eligible, reason_json
+            FROM lexical_evidence_rankings WHERE evidence_id = ?
+            """,
+            [evidence_id],
+        ).fetchall()
+        for (
+            run_id,
+            ranked_input_id,
+            role,
+            rank,
+            selected,
+            eligible,
+            reason_json,
+        ) in rankings:
+            conn.execute(
+                """
+                INSERT INTO lexical_source_evidence_rankings (
+                    validation_run_id, input_id, source_evidence_id, evidence_role,
+                    rank, selected, eligible, reason_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """,
+                [
+                    run_id,
+                    ranked_input_id,
+                    source_evidence_id,
+                    role,
+                    rank,
+                    selected,
+                    eligible,
+                    reason_json,
+                ],
+            )
+
+
 def apply_migrations(conn: duckdb.DuckDBPyConnection) -> None:
     """Apply unapplied graph migrations in one transactional operation."""
     conn.execute("BEGIN TRANSACTION")
@@ -953,6 +1077,8 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> None:
                 _apply_migration_004(conn)
             elif version == 6:
                 _apply_migration_006(conn)
+            elif version == 9:
+                _apply_migration_009(conn)
             else:
                 conn.execute(sql)
             conn.execute(

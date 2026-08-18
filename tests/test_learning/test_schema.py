@@ -121,7 +121,7 @@ def test_migration_v3_preserves_the_existing_candidate_graph(monkeypatch):
 
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
     assert {
         table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         for table in (
@@ -213,7 +213,7 @@ def test_migration_v4_merges_duplicate_candidates_and_repoints_dependents(monkey
 
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
     assert conn.execute("SELECT candidate_id FROM content_candidates").fetchall() == [
         ("candidate-a",)
     ]
@@ -430,7 +430,7 @@ def test_migration_v2_quarantines_invalid_approved_sources_and_is_idempotent():
     ).fetchone() == ("quarantined",)
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
 
     apply_migrations(conn)
     assert conn.execute(

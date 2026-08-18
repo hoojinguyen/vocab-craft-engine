@@ -562,6 +562,18 @@ class SourceCatalog:
                 frequency_rank = _frozen_lexical_frequency_rank(
                     word.get("frequency_rank")
                 )
+                word_id = _positive_source_id(
+                    word.get(
+                        "source_row_id", word.get("legacy_word_id", word.get("id"))
+                    )
+                )
+                definition_id = _positive_source_id(
+                    definition.get("source_row_id", definition.get("id"))
+                )
+                source_definition_sha256 = hashlib.sha256(
+                    canonical_json(definition).encode("utf-8")
+                ).hexdigest()
+                input_key = f"{record.asset_id}:{snapshot_id}:{record.external_key}"
                 if record.asset_id not in approved_asset_ids:
                     approved_source = connection.execute(
                         """
@@ -580,6 +592,32 @@ class SourceCatalog:
                             "lexical definition record asset does not match source snapshot"
                         )
                     approved_asset_ids.add(record.asset_id)
+
+                legacy_input = connection.execute(
+                    """
+                    SELECT input.raw_record_id
+                    FROM lexical_definition_inputs AS input
+                    JOIN raw_reference_records AS raw
+                      ON raw.raw_record_id = input.raw_record_id
+                    WHERE input.snapshot_id = ?
+                      AND input.source_word_id = ?
+                      AND input.source_definition_id = ?
+                      AND input.source_definition_sha256 = ?
+                      AND raw.asset_id = ?
+                      AND raw.external_key = ?
+                    """,
+                    [
+                        snapshot_id,
+                        word_id,
+                        definition_id,
+                        source_definition_sha256,
+                        record.asset_id,
+                        record.external_key,
+                    ],
+                ).fetchone()
+                if legacy_input is not None:
+                    raw_record_ids.append(str(legacy_input[0]))
+                    continue
 
                 existing_raw = connection.execute(
                     """
@@ -627,18 +665,6 @@ class SourceCatalog:
                     raw_record_id = str(existing_raw[0])
                 raw_record_ids.append(raw_record_id)
 
-                word_id = _positive_source_id(
-                    word.get(
-                        "source_row_id", word.get("legacy_word_id", word.get("id"))
-                    )
-                )
-                definition_id = _positive_source_id(
-                    definition.get("source_row_id", definition.get("id"))
-                )
-                input_key = f"{record.asset_id}:{snapshot_id}:{record.external_key}"
-                source_definition_sha256 = hashlib.sha256(
-                    canonical_json(definition).encode("utf-8")
-                ).hexdigest()
                 existing_input = connection.execute(
                     """
                     SELECT input_id, raw_record_id, snapshot_id

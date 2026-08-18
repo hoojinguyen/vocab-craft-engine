@@ -277,6 +277,18 @@ class LexicalEvidenceRepository:
                    value_json, created_at
             FROM lexical_evidence_items
             WHERE input_id = ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM lexical_definition_inputs AS lexical_input
+                  JOIN lexical_word_evidence_links AS word_link
+                    ON word_link.snapshot_id = lexical_input.snapshot_id
+                   AND word_link.source_word_id = lexical_input.source_word_id
+                  JOIN lexical_source_evidence AS source_evidence
+                    ON source_evidence.source_evidence_id = word_link.source_evidence_id
+                  WHERE lexical_input.input_id = lexical_evidence_items.input_id
+                    AND lexical_evidence_items.evidence_role = 'example'
+                    AND source_evidence.value_sha256 = lexical_evidence_items.value_sha256
+              )
             ORDER BY CASE evidence_role
                        WHEN 'definition' THEN 1
                        WHEN 'translation' THEN 2
