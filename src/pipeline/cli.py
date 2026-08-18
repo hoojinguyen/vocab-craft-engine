@@ -139,6 +139,14 @@ def parse_arguments(args_list: list[str] | None = None):
     report_remediation.add_argument("--db-path")
     report_remediation.add_argument("--validation-run-id", required=True)
     report_remediation.add_argument("--output-dir", required=True)
+    export_verified_lexical = curriculum_subparsers.add_parser(
+        "export-verified-lexical",
+        help="Atomically publish a fully reviewed lexical dataset release",
+    )
+    export_verified_lexical.add_argument("--db-path")
+    export_verified_lexical.add_argument("--validation-run-id", required=True)
+    export_verified_lexical.add_argument("--version", required=True)
+    export_verified_lexical.add_argument("--output-dir", required=True)
     review_candidate = curriculum_subparsers.add_parser(
         "review-candidate", help="Record a human decision for a candidate"
     )

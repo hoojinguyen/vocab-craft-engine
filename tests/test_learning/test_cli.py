@@ -186,6 +186,14 @@ def test_lexical_53k_commands_parse_only_explicit_operator_inputs():
             "--output-dir",
             "data/processed/lexical-53k/run-1",
         ],
+        "export-verified-lexical": [
+            "--validation-run-id",
+            "run-1",
+            "--version",
+            "v1",
+            "--output-dir",
+            "data/output/lexical-releases/english_dataset_verified_v1",
+        ],
     }
 
     for command, command_args in commands.items():
@@ -209,6 +217,38 @@ def test_remediation_resume_cli_returns_blocked_contract_exit_code(tmp_path):
         )
         == 2
     )
+
+
+def test_verified_lexical_export_cli_requires_explicit_destination_and_prints_manifest(
+    graph_catalog, tmp_path, capsys
+):
+    from src.learning import cli
+    from tests.test_learning.test_verified_lexical_pack import (
+        seed_resolved_release_graph,
+    )
+
+    seeded = seed_resolved_release_graph(graph_catalog)
+    database_path = graph_catalog.store._db_path
+    graph_catalog.store.close()
+    destination = tmp_path / "english_dataset_verified_v1"
+
+    assert (
+        cli.run_curriculum_command(
+            [
+                "export-verified-lexical",
+                "--db-path",
+                str(database_path),
+                "--validation-run-id",
+                seeded["validation_run_id"],
+                "--version",
+                "v1",
+                "--output-dir",
+                str(destination),
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.strip() == str(destination / "manifest.json")
 
 
 def test_snapshot_source_cli_records_a_verified_local_snapshot(tmp_path: Path, capsys):

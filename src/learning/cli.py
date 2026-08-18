@@ -135,6 +135,20 @@ def run_parsed_curriculum_command(args: Any) -> int:
             print(report_path)
             print(quarantine.database_path)
             return 0
+        if command == "export-verified-lexical":
+            from src.learning.verified_lexical_exporter import (
+                VerifiedLexicalPackExporter,
+            )
+            from src.learning.verified_lexical_pack import VerifiedLexicalPackComposer
+
+            pack = VerifiedLexicalPackComposer(store).compose(
+                args.validation_run_id, args.version
+            )
+            result = VerifiedLexicalPackExporter(store).export(
+                pack, Path(args.output_dir)
+            )
+            print(result.manifest_path)
+            return 0
         if command == "review-candidate":
             revision_id = ContentRepository(store).review_candidate(
                 args.candidate_id,
