@@ -257,6 +257,9 @@ def test_migration_v9_normalizes_legacy_linked_examples_and_rankings(
         "SELECT source_row_id FROM lexical_source_evidence"
     ).fetchall() == [(99,)]
     assert conn.execute(
+        "SELECT source_table FROM lexical_source_evidence"
+    ).fetchall() == [("sentences",)]
+    assert conn.execute(
         "SELECT source_word_id, link_rank FROM lexical_word_evidence_links"
     ).fetchall() == [(10, 2)]
     assert conn.execute(

@@ -960,6 +960,7 @@ def _apply_migration_009(conn: duckdb.DuckDBPyConnection) -> None:
             "text_vi": value["text_vi"],
             "source": value.get("source"),
         }
+        source_table = str(value.get("source_table") or "sentences")
         encoded = json.dumps(
             normalized_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
@@ -971,7 +972,7 @@ def _apply_migration_009(conn: duckdb.DuckDBPyConnection) -> None:
                     (
                         str(snapshot_id),
                         "example",
-                        "legacy_lexical_evidence_items",
+                        source_table,
                         str(source_row_id),
                         value_sha256,
                     )
@@ -986,12 +987,13 @@ def _apply_migration_009(conn: duckdb.DuckDBPyConnection) -> None:
             INSERT INTO lexical_source_evidence (
                 source_evidence_id, snapshot_id, evidence_role, source_table,
                 source_row_id, source_name, value_json, value_sha256
-            ) VALUES (?, ?, 'example', 'legacy_lexical_evidence_items', ?, ?, ?, ?)
+            ) VALUES (?, ?, 'example', ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             [
                 source_evidence_id,
                 snapshot_id,
+                source_table,
                 source_row_id,
                 source_name,
                 encoded,
