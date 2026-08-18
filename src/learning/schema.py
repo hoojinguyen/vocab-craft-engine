@@ -23,6 +23,7 @@ GRAPH_TABLES: tuple[str, ...] = (
     "lexical_source_evidence",
     "lexical_word_evidence_links",
     "lexical_evidence_rankings",
+    "lexical_source_evidence_rankings",
     "lexical_input_canonical_map",
     "lexical_input_dispositions",
     "lexical_remediation_attempts",
@@ -353,6 +354,23 @@ CREATE INDEX IF NOT EXISTS lexical_word_evidence_links_lookup_idx
 ON lexical_word_evidence_links (snapshot_id, source_word_id, link_rank);
 """
 
+MIGRATION_008 = """
+CREATE TABLE IF NOT EXISTS lexical_source_evidence_rankings (
+    validation_run_id TEXT NOT NULL REFERENCES validation_runs(validation_run_id),
+    input_id TEXT NOT NULL REFERENCES lexical_definition_inputs(input_id),
+    source_evidence_id TEXT NOT NULL REFERENCES lexical_source_evidence(source_evidence_id),
+    evidence_role TEXT NOT NULL,
+    rank BIGINT NOT NULL CHECK (rank > 0),
+    selected BOOLEAN NOT NULL,
+    eligible BOOLEAN NOT NULL,
+    reason_json TEXT NOT NULL,
+    PRIMARY KEY(validation_run_id, input_id, source_evidence_id),
+    CHECK (evidence_role IN ('definition', 'translation', 'ipa', 'example'))
+);
+CREATE INDEX IF NOT EXISTS lexical_source_evidence_rankings_lookup_idx
+ON lexical_source_evidence_rankings (validation_run_id, input_id, evidence_role, rank);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -361,6 +379,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (5, MIGRATION_005),
     (6, MIGRATION_006),
     (7, MIGRATION_007),
+    (8, MIGRATION_008),
 ]
 
 _TABLE_COLUMNS: dict[str, tuple[str, ...]] = {

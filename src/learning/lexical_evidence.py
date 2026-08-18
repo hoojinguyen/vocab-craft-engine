@@ -7,6 +7,7 @@ which existing rows may support one source definition.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -89,11 +90,52 @@ class EvidenceSelection:
                 reason=item.reason,
             )
             for item in self.items
+            if not item.evidence.is_source_evidence
         ]
+
+    def source_rankings(self, validation_run_id: str) -> list[EvidenceRanking]:
+        """Persist only the source example selected for this input.
+
+        The complete inventory remains immutable in lexical_source_evidence and
+        lexical_word_evidence_links.  Storing every per-definition assessment
+        would recreate the 90M-row fan-out this normalization eliminates.
+        """
+        return [
+            EvidenceRanking(
+                validation_run_id=validation_run_id,
+                input_id=self.bundle.lexical_input.input_id,
+                evidence_id=item.evidence.evidence_id,
+                evidence_role=item.evidence.evidence_role,
+                rank=item.rank,
+                selected=item.selected,
+                eligible=item.eligible,
+                reason=item.reason,
+            )
+            for item in self.items
+            if item.evidence.is_source_evidence and item.selected
+        ]
+
+    def source_inventory(self) -> dict[str, dict[str, Any]]:
+        """Return a compact, deterministic audit handle for shared evidence."""
+        inventory: dict[str, dict[str, Any]] = {}
+        for role in EvidenceRole:
+            evidence_ids = [
+                item.evidence.evidence_id
+                for item in self.by_role(role)
+                if item.evidence.is_source_evidence
+            ]
+            if evidence_ids:
+                inventory[role.value] = {
+                    "count": len(evidence_ids),
+                    "fingerprint": hashlib.sha256(
+                        canonical_json(evidence_ids).encode("utf-8")
+                    ).hexdigest(),
+                }
+        return inventory
 
     def alternatives(self) -> list[dict[str, Any]]:
         """Return unselected evidence needed to reproduce a quarantine decision."""
-        return [
+        alternatives = [
             {
                 "evidence_id": item.evidence.evidence_id,
                 "evidence_role": item.evidence.evidence_role.value,
@@ -103,8 +145,27 @@ class EvidenceSelection:
                 "reason": item.reason,
             }
             for item in self.items
-            if not item.selected
+            if not item.selected and not item.evidence.is_source_evidence
         ]
+        for role in EvidenceRole:
+            evidence_ids = [
+                item.evidence.evidence_id
+                for item in self.by_role(role)
+                if item.evidence.is_source_evidence and not item.selected
+            ]
+            if evidence_ids:
+                alternatives.append(
+                    {
+                        "evidence_role": role.value,
+                        "inventory": "lexical_word_evidence_links",
+                        "source_word_id": self.bundle.lexical_input.source_word_id,
+                        "alternative_count": len(evidence_ids),
+                        "fingerprint": hashlib.sha256(
+                            canonical_json(evidence_ids).encode("utf-8")
+                        ).hexdigest(),
+                    }
+                )
+        return alternatives
 
 
 @dataclass(frozen=True)
@@ -211,6 +272,44 @@ class LexicalEvidenceRepository:
                 evidence_created_at,
             ) in evidence_rows
         )
+        source_example_rows = (
+            self.store.connection()
+            .execute(
+                """
+            SELECT source_evidence.source_evidence_id, source_evidence.source_row_id,
+                   source_evidence.source_name, source_evidence.value_json,
+                   source_evidence.created_at
+            FROM lexical_word_evidence_links AS word_link
+            JOIN lexical_source_evidence AS source_evidence
+              ON source_evidence.source_evidence_id = word_link.source_evidence_id
+            WHERE word_link.snapshot_id = ?
+              AND word_link.source_word_id = ?
+            ORDER BY word_link.link_rank, source_evidence.source_row_id,
+                     source_evidence.source_evidence_id
+            """,
+                [snapshot_id, source_word_id],
+            )
+            .fetchall()
+        )
+        virtual_examples = tuple(
+            EvidenceItem(
+                evidence_id=str(source_evidence_id),
+                input_id=str(stored_input_id),
+                evidence_role=EvidenceRole.EXAMPLE,
+                source_row_id=int(source_row_id),
+                source_name=str(source_name),
+                value=json.loads(str(value_json)),
+                created_at=created_at,
+                is_source_evidence=True,
+            )
+            for (
+                source_evidence_id,
+                source_row_id,
+                source_name,
+                value_json,
+                created_at,
+            ) in source_example_rows
+        )
         raw_payload = json.loads(str(raw_payload_json))
         if not isinstance(raw_payload, dict):
             raise TypeError("lexical raw payload must be an object")
@@ -218,7 +317,7 @@ class LexicalEvidenceRepository:
             lexical_input=lexical_input,
             source_asset_id=str(source_asset_id),
             raw_payload=raw_payload,
-            evidence=evidence,
+            evidence=(*evidence, *virtual_examples),
         )
 
     def list_input_ids(
@@ -354,6 +453,42 @@ class LexicalEvidenceRepository:
                     rank, selected, eligible, reason_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(validation_run_id, input_id, evidence_id) DO UPDATE SET
+                    evidence_role = excluded.evidence_role,
+                    rank = excluded.rank,
+                    selected = excluded.selected,
+                    eligible = excluded.eligible,
+                    reason_json = excluded.reason_json
+                """,
+                [
+                    (
+                        ranking.validation_run_id,
+                        ranking.input_id,
+                        ranking.evidence_id,
+                        ranking.evidence_role.value,
+                        ranking.rank,
+                        ranking.selected,
+                        ranking.eligible,
+                        ranking.reason_json,
+                    )
+                    for ranking in rankings
+                ],
+            )
+
+    def upsert_source_rankings(
+        self, validation_run_id: str, rankings: list[EvidenceRanking]
+    ) -> None:
+        if not rankings:
+            return
+        if any(ranking.validation_run_id != validation_run_id for ranking in rankings):
+            raise ValueError("rankings must belong to one validation run")
+        with self.store.transaction() as connection:
+            connection.executemany(
+                """
+                INSERT INTO lexical_source_evidence_rankings (
+                    validation_run_id, input_id, source_evidence_id, evidence_role,
+                    rank, selected, eligible, reason_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(validation_run_id, input_id, source_evidence_id) DO UPDATE SET
                     evidence_role = excluded.evidence_role,
                     rank = excluded.rank,
                     selected = excluded.selected,

@@ -27,9 +27,10 @@ cardinality is small and their identity is definition-specific.
   repository join. It persists selected evidence, disposition, rationale, and
   the deterministic policy fingerprint. Full alternatives remain queryable
   from normalized evidence rather than being duplicated into ranking rows.
-- `lexical_evidence_rankings` remains compatible for local evidence and
-  selected virtual source evidence. It is deliberately not a 90-million-row
-  duplicate of immutable link facts.
+- `lexical_evidence_rankings` records local input evidence; the separate
+  `lexical_source_evidence_rankings` records only selected virtual source
+  evidence. Neither becomes a 90-million-row duplicate of immutable link
+  facts.
 - The source contract is manifest-driven: the imported count is recorded in
   the immutable input manifest. For the current materialized snapshot the
   observed all-rank count is 57,051; no pre-import filtering is introduced.

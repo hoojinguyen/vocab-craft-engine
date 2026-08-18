@@ -10,6 +10,7 @@ LEXICAL_TABLES = {
     "lexical_definition_inputs",
     "lexical_evidence_items",
     "lexical_evidence_rankings",
+    "lexical_source_evidence_rankings",
     "lexical_input_canonical_map",
     "lexical_input_dispositions",
     "lexical_remediation_attempts",
@@ -117,15 +118,15 @@ def _insert_lexical_dependents(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def test_fresh_v6_graph_persists_the_lexical_evidence_graph():
+def test_fresh_v8_graph_persists_the_lexical_evidence_graph():
     conn = duckdb.connect(":memory:")
     apply_migrations(conn)
 
-    assert MIGRATIONS[-1][0] == 6
+    assert MIGRATIONS[-1][0] == 8
     assert LEXICAL_TABLES.issubset(GRAPH_TABLES)
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
     assert {
         row[1]
         for row in conn.execute(
@@ -183,7 +184,7 @@ def test_migration_v5_to_v6_preserves_inputs_and_enforces_frozen_rank(
     ).fetchall() == [("snapshot-1", "lexical-v1")]
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
     assert conn.execute(
         "SELECT input_key FROM lexical_definition_inputs"
     ).fetchall() == [("source-1:snapshot-1:external-1",)]
@@ -193,10 +194,20 @@ def test_migration_v5_to_v6_preserves_inputs_and_enforces_frozen_rank(
     assert conn.execute(
         "SELECT last_input_key FROM lexical_run_checkpoints"
     ).fetchall() == [("source-1:snapshot-1:external-1",)]
-    assert {
+    counts = {
         table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         for table in LEXICAL_TABLES
-    } == {table: 1 for table in LEXICAL_TABLES}
+    }
+    assert counts["lexical_source_evidence_rankings"] == 0
+    assert {
+        table: count
+        for table, count in counts.items()
+        if table != "lexical_source_evidence_rankings"
+    } == {
+        table: 1
+        for table in LEXICAL_TABLES
+        if table != "lexical_source_evidence_rankings"
+    }
     with pytest.raises(duckdb.ConstraintException):
         conn.execute(
             """

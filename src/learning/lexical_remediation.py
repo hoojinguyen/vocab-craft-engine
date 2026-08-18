@@ -142,6 +142,9 @@ class LexicalRemediationService:
         self.evidence_repository.upsert_rankings(
             validation_run_id, selection.rankings(validation_run_id)
         )
+        self.evidence_repository.upsert_source_rankings(
+            validation_run_id, selection.source_rankings(validation_run_id)
+        )
         payload = self._candidate_payload(selection)
         candidate_id = self.repository.create_candidate(
             bundle.lexical_input.raw_record_id,
@@ -183,6 +186,7 @@ class LexicalRemediationService:
             "structural_failure_codes": [
                 failure.code for failure in structural.failures
             ],
+            "source_evidence_inventory": selection.source_inventory(),
         }
         disposition = InputDisposition(
             validation_run_id=validation_run_id,
