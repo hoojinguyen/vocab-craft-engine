@@ -20,6 +20,8 @@ GRAPH_TABLES: tuple[str, ...] = (
     "candidate_gate_results",
     "lexical_definition_inputs",
     "lexical_evidence_items",
+    "lexical_source_evidence",
+    "lexical_word_evidence_links",
     "lexical_evidence_rankings",
     "lexical_input_canonical_map",
     "lexical_input_dispositions",
@@ -323,6 +325,34 @@ MIGRATION_006 = MIGRATION_005.replace(
     "frequency_rank BIGINT NOT NULL CHECK (frequency_rank BETWEEN 1 AND 3500),",
 )
 
+MIGRATION_007 = """
+CREATE TABLE IF NOT EXISTS lexical_source_evidence (
+    source_evidence_id TEXT PRIMARY KEY,
+    snapshot_id TEXT NOT NULL REFERENCES source_snapshots(snapshot_id),
+    evidence_role TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    source_row_id BIGINT NOT NULL CHECK (source_row_id > 0),
+    source_name TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    value_sha256 TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    UNIQUE(snapshot_id, evidence_role, source_table, source_row_id, value_sha256),
+    CHECK (evidence_role IN ('definition', 'translation', 'ipa', 'example'))
+);
+CREATE TABLE IF NOT EXISTS lexical_word_evidence_links (
+    snapshot_id TEXT NOT NULL REFERENCES source_snapshots(snapshot_id),
+    source_word_id BIGINT NOT NULL CHECK (source_word_id > 0),
+    source_evidence_id TEXT NOT NULL REFERENCES lexical_source_evidence(source_evidence_id),
+    link_rank BIGINT NOT NULL CHECK (link_rank > 0),
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY(snapshot_id, source_word_id, source_evidence_id)
+);
+CREATE INDEX IF NOT EXISTS lexical_source_evidence_lookup_idx
+ON lexical_source_evidence (snapshot_id, evidence_role, source_row_id);
+CREATE INDEX IF NOT EXISTS lexical_word_evidence_links_lookup_idx
+ON lexical_word_evidence_links (snapshot_id, source_word_id, link_rank);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -330,6 +360,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (4, MIGRATION_004),
     (5, MIGRATION_005),
     (6, MIGRATION_006),
+    (7, MIGRATION_007),
 ]
 
 _TABLE_COLUMNS: dict[str, tuple[str, ...]] = {

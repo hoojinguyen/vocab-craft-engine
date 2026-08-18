@@ -121,7 +121,7 @@ def test_migration_v3_preserves_the_existing_candidate_graph(monkeypatch):
 
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
     assert {
         table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         for table in (
@@ -213,7 +213,7 @@ def test_migration_v4_merges_duplicate_candidates_and_repoints_dependents(monkey
 
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
     assert conn.execute("SELECT candidate_id FROM content_candidates").fetchall() == [
         ("candidate-a",)
     ]
@@ -430,7 +430,7 @@ def test_migration_v2_quarantines_invalid_approved_sources_and_is_idempotent():
     ).fetchone() == ("quarantined",)
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
 
     apply_migrations(conn)
     assert conn.execute(
@@ -549,3 +549,19 @@ def test_migration_v2_enforces_composite_review_foreign_key():
         "INSERT INTO content_reviews VALUES (?, ?, NULL, ?, ?, ?, current_timestamp)",
         ["review-null", "candidate-b", "rejected", "reviewer", "no revision"],
     )
+
+
+def test_migration_v7_creates_normalized_source_evidence_tables():
+    conn = duckdb.connect(":memory:")
+    apply_migrations(conn)
+
+    assert conn.execute(
+        """
+        SELECT table_name FROM information_schema.tables
+        WHERE table_name IN ('lexical_source_evidence', 'lexical_word_evidence_links')
+        ORDER BY table_name
+        """
+    ).fetchall() == [
+        ("lexical_source_evidence",),
+        ("lexical_word_evidence_links",),
+    ]

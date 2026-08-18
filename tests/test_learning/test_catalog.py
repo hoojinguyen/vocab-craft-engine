@@ -10,7 +10,7 @@ import duckdb
 import pytest
 
 from src.learning import schema
-from src.learning.catalog import RawRecordInput, SourceCatalog
+from src.learning.catalog import RawRecordInput, SourceCatalog, SourceEvidenceLinkInput
 from src.learning.models import ReviewState, SourceAssetInput, canonical_json
 from src.learning.store import LearningGraphStore
 
@@ -586,3 +586,68 @@ def test_concurrent_raw_snapshot_recording_returns_one_record_id(
         .fetchall()
         == [(results[0],)]
     )
+
+
+def test_append_source_evidence_links_deduplicates_sentence_value_and_word_link(
+    catalog: SourceCatalog, tmp_path: Path
+):
+    source_file = tmp_path / "materialized.db"
+    source_file.write_bytes(b"materialized SQLite")
+    source = _approved_source().model_copy(
+        update={"sha256": hashlib.sha256(source_file.read_bytes()).hexdigest()}
+    )
+    catalog.register_source(source)
+    snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, source_file, datetime(2026, 8, 18, tzinfo=UTC)
+    )
+    link = SourceEvidenceLinkInput(
+        snapshot_id=snapshot_id,
+        source_word_id=10,
+        source_row_id=30,
+        source_name="tatoeba",
+        source_table="sentences",
+        link_rank=2,
+        value={
+            "sentence_id": 30,
+            "text_en": "Read this book.",
+            "text_vi": "Hãy đọc quyển sách này.",
+            "source": "tatoeba",
+        },
+    )
+
+    first_ids = catalog.append_source_example_links([link])
+    second_ids = catalog.append_source_example_links([link])
+
+    assert second_ids == first_ids
+    assert catalog.store.fetch_value("SELECT count(*) FROM lexical_source_evidence") == 1
+    assert catalog.store.fetch_value("SELECT count(*) FROM lexical_word_evidence_links") == 1
+
+
+@pytest.mark.parametrize("source_word_id,source_row_id", [(0, 30), (10, -1)])
+def test_append_source_evidence_links_rejects_non_positive_source_ids(
+    catalog: SourceCatalog, tmp_path: Path, source_word_id: int, source_row_id: int
+):
+    source_file = tmp_path / "materialized.db"
+    source_file.write_bytes(b"materialized SQLite")
+    source = _approved_source().model_copy(
+        update={"sha256": hashlib.sha256(source_file.read_bytes()).hexdigest()}
+    )
+    catalog.register_source(source)
+    snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, source_file, datetime(2026, 8, 18, tzinfo=UTC)
+    )
+
+    with pytest.raises(ValueError, match="positive"):
+        catalog.append_source_example_links(
+            [
+                SourceEvidenceLinkInput(
+                    snapshot_id=snapshot_id,
+                    source_word_id=source_word_id,
+                    source_row_id=source_row_id,
+                    source_name="tatoeba",
+                    source_table="sentences",
+                    link_rank=1,
+                    value={"text_en": "Read.", "text_vi": "Đọc."},
+                )
+            ]
+        )
