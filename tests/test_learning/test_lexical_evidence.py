@@ -250,6 +250,16 @@ def test_inputs_share_complete_normalized_word_example_inventory(
     assert source_inventory[0]["source_word_id"] == 10
     assert source_inventory[0]["alternative_count"] == 4
     assert len(source_inventory[0]["fingerprint"]) == 64
+    full_selection = LexicalEvidenceSelector().select(
+        repository.get_input(first_input_id, include_source_examples=True)
+    )
+    streamed_bundle = repository.get_input(
+        first_input_id, include_source_examples=False
+    )
+    streamed_selection = LexicalEvidenceSelector().select_streaming(
+        streamed_bundle, repository.iter_source_examples(streamed_bundle)
+    )
+    assert streamed_selection.source_inventory() == full_selection.source_inventory()
 
 
 def test_virtual_examples_preserve_word_sentence_link_rank(

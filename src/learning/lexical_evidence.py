@@ -137,9 +137,9 @@ class EvidenceSelection:
         inventory: dict[str, dict[str, Any]] = {}
         for role in EvidenceRole:
             evidence_ids = [
-                item.evidence.evidence_id
-                for item in self.by_role(role)
-                if item.evidence.is_source_evidence
+                evidence.evidence_id
+                for evidence in self.bundle.evidence
+                if evidence.is_source_evidence and evidence.evidence_role is role
             ]
             if evidence_ids:
                 inventory[role.value] = {
@@ -182,11 +182,18 @@ class EvidenceSelection:
                     }
                 )
             return alternatives
+        selected_source_ids = {
+            item.evidence.evidence_id
+            for item in self.items
+            if item.evidence.is_source_evidence and item.selected
+        }
         for role in EvidenceRole:
             evidence_ids = [
-                item.evidence.evidence_id
-                for item in self.by_role(role)
-                if item.evidence.is_source_evidence and not item.selected
+                evidence.evidence_id
+                for evidence in self.bundle.evidence
+                if evidence.is_source_evidence
+                and evidence.evidence_role is role
+                and evidence.evidence_id not in selected_source_ids
             ]
             if evidence_ids:
                 alternatives.append(
