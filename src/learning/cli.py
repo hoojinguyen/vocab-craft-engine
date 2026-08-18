@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from config.settings import LEARNING_GRAPH_DUCKDB_PATH
 from src.learning.catalog import SourceCatalog
 from src.learning.composer import CurriculumComposer
 from src.learning.exporter import CurriculumPackExporter
+from src.learning.lexical_audit import LexicalAuditService
 from src.learning.models import SourceAssetInput
 from src.learning.reference_importer import LegacyReferenceImporter
 from src.learning.repository import ContentRepository
@@ -43,6 +45,60 @@ def run_parsed_curriculum_command(args: Any) -> int:
             )
             print(imported)
             return 0
+        if command == "snapshot-source":
+            snapshot_id = SourceCatalog(store).record_source_snapshot(
+                args.asset_id,
+                Path(args.local_path),
+                datetime.fromisoformat(args.retrieved_at),
+            )
+            print(snapshot_id)
+            return 0
+        if command == "snapshot-lexical-reference":
+            from src.learning.sqlite_reference_importer import (
+                SQLiteLexicalReferenceImporter,
+            )
+
+            report = SQLiteLexicalReferenceImporter(
+                SourceCatalog(store)
+            ).import_vertical_slice(
+                Path(args.reference_db), args.snapshot_id, args.import_run_id
+            )
+            print(report.imported_or_existing_raw_records)
+            return 0
+        if command == "audit-lexical":
+            report = LexicalAuditService(store).audit(args.snapshot_id)
+            print(report.validation_run_id)
+            return 0
+        if command == "review-candidate":
+            revision_id = ContentRepository(store).review_candidate(
+                args.candidate_id,
+                args.decision,
+                args.reviewer_id,
+                args.rationale,
+            )
+            if revision_id is not None:
+                print(revision_id)
+            return 0
+        if command == "report-lexical":
+            _write_lexical_report(
+                ContentRepository(store), args.validation_run_id, Path(args.output_path)
+            )
+            print(args.output_path)
+            return 0
+        if command == "compose-lexical":
+            from src.learning.lexical_exporter import LexicalPackExporter
+            from src.learning.lexical_pack import LexicalPackComposer
+
+            repository = ContentRepository(store)
+            pack = LexicalPackComposer(repository).compose(
+                args.validation_run_id,
+                args.pack_id,
+                args.version,
+                args.cefr_level,
+            )
+            result = LexicalPackExporter().export(pack, Path(args.output_dir))
+            print(result.manifest_path)
+            return 0
         if command == "compose":
             repository = ContentRepository(store)
             module_revision_id = repository.get_latest_approved_revision(args.module)
@@ -71,3 +127,67 @@ def _load_source_manifest(path: Path) -> SourceAssetInput:
     if isinstance(asset_version, (date, datetime)):
         document = {**document, "asset_version": asset_version.isoformat()}
     return SourceAssetInput.model_validate(document)
+
+
+def _write_lexical_report(
+    repository: ContentRepository, validation_run_id: str, output_path: Path
+) -> None:
+    rows = repository.candidates_for_validation_run(validation_run_id)
+    state_counts: dict[str, int] = {}
+    for row in rows:
+        state = str(row["state"])
+        state_counts[state] = state_counts.get(state, 0) + 1
+    gate_rows = (
+        repository.store.connection()
+        .execute(
+            """
+        SELECT gate_code, count(*)
+        FROM candidate_gate_results
+        WHERE validation_run_id = ?
+        GROUP BY gate_code
+        ORDER BY gate_code
+        """,
+            [validation_run_id],
+        )
+        .fetchall()
+    )
+    candidates_needing_review = []
+    for row in rows:
+        if row["state"] not in {"candidate", "validated"}:
+            continue
+        gate_codes = (
+            repository.store.connection()
+            .execute(
+                """
+            SELECT gate_code
+            FROM candidate_gate_results
+            WHERE validation_run_id = ? AND candidate_id = ? AND NOT passed
+            ORDER BY gate_code
+            """,
+                [validation_run_id, row["candidate_id"]],
+            )
+            .fetchall()
+        )
+        candidates_needing_review.append(
+            {
+                "candidate_id": row["candidate_id"],
+                "state": row["state"],
+                "content_type": row["content_type"],
+                "payload": repository.candidate_payload(str(row["candidate_id"])),
+                "failed_gate_codes": [str(code) for (code,) in gate_codes],
+            }
+        )
+    document = {
+        "validation_run_id": validation_run_id,
+        "candidate_state_counts": dict(sorted(state_counts.items())),
+        "gate_code_counts": {str(code): int(count) for code, count in gate_rows},
+        "candidates_needing_review": sorted(
+            candidates_needing_review, key=lambda item: str(item["candidate_id"])
+        ),
+    }
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )

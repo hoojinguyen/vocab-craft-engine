@@ -1,12 +1,52 @@
+from datetime import UTC, datetime
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from src.learning.models import (
+    CandidateState,
     ContentRevisionInput,
     ContentType,
     ReviewState,
     SourceAssetInput,
+    SourceSnapshotInput,
 )
+
+
+def test_candidate_state_is_separate_from_review_state():
+    assert tuple(CandidateState) == (
+        CandidateState.CANDIDATE,
+        CandidateState.VALIDATED,
+        CandidateState.APPROVED,
+        CandidateState.REJECTED,
+        CandidateState.QUARANTINED,
+    )
+    assert "validated" not in {state.value for state in ReviewState}
+
+
+def test_source_snapshot_input_validates_immutable_provenance_fields():
+    retrieved_at = datetime(2026, 8, 17, 0, 0, tzinfo=UTC)
+    source_snapshot = SourceSnapshotInput(
+        asset_id="fixture-source",
+        local_path=Path("data/raw/reference.db"),
+        retrieved_at=retrieved_at,
+        file_sha256="a" * 64,
+    )
+
+    assert source_snapshot.local_path == Path("data/raw/reference.db")
+    assert source_snapshot.retrieved_at == retrieved_at
+
+    with pytest.raises(ValidationError):
+        source_snapshot.file_sha256 = "A" * 64
+
+    with pytest.raises(ValidationError):
+        SourceSnapshotInput(
+            asset_id="NO",
+            local_path=Path("data/raw/reference.db"),
+            retrieved_at=retrieved_at,
+            file_sha256="A" * 64,
+        )
 
 
 def test_source_asset_requires_license_and_attribution_for_approval():

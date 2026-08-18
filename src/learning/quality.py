@@ -1,7 +1,38 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+_SENSE_LEMMA_PATTERN = re.compile(r"^[a-z]+(?:-[a-z]+)*$")
+_SENSE_PARTS_OF_SPEECH = frozenset(
+    {
+        "noun",
+        "verb",
+        "adj",
+        "adv",
+        "prep",
+        "pron",
+        "det",
+        "conj",
+        "intj",
+        "article",
+        "num",
+    }
+)
+
+
+def cefr_for_rank(frequency_rank: object) -> str | None:
+    """Return the fixed lexical CEFR band for a valid frequency rank."""
+    if isinstance(frequency_rank, bool) or not isinstance(frequency_rank, int):
+        return None
+    if 1 <= frequency_rank <= 500:
+        return "A1"
+    if 501 <= frequency_rank <= 1500:
+        return "A2"
+    if 1501 <= frequency_rank <= 3500:
+        return "B1"
+    return None
 
 
 @dataclass(frozen=True)
@@ -27,21 +58,33 @@ class QualityGate:
     """Validate publishability of canonical learning content and graph semantics."""
 
     def validate_revision(self, revision: dict[str, Any]) -> GateReport:
-        report = GateReport()
         payload = revision.get("payload", {})
         revision_id = revision.get("revision_id")
         content_type = revision.get("content_type", "unknown")
+        report = self.validate_payload(content_type, payload, revision_id)
         if revision.get("review_state") != "approved":
-            report.add(
-                "revision.not_approved",
-                "Only approved revisions may be published",
-                revision_id,
+            report.failures.insert(
+                0,
+                GateFailure(
+                    "revision.not_approved",
+                    "Only approved revisions may be published",
+                    revision_id,
+                ),
             )
+        return report
+
+    def validate_payload(
+        self,
+        content_type: str,
+        payload: dict[str, Any],
+        revision_id: str | None = None,
+    ) -> GateReport:
+        """Validate a payload without requiring an approved content revision."""
+        report = GateReport()
         if not payload.get("stable_key"):
             report.add(
                 "revision.stable_key_missing", "A stable_key is required", revision_id
             )
-
         validator = getattr(self, f"_validate_{content_type}", None)
         if validator is not None:
             validator(payload, report, revision_id)
@@ -131,6 +174,101 @@ class QualityGate:
             report.add(
                 "lexeme.ipa_unverified",
                 "IPA requires a trusted source, confidence, and verified variant status",
+                revision_id,
+            )
+
+    def _validate_sense(
+        self, payload: dict[str, Any], report: GateReport, revision_id: str | None
+    ) -> None:
+        lemma = payload.get("lemma")
+        if not isinstance(lemma, str) or _SENSE_LEMMA_PATTERN.fullmatch(lemma) is None:
+            report.add(
+                "sense.lemma_invalid",
+                "A sense requires a normalized single-word lemma",
+                revision_id,
+            )
+
+        if payload.get("pos") not in _SENSE_PARTS_OF_SPEECH:
+            report.add(
+                "sense.pos_invalid",
+                "A sense requires a supported lexical part of speech",
+                revision_id,
+            )
+
+        expected_cefr = cefr_for_rank(payload.get("frequency_rank"))
+        if expected_cefr is None:
+            report.add(
+                "sense.frequency_rank_invalid",
+                "A sense frequency rank must be between 1 and 3500",
+                revision_id,
+            )
+        elif payload.get("cefr_level") != expected_cefr:
+            report.add(
+                "sense.cefr_mismatch",
+                "A sense CEFR level must match its frequency rank",
+                revision_id,
+            )
+
+        definition_en = payload.get("definition_en")
+        if not self._nonblank_text(definition_en):
+            report.add(
+                "sense.definition_missing",
+                "A sense requires an English definition",
+                revision_id,
+            )
+
+        definition_vi = payload.get("definition_vi")
+        if not self._nonblank_text(definition_vi):
+            report.add(
+                "sense.translation_missing",
+                "A sense requires a Vietnamese translation",
+                revision_id,
+            )
+        elif str(definition_vi).lstrip().casefold().startswith("[vi]"):
+            report.add(
+                "sense.translation_placeholder",
+                "A sense translation cannot use a placeholder",
+                revision_id,
+            )
+        elif self._nonblank_text(definition_en) and (
+            self._normalized_text(definition_vi) == self._normalized_text(definition_en)
+        ):
+            report.add(
+                "sense.translation_passthrough",
+                "A sense translation cannot repeat the English definition",
+                revision_id,
+            )
+
+        has_ipa = self._nonblank_text(payload.get("ipa_us")) or self._nonblank_text(
+            payload.get("ipa_uk")
+        )
+        if not has_ipa:
+            report.add(
+                "sense.ipa_missing",
+                "A sense requires at least one IPA variant",
+                revision_id,
+            )
+        elif not (
+            self._nonblank_text(payload.get("ipa_source"))
+            and self._minimum_score(payload.get("ipa_confidence"), 0.8)
+        ):
+            report.add(
+                "sense.ipa_unverified",
+                "A sense IPA requires a source and confidence >= 0.8",
+                revision_id,
+            )
+
+        examples = payload.get("examples")
+        if not isinstance(examples, list) or not examples:
+            report.add(
+                "sense.example_missing",
+                "A sense requires at least one bilingual example",
+                revision_id,
+            )
+        elif any(not self._example_is_aligned(example) for example in examples):
+            report.add(
+                "sense.example_alignment_invalid",
+                "Every sense example must be aligned and sourced",
                 revision_id,
             )
 
@@ -428,3 +566,31 @@ class QualityGate:
             and not isinstance(value, bool)
             and value >= threshold
         )
+
+    @staticmethod
+    def _nonblank_text(value: object) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    @staticmethod
+    def _normalized_text(value: object) -> str:
+        return " ".join(str(value).casefold().split())
+
+    @classmethod
+    def _example_is_aligned(cls, example: object) -> bool:
+        if not isinstance(example, dict):
+            return False
+        text_en = example.get("text_en")
+        text_vi = example.get("text_vi")
+        source = example.get("source")
+        if not (
+            cls._nonblank_text(text_en)
+            and cls._nonblank_text(text_vi)
+            and cls._nonblank_text(source)
+        ):
+            return False
+        normalized_en = cls._normalized_text(text_en)
+        normalized_vi = cls._normalized_text(text_vi)
+        if normalized_en == normalized_vi:
+            return False
+        length_ratio = len(normalized_en) / len(normalized_vi)
+        return 0.25 <= length_ratio <= 4.0
