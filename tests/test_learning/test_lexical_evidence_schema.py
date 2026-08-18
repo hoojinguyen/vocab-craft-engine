@@ -248,6 +248,71 @@ def test_lexical_evidence_tables_enforce_foreign_key_relationships():
 
 
 @pytest.mark.parametrize(
+    ("column_name", "value"),
+    [
+        ("source_word_id", None),
+        ("source_word_id", 0),
+        ("source_word_id", -1),
+        ("source_definition_id", None),
+        ("source_definition_id", 0),
+        ("source_definition_id", -1),
+    ],
+)
+def test_lexical_definition_inputs_require_positive_source_identifiers_in_sql(
+    column_name: str, value: int | None
+):
+    conn = duckdb.connect(":memory:")
+    apply_migrations(conn)
+    _seed_dependencies(conn)
+    input_values: dict[str, object] = {
+        "input_id": "invalid-input",
+        "snapshot_id": "snapshot-1",
+        "raw_record_id": "raw-1",
+        "source_word_id": 10,
+        "source_definition_id": 11,
+        "input_key": "lexical.book.noun.invalid",
+        "source_definition_sha256": "d" * 64,
+        "lemma": "book",
+        "pos": "noun",
+        "frequency_rank": 42,
+    }
+    input_values[column_name] = value
+
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute(
+            """
+            INSERT INTO lexical_definition_inputs (
+                input_id, snapshot_id, raw_record_id, source_word_id,
+                source_definition_id, input_key, source_definition_sha256, lemma,
+                pos, frequency_rank
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            list(input_values.values()),
+        )
+
+
+@pytest.mark.parametrize("source_row_id", [None, 0, -1])
+def test_lexical_evidence_items_require_positive_source_row_ids_in_sql(
+    source_row_id: int | None,
+):
+    conn = duckdb.connect(":memory:")
+    apply_migrations(conn)
+    _seed_dependencies(conn)
+    _insert_input(conn)
+
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute(
+            """
+            INSERT INTO lexical_evidence_items (
+                evidence_id, input_id, evidence_role, source_row_id, source_name,
+                value_json, value_sha256
+            ) VALUES ('invalid-evidence', 'input-1', 'definition', ?, 'source', '{}', ?)
+            """,
+            [source_row_id, "0" * 64],
+        )
+
+
+@pytest.mark.parametrize(
     ("table", "columns", "values"),
     [
         (
