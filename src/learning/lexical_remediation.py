@@ -96,7 +96,9 @@ class LexicalRemediationService:
                 self._complete_validation_run(run_id)
                 return self._report(run_id, snapshot_id, processed_count)
             for input_id in input_ids:
-                bundle = self.evidence_repository.get_input(input_id)
+                bundle = self.evidence_repository.get_input(
+                    input_id, include_source_examples=False
+                )
                 existing = self.evidence_repository.get_disposition(run_id, input_id)
                 if existing is None:
                     self._remediate(bundle, run_id, retry=False)
@@ -138,9 +140,14 @@ class LexicalRemediationService:
         *,
         retry: bool,
     ) -> InputDisposition:
-        selection = self.selector.select(bundle)
+        selection = self.selector.select_streaming(
+            bundle, self.evidence_repository.iter_source_examples(bundle)
+        )
         self.evidence_repository.upsert_rankings(
             validation_run_id, selection.rankings(validation_run_id)
+        )
+        self.evidence_repository.upsert_source_rankings(
+            validation_run_id, selection.source_rankings(validation_run_id)
         )
         payload = self._candidate_payload(selection)
         candidate_id = self.repository.create_candidate(
@@ -183,6 +190,7 @@ class LexicalRemediationService:
             "structural_failure_codes": [
                 failure.code for failure in structural.failures
             ],
+            "source_evidence_inventory": selection.source_inventory(),
         }
         disposition = InputDisposition(
             validation_run_id=validation_run_id,
@@ -332,9 +340,7 @@ class LexicalRemediationService:
             "selected_evidence_ids": [
                 item.evidence.evidence_id for item in selection.selected
             ],
-            "ranked_evidence_ids": [
-                item.evidence.evidence_id for item in selection.items
-            ],
+            "source_evidence_inventory": selection.source_inventory(),
             "source_failure_codes": list(selection.failure_codes),
         }
 

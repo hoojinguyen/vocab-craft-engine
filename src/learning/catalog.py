@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import duckdb
 
@@ -145,6 +145,19 @@ class RawRecordInput:
     import_run_id: str
 
 
+@dataclass(frozen=True)
+class SourceEvidenceLinkInput:
+    """One immutable source example and its word-level linkage."""
+
+    snapshot_id: str
+    source_word_id: int
+    source_row_id: int
+    source_name: str
+    source_table: str
+    link_rank: int
+    value: dict[str, Any]
+
+
 class SourceCatalog:
     """Register immutable source assets and their raw reference snapshots."""
 
@@ -154,6 +167,106 @@ class SourceCatalog:
     def register_source(self, source: SourceAssetInput) -> None:
         """Persist a source asset unless its asset ID has a conflicting checksum."""
         self._retry_catalog_write(lambda: self._register_source_once(source))
+
+    def append_source_example_links(
+        self, links: Sequence[SourceEvidenceLinkInput]
+    ) -> list[str]:
+        """Append snapshot-scoped example values and compact word links.
+
+        Values use deterministic IDs so retries can safely create the link
+        without looking up a generated identifier for every source sentence.
+        """
+        prepared: list[tuple[SourceEvidenceLinkInput, str, str, str]] = []
+        for link in links:
+            _positive_source_id(link.source_word_id)
+            source_row_id = _positive_source_id(link.source_row_id)
+            if not link.snapshot_id:
+                raise ValueError("source evidence requires a snapshot ID")
+            if not link.source_name.strip() or not link.source_table.strip():
+                raise ValueError("source evidence requires source metadata")
+            if int(link.link_rank) <= 0:
+                raise ValueError("source evidence link rank must be positive")
+            value_json = canonical_json(link.value)
+            value_sha256 = hashlib.sha256(value_json.encode("utf-8")).hexdigest()
+            source_evidence_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    ":".join(
+                        (
+                            link.snapshot_id,
+                            "example",
+                            link.source_table,
+                            str(source_row_id),
+                            value_sha256,
+                        )
+                    ),
+                )
+            )
+            prepared.append((link, value_json, value_sha256, source_evidence_id))
+        source_evidence_ids: list[str] = []
+        for start in range(0, len(prepared), _RAW_RECORD_BATCH_SIZE):
+            batch = prepared[start : start + _RAW_RECORD_BATCH_SIZE]
+            source_evidence_ids.extend(
+                self._retry_catalog_write(
+                    lambda batch=batch: self._append_source_example_links_once(batch)
+                )
+            )
+        return source_evidence_ids
+
+    def _append_source_example_links_once(
+        self,
+        links: list[tuple[SourceEvidenceLinkInput, str, str, str]],
+    ) -> list[str]:
+        with self.store.transaction() as connection:
+            snapshot_ids = {link.snapshot_id for link, _, _, _ in links}
+            for snapshot_id in snapshot_ids:
+                approved_snapshot = connection.execute(
+                    """
+                    SELECT 1
+                    FROM source_snapshots AS snapshot
+                    JOIN source_assets AS asset ON asset.asset_id = snapshot.asset_id
+                    WHERE snapshot.snapshot_id = ? AND asset.validation_status = ?
+                    """,
+                    [snapshot_id, ReviewState.APPROVED.value],
+                ).fetchone()
+                if approved_snapshot is None:
+                    raise ValueError(
+                        "source evidence requires an approved source snapshot"
+                    )
+            for link, value_json, value_sha256, source_evidence_id in links:
+                connection.execute(
+                    """
+                    INSERT INTO lexical_source_evidence (
+                        source_evidence_id, snapshot_id, evidence_role, source_table,
+                        source_row_id, source_name, value_json, value_sha256
+                    ) VALUES (?, ?, 'example', ?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    [
+                        source_evidence_id,
+                        link.snapshot_id,
+                        link.source_table,
+                        _positive_source_id(link.source_row_id),
+                        link.source_name,
+                        value_json,
+                        value_sha256,
+                    ],
+                )
+                connection.execute(
+                    """
+                    INSERT INTO lexical_word_evidence_links (
+                        snapshot_id, source_word_id, source_evidence_id, link_rank
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    [
+                        link.snapshot_id,
+                        _positive_source_id(link.source_word_id),
+                        source_evidence_id,
+                        int(link.link_rank),
+                    ],
+                )
+        return [source_evidence_id for _, _, _, source_evidence_id in links]
 
     def _register_source_once(self, source: SourceAssetInput) -> None:
         with self.store.transaction() as connection:
@@ -449,6 +562,18 @@ class SourceCatalog:
                 frequency_rank = _frozen_lexical_frequency_rank(
                     word.get("frequency_rank")
                 )
+                word_id = _positive_source_id(
+                    word.get(
+                        "source_row_id", word.get("legacy_word_id", word.get("id"))
+                    )
+                )
+                definition_id = _positive_source_id(
+                    definition.get("source_row_id", definition.get("id"))
+                )
+                source_definition_sha256 = hashlib.sha256(
+                    canonical_json(definition).encode("utf-8")
+                ).hexdigest()
+                input_key = f"{record.asset_id}:{snapshot_id}:{record.external_key}"
                 if record.asset_id not in approved_asset_ids:
                     approved_source = connection.execute(
                         """
@@ -467,6 +592,32 @@ class SourceCatalog:
                             "lexical definition record asset does not match source snapshot"
                         )
                     approved_asset_ids.add(record.asset_id)
+
+                legacy_input = connection.execute(
+                    """
+                    SELECT input.raw_record_id
+                    FROM lexical_definition_inputs AS input
+                    JOIN raw_reference_records AS raw
+                      ON raw.raw_record_id = input.raw_record_id
+                    WHERE input.snapshot_id = ?
+                      AND input.source_word_id = ?
+                      AND input.source_definition_id = ?
+                      AND input.source_definition_sha256 = ?
+                      AND raw.asset_id = ?
+                      AND raw.external_key = ?
+                    """,
+                    [
+                        snapshot_id,
+                        word_id,
+                        definition_id,
+                        source_definition_sha256,
+                        record.asset_id,
+                        record.external_key,
+                    ],
+                ).fetchone()
+                if legacy_input is not None:
+                    raw_record_ids.append(str(legacy_input[0]))
+                    continue
 
                 existing_raw = connection.execute(
                     """
@@ -514,18 +665,6 @@ class SourceCatalog:
                     raw_record_id = str(existing_raw[0])
                 raw_record_ids.append(raw_record_id)
 
-                word_id = _positive_source_id(
-                    word.get(
-                        "source_row_id", word.get("legacy_word_id", word.get("id"))
-                    )
-                )
-                definition_id = _positive_source_id(
-                    definition.get("source_row_id", definition.get("id"))
-                )
-                input_key = f"{record.asset_id}:{snapshot_id}:{record.external_key}"
-                source_definition_sha256 = hashlib.sha256(
-                    canonical_json(definition).encode("utf-8")
-                ).hexdigest()
                 existing_input = connection.execute(
                     """
                     SELECT input_id, raw_record_id, snapshot_id

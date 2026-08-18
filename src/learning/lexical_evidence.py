@@ -7,8 +7,10 @@ which existing rows may support one source definition.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -57,10 +59,19 @@ class RankedEvidence:
 
 
 @dataclass(frozen=True)
+class SourceExampleSummary:
+    count: int
+    fingerprint: str
+    all_lemma_missing: bool
+    all_pos_incompatible: bool
+
+
+@dataclass(frozen=True)
 class EvidenceSelection:
     bundle: LexicalEvidenceBundle
     items: tuple[RankedEvidence, ...]
     failures: tuple[SourceEvidenceFailure, ...]
+    source_example_summary: SourceExampleSummary | None = None
 
     @property
     def failure_codes(self) -> tuple[str, ...]:
@@ -89,11 +100,59 @@ class EvidenceSelection:
                 reason=item.reason,
             )
             for item in self.items
+            if not item.evidence.is_source_evidence
         ]
+
+    def source_rankings(self, validation_run_id: str) -> list[EvidenceRanking]:
+        """Persist only the source example selected for this input.
+
+        The complete inventory remains immutable in lexical_source_evidence and
+        lexical_word_evidence_links.  Storing every per-definition assessment
+        would recreate the 90M-row fan-out this normalization eliminates.
+        """
+        return [
+            EvidenceRanking(
+                validation_run_id=validation_run_id,
+                input_id=self.bundle.lexical_input.input_id,
+                evidence_id=item.evidence.evidence_id,
+                evidence_role=item.evidence.evidence_role,
+                rank=item.rank,
+                selected=item.selected,
+                eligible=item.eligible,
+                reason=item.reason,
+            )
+            for item in self.items
+            if item.evidence.is_source_evidence and item.selected
+        ]
+
+    def source_inventory(self) -> dict[str, dict[str, Any]]:
+        """Return a compact, deterministic audit handle for shared evidence."""
+        if self.source_example_summary is not None:
+            return {
+                "example": {
+                    "count": self.source_example_summary.count,
+                    "fingerprint": self.source_example_summary.fingerprint,
+                }
+            }
+        inventory: dict[str, dict[str, Any]] = {}
+        for role in EvidenceRole:
+            evidence_ids = [
+                evidence.evidence_id
+                for evidence in self.bundle.evidence
+                if evidence.is_source_evidence and evidence.evidence_role is role
+            ]
+            if evidence_ids:
+                inventory[role.value] = {
+                    "count": len(evidence_ids),
+                    "fingerprint": hashlib.sha256(
+                        canonical_json(evidence_ids).encode("utf-8")
+                    ).hexdigest(),
+                }
+        return inventory
 
     def alternatives(self) -> list[dict[str, Any]]:
         """Return unselected evidence needed to reproduce a quarantine decision."""
-        return [
+        alternatives = [
             {
                 "evidence_id": item.evidence.evidence_id,
                 "evidence_role": item.evidence.evidence_role.value,
@@ -103,8 +162,52 @@ class EvidenceSelection:
                 "reason": item.reason,
             }
             for item in self.items
-            if not item.selected
+            if not item.selected and not item.evidence.is_source_evidence
         ]
+        if self.source_example_summary is not None:
+            selected_source_count = sum(
+                1
+                for item in self.items
+                if item.evidence.is_source_evidence and item.selected
+            )
+            if self.source_example_summary.count > selected_source_count:
+                alternatives.append(
+                    {
+                        "evidence_role": "example",
+                        "inventory": "lexical_word_evidence_links",
+                        "source_word_id": self.bundle.lexical_input.source_word_id,
+                        "alternative_count": self.source_example_summary.count
+                        - selected_source_count,
+                        "fingerprint": self.source_example_summary.fingerprint,
+                    }
+                )
+            return alternatives
+        selected_source_ids = {
+            item.evidence.evidence_id
+            for item in self.items
+            if item.evidence.is_source_evidence and item.selected
+        }
+        for role in EvidenceRole:
+            evidence_ids = [
+                evidence.evidence_id
+                for evidence in self.bundle.evidence
+                if evidence.is_source_evidence
+                and evidence.evidence_role is role
+                and evidence.evidence_id not in selected_source_ids
+            ]
+            if evidence_ids:
+                alternatives.append(
+                    {
+                        "evidence_role": role.value,
+                        "inventory": "lexical_word_evidence_links",
+                        "source_word_id": self.bundle.lexical_input.source_word_id,
+                        "alternative_count": len(evidence_ids),
+                        "fingerprint": hashlib.sha256(
+                            canonical_json(evidence_ids).encode("utf-8")
+                        ).hexdigest(),
+                    }
+                )
+        return alternatives
 
 
 @dataclass(frozen=True)
@@ -122,7 +225,9 @@ class LexicalEvidenceRepository:
     def __init__(self, store: LearningGraphStore) -> None:
         self.store = store
 
-    def get_input(self, input_id: str) -> LexicalEvidenceBundle:
+    def get_input(
+        self, input_id: str, *, include_source_examples: bool = True
+    ) -> LexicalEvidenceBundle:
         row = (
             self.store.connection()
             .execute(
@@ -179,6 +284,18 @@ class LexicalEvidenceRepository:
                    value_json, created_at
             FROM lexical_evidence_items
             WHERE input_id = ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM lexical_definition_inputs AS lexical_input
+                  JOIN lexical_word_evidence_links AS word_link
+                    ON word_link.snapshot_id = lexical_input.snapshot_id
+                   AND word_link.source_word_id = lexical_input.source_word_id
+                  JOIN lexical_source_evidence AS source_evidence
+                    ON source_evidence.source_evidence_id = word_link.source_evidence_id
+                  WHERE lexical_input.input_id = lexical_evidence_items.input_id
+                    AND lexical_evidence_items.evidence_role = 'example'
+                    AND source_evidence.value_sha256 = lexical_evidence_items.value_sha256
+              )
             ORDER BY CASE evidence_role
                        WHEN 'definition' THEN 1
                        WHEN 'translation' THEN 2
@@ -211,6 +328,52 @@ class LexicalEvidenceRepository:
                 evidence_created_at,
             ) in evidence_rows
         )
+        source_example_rows = (
+            ()
+            if not include_source_examples
+            else (
+                self.store.connection()
+                .execute(
+                    """
+            SELECT source_evidence.source_evidence_id, source_evidence.source_row_id,
+                   source_evidence.source_name, source_evidence.value_json,
+                   source_evidence.created_at, word_link.link_rank
+            FROM lexical_word_evidence_links AS word_link
+            JOIN lexical_source_evidence AS source_evidence
+              ON source_evidence.source_evidence_id = word_link.source_evidence_id
+            WHERE word_link.snapshot_id = ?
+              AND word_link.source_word_id = ?
+            ORDER BY word_link.link_rank, source_evidence.source_row_id,
+                     source_evidence.source_evidence_id
+            """,
+                    [snapshot_id, source_word_id],
+                )
+                .fetchall()
+            )
+        )
+        virtual_examples = tuple(
+            EvidenceItem(
+                evidence_id=str(source_evidence_id),
+                input_id=str(stored_input_id),
+                evidence_role=EvidenceRole.EXAMPLE,
+                source_row_id=int(source_row_id),
+                source_name=str(source_name),
+                value={
+                    **json.loads(str(value_json)),
+                    "link_rank": int(link_rank),
+                },
+                created_at=created_at,
+                is_source_evidence=True,
+            )
+            for (
+                source_evidence_id,
+                source_row_id,
+                source_name,
+                value_json,
+                created_at,
+                link_rank,
+            ) in source_example_rows
+        )
         raw_payload = json.loads(str(raw_payload_json))
         if not isinstance(raw_payload, dict):
             raise TypeError("lexical raw payload must be an object")
@@ -218,8 +381,50 @@ class LexicalEvidenceRepository:
             lexical_input=lexical_input,
             source_asset_id=str(source_asset_id),
             raw_payload=raw_payload,
-            evidence=evidence,
+            evidence=(
+                (*evidence, *virtual_examples) if include_source_examples else evidence
+            ),
         )
+
+    def iter_source_examples(
+        self, bundle: LexicalEvidenceBundle, *, batch_size: int = 250
+    ) -> Iterator[EvidenceItem]:
+        """Yield shared examples in bounded database batches for remediation."""
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        cursor = self.store.connection().execute(
+            """
+            SELECT source_evidence.source_evidence_id, source_evidence.source_row_id,
+                   source_evidence.source_name, source_evidence.value_json,
+                   source_evidence.created_at, word_link.link_rank
+            FROM lexical_word_evidence_links AS word_link
+            JOIN lexical_source_evidence AS source_evidence
+              ON source_evidence.source_evidence_id = word_link.source_evidence_id
+            WHERE word_link.snapshot_id = ? AND word_link.source_word_id = ?
+            ORDER BY word_link.link_rank, source_evidence.source_row_id,
+                     source_evidence.source_evidence_id
+            """,
+            [bundle.lexical_input.snapshot_id, bundle.lexical_input.source_word_id],
+        )
+        while rows := cursor.fetchmany(batch_size):
+            for (
+                source_evidence_id,
+                source_row_id,
+                source_name,
+                value_json,
+                created_at,
+                link_rank,
+            ) in rows:
+                yield EvidenceItem(
+                    evidence_id=str(source_evidence_id),
+                    input_id=bundle.lexical_input.input_id,
+                    evidence_role=EvidenceRole.EXAMPLE,
+                    source_row_id=int(source_row_id),
+                    source_name=str(source_name),
+                    value={**json.loads(str(value_json)), "link_rank": int(link_rank)},
+                    created_at=created_at,
+                    is_source_evidence=True,
+                )
 
     def list_input_ids(
         self,
@@ -354,6 +559,70 @@ class LexicalEvidenceRepository:
                     rank, selected, eligible, reason_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(validation_run_id, input_id, evidence_id) DO UPDATE SET
+                    evidence_role = excluded.evidence_role,
+                    rank = excluded.rank,
+                    selected = excluded.selected,
+                    eligible = excluded.eligible,
+                    reason_json = excluded.reason_json
+                """,
+                [
+                    (
+                        ranking.validation_run_id,
+                        ranking.input_id,
+                        ranking.evidence_id,
+                        ranking.evidence_role.value,
+                        ranking.rank,
+                        ranking.selected,
+                        ranking.eligible,
+                        ranking.reason_json,
+                    )
+                    for ranking in rankings
+                ],
+            )
+
+    def upsert_source_rankings(
+        self, validation_run_id: str, rankings: list[EvidenceRanking]
+    ) -> None:
+        if not rankings:
+            return
+        if any(ranking.validation_run_id != validation_run_id for ranking in rankings):
+            raise ValueError("rankings must belong to one validation run")
+        with self.store.transaction() as connection:
+            for ranking in rankings:
+                linked = connection.execute(
+                    """
+                    SELECT 1
+                    FROM validation_runs AS run
+                    JOIN lexical_definition_inputs AS input
+                      ON input.snapshot_id = run.snapshot_id
+                    JOIN lexical_word_evidence_links AS word_link
+                      ON word_link.snapshot_id = input.snapshot_id
+                     AND word_link.source_word_id = input.source_word_id
+                    JOIN lexical_source_evidence AS source_evidence
+                      ON source_evidence.source_evidence_id = word_link.source_evidence_id
+                    WHERE run.validation_run_id = ?
+                      AND input.input_id = ?
+                      AND source_evidence.source_evidence_id = ?
+                      AND source_evidence.evidence_role = ?
+                    """,
+                    [
+                        validation_run_id,
+                        ranking.input_id,
+                        ranking.evidence_id,
+                        ranking.evidence_role.value,
+                    ],
+                ).fetchone()
+                if linked is None:
+                    raise ValueError(
+                        "source evidence ranking is not linked to lexical input"
+                    )
+            connection.executemany(
+                """
+                INSERT INTO lexical_source_evidence_rankings (
+                    validation_run_id, input_id, source_evidence_id, evidence_role,
+                    rank, selected, eligible, reason_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(validation_run_id, input_id, source_evidence_id) DO UPDATE SET
                     evidence_role = excluded.evidence_role,
                     rank = excluded.rank,
                     selected = excluded.selected,
@@ -728,6 +997,102 @@ class LexicalEvidenceSelector:
         failures = self._failures(bundle, tuple(ranked))
         return EvidenceSelection(bundle=bundle, items=tuple(ranked), failures=failures)
 
+    def select_streaming(
+        self,
+        bundle: LexicalEvidenceBundle,
+        source_examples: Iterator[EvidenceItem],
+    ) -> EvidenceSelection:
+        """Select shared examples without materializing a word's whole inventory."""
+        local = self.select(bundle)
+        hasher = hashlib.sha256()
+        hasher.update(b"[")
+        count = 0
+        all_lemma_missing = True
+        all_pos_incompatible = True
+        best: tuple[EvidenceItem, dict[str, Any]] | None = None
+        for evidence in source_examples:
+            assessed = self._assess(bundle, evidence)
+            count += 1
+            if count > 1:
+                hasher.update(b",")
+            hasher.update(canonical_json(evidence.evidence_id).encode("utf-8"))
+            all_lemma_missing = all_lemma_missing and (
+                assessed[1]["lemma_match"] == "missing"
+            )
+            all_pos_incompatible = all_pos_incompatible and not bool(
+                assessed[1]["pos_or_form_compatible"]
+            )
+            if assessed[1]["eligible"] and (
+                best is None
+                or self._sort_key(assessed[1], assessed[0])
+                < self._sort_key(best[1], best[0])
+            ):
+                best = assessed
+        hasher.update(b"]")
+        summary = SourceExampleSummary(
+            count=count,
+            fingerprint=hasher.hexdigest(),
+            all_lemma_missing=all_lemma_missing,
+            all_pos_incompatible=all_pos_incompatible,
+        )
+        ranked = list(local.items)
+        local_examples = [
+            item
+            for item in ranked
+            if item.evidence.evidence_role is EvidenceRole.EXAMPLE and item.selected
+        ]
+        if best is not None:
+            source_evidence, assessment = best
+            source_ranked = RankedEvidence(
+                evidence=source_evidence,
+                rank=1,
+                selected=True,
+                eligible=True,
+                reason=self._reason(source_evidence, assessment),
+            )
+            if local_examples and self._sort_key(
+                local_examples[0].reason, local_examples[0].evidence
+            ) <= self._sort_key(assessment, source_evidence):
+                source_ranked = RankedEvidence(
+                    evidence=source_evidence,
+                    rank=1,
+                    selected=False,
+                    eligible=True,
+                    reason=self._reason(source_evidence, assessment),
+                )
+            else:
+                ranked = [
+                    RankedEvidence(
+                        evidence=item.evidence,
+                        rank=item.rank,
+                        selected=False if item in local_examples else item.selected,
+                        eligible=item.eligible,
+                        reason=item.reason,
+                    )
+                    for item in ranked
+                ]
+            ranked.append(source_ranked)
+        failures = self._failures(bundle, tuple(ranked), summary)
+        return EvidenceSelection(
+            bundle=bundle,
+            items=tuple(ranked),
+            failures=failures,
+            source_example_summary=summary,
+        )
+
+    @staticmethod
+    def _reason(evidence: EvidenceItem, assessment: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "verified_provenance": assessment["verified_provenance"],
+            "lemma_match": assessment["lemma_match"],
+            "pos_or_form_compatible": assessment["pos_or_form_compatible"],
+            "translation_quality": assessment["translation_quality"],
+            "trusted_ipa": assessment["trusted_ipa"],
+            "source_row_id": evidence.source_row_id,
+            "semantic_compatible": assessment["semantic_compatible"],
+            "eligibility_reason": assessment["eligibility_reason"],
+        }
+
     def _assess(
         self, bundle: LexicalEvidenceBundle, evidence: EvidenceItem
     ) -> tuple[EvidenceItem, dict[str, Any]]:
@@ -843,7 +1208,10 @@ class LexicalEvidenceSelector:
         )
 
     def _failures(
-        self, bundle: LexicalEvidenceBundle, ranked: tuple[RankedEvidence, ...]
+        self,
+        bundle: LexicalEvidenceBundle,
+        ranked: tuple[RankedEvidence, ...],
+        source_example_summary: SourceExampleSummary | None = None,
     ) -> tuple[SourceEvidenceFailure, ...]:
         failures: list[SourceEvidenceFailure] = []
         selected = [item for item in ranked if item.selected]
@@ -869,18 +1237,44 @@ class LexicalEvidenceSelector:
         ]
         selected_examples = [item for item in examples if item.selected]
         if not selected_examples:
-            if examples and all(
-                item.reason["lemma_match"] == "missing" for item in examples
+            if (
+                source_example_summary is not None
+                and source_example_summary.count
+                and source_example_summary.all_lemma_missing
             ):
                 failures.append(
                     SourceEvidenceFailure(
                         "example.lemma_missing",
                         "No source example contains the lemma or a recognized inflection",
                         {
-                            "evidence_ids": [
-                                item.evidence.evidence_id for item in examples
-                            ]
+                            "source_evidence_count": source_example_summary.count,
+                            "source_evidence_fingerprint": source_example_summary.fingerprint,
                         },
+                    )
+                )
+            elif (
+                source_example_summary is not None
+                and source_example_summary.count
+                and source_example_summary.all_pos_incompatible
+            ):
+                failures.append(
+                    SourceEvidenceFailure(
+                        "example.pos_or_form_mismatch",
+                        "Source examples use a different part of speech or form",
+                        {
+                            "source_evidence_count": source_example_summary.count,
+                            "source_evidence_fingerprint": source_example_summary.fingerprint,
+                        },
+                    )
+                )
+            elif examples and all(
+                item.reason["lemma_match"] == "missing" for item in examples
+            ):
+                failures.append(
+                    SourceEvidenceFailure(
+                        "example.lemma_missing",
+                        "No source example contains the lemma or a recognized inflection",
+                        self._failure_evidence_details(examples),
                     )
                 )
             elif examples and all(
@@ -890,11 +1284,7 @@ class LexicalEvidenceSelector:
                     SourceEvidenceFailure(
                         "example.pos_or_form_mismatch",
                         "Source examples use a different part of speech or form",
-                        {
-                            "evidence_ids": [
-                                item.evidence.evidence_id for item in examples
-                            ]
-                        },
+                        self._failure_evidence_details(examples),
                     )
                 )
             else:
@@ -902,11 +1292,7 @@ class LexicalEvidenceSelector:
                     SourceEvidenceFailure(
                         "example.sense_unproven",
                         "No selected source example proves the imported definition's sense",
-                        {
-                            "evidence_ids": [
-                                item.evidence.evidence_id for item in examples
-                            ]
-                        },
+                        self._failure_evidence_details(examples),
                     )
                 )
 
@@ -992,6 +1378,29 @@ class LexicalEvidenceSelector:
                 )
             )
         return tuple(failures)
+
+    @staticmethod
+    def _failure_evidence_details(
+        items: list[RankedEvidence],
+    ) -> dict[str, Any]:
+        """Do not serialize the shared source inventory for every input."""
+        local_ids = [
+            item.evidence.evidence_id
+            for item in items
+            if not item.evidence.is_source_evidence
+        ]
+        source_ids = [
+            item.evidence.evidence_id
+            for item in items
+            if item.evidence.is_source_evidence
+        ]
+        details: dict[str, Any] = {"evidence_ids": local_ids}
+        if source_ids:
+            details["source_evidence_count"] = len(source_ids)
+            details["source_evidence_fingerprint"] = hashlib.sha256(
+                canonical_json(source_ids).encode("utf-8")
+            ).hexdigest()
+        return details
 
     @staticmethod
     def _has_conflict(

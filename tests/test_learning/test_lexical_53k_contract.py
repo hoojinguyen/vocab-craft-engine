@@ -112,10 +112,23 @@ def test_lexical_53k_contract_preserves_source_and_stops_before_approval(
     )
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    manifest = json.loads(
+        LexicalRunReporter(graph_catalog.store)
+        .write_input_manifest(materialized.snapshot_id, output_dir)
+        .read_text(encoding="utf-8")
+    )
     assert hashlib.sha256(reference_path.read_bytes()).hexdigest() == source_sha256
     assert reference_path.stat().st_mtime_ns == source_mtime_ns
     assert imported.eligible_definitions == 1
+    assert manifest["source_definition_count"] == imported.eligible_definitions
+    assert manifest["source_linked_example_count"] == imported.source_example_links
+    assert manifest["normalized_source_evidence_count"] == 1
+    assert manifest["normalized_word_evidence_link_count"] == 1
     assert report["input_total"] == imported.eligible_definitions
+    assert report["source_evidence_inventory"] == {
+        "normalized_source_evidence_count": 1,
+        "normalized_word_evidence_link_count": 1,
+    }
     assert report["input_total"] == sum(report["counts_by_state"].values())
     assert (
         graph_catalog.store.fetch_value(

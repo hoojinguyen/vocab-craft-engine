@@ -126,9 +126,13 @@ python main.py curriculum import-ranked-lexical-reference \
   --import-run-id 2026-08-18-lexical-53k
 ```
 
-Before remediation, require the manifest's `input_total` to be exactly
-`53,270` for the intended source. Do not continue on a lower count, a higher
-count, or an unexplained mismatch.
+Before remediation, reconcile the manifest's `input_total` with the exact
+definition count observed from the materialized snapshot. The current source
+snapshot contains 57,051 rank-1–3500 definitions (the earlier 53,270 figure
+was a planning estimate). Do not continue on a mismatch. Also retain
+`source_linked_example_count`, `normalized_source_evidence_count`, and
+`normalized_word_evidence_link_count`: they prove that all source links were
+imported once, without a per-definition text expansion.
 
 Run deterministic remediation and retain its printed validation-run ID:
 
@@ -196,8 +200,9 @@ are release prerequisites.
 - All quality gates pass.
 - SQLite `integrity_check` and `foreign_key_check` pass.
 - Manifest and checksum files match the exported SQLite and JSON files.
-- The 53k input manifest total is exactly 53,270 and the remediation report
-  reconciles every input.
+- The manifest's source definition count reconciles with the materialized
+  snapshot (currently 57,051 inputs) and the remediation report reconciles
+  every input. Normalized evidence/link counts are retained with the manifest.
 - The original source SHA-256 and mtime are unchanged after materialization,
   import, remediation, and reporting.
 - There are zero open quarantines and every production sense is AI-approved;

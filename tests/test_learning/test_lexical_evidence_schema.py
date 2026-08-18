@@ -10,6 +10,7 @@ LEXICAL_TABLES = {
     "lexical_definition_inputs",
     "lexical_evidence_items",
     "lexical_evidence_rankings",
+    "lexical_source_evidence_rankings",
     "lexical_input_canonical_map",
     "lexical_input_dispositions",
     "lexical_remediation_attempts",
@@ -117,15 +118,15 @@ def _insert_lexical_dependents(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def test_fresh_v6_graph_persists_the_lexical_evidence_graph():
+def test_fresh_v9_graph_persists_the_lexical_evidence_graph():
     conn = duckdb.connect(":memory:")
     apply_migrations(conn)
 
-    assert MIGRATIONS[-1][0] == 6
+    assert MIGRATIONS[-1][0] == 9
     assert LEXICAL_TABLES.issubset(GRAPH_TABLES)
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
     assert {
         row[1]
         for row in conn.execute(
@@ -183,7 +184,7 @@ def test_migration_v5_to_v6_preserves_inputs_and_enforces_frozen_rank(
     ).fetchall() == [("snapshot-1", "lexical-v1")]
     assert conn.execute(
         "SELECT version FROM graph_schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
     assert conn.execute(
         "SELECT input_key FROM lexical_definition_inputs"
     ).fetchall() == [("source-1:snapshot-1:external-1",)]
@@ -193,10 +194,20 @@ def test_migration_v5_to_v6_preserves_inputs_and_enforces_frozen_rank(
     assert conn.execute(
         "SELECT last_input_key FROM lexical_run_checkpoints"
     ).fetchall() == [("source-1:snapshot-1:external-1",)]
-    assert {
+    counts = {
         table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         for table in LEXICAL_TABLES
-    } == {table: 1 for table in LEXICAL_TABLES}
+    }
+    assert counts["lexical_source_evidence_rankings"] == 0
+    assert {
+        table: count
+        for table, count in counts.items()
+        if table != "lexical_source_evidence_rankings"
+    } == {
+        table: 1
+        for table in LEXICAL_TABLES
+        if table != "lexical_source_evidence_rankings"
+    }
     with pytest.raises(duckdb.ConstraintException):
         conn.execute(
             """
@@ -209,6 +220,51 @@ def test_migration_v5_to_v6_preserves_inputs_and_enforces_frozen_rank(
             """,
             ["d" * 64],
         )
+
+
+def test_migration_v9_normalizes_legacy_linked_examples_and_rankings(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conn = duckdb.connect(":memory:")
+    all_migrations = MIGRATIONS
+    v8_migrations = [migration for migration in all_migrations if migration[0] <= 8]
+    monkeypatch.setattr("src.learning.schema.MIGRATIONS", v8_migrations)
+    apply_migrations(conn)
+    _seed_dependencies(conn)
+    _insert_input(conn)
+    conn.execute(
+        """
+        INSERT INTO lexical_evidence_items VALUES
+        ('legacy-example', 'input-1', 'example', 99, 'tatoeba', ?, ?, current_timestamp)
+        """,
+        [
+            '{"id":99,"link_rank":2,"sentence_id":99,"source_table":"sentences","text_en":"Read this book.","text_vi":"Hãy đọc quyển sách này.","word_sentences":{"rank":2,"sentence_id":99,"word_id":10}}',
+            "e" * 64,
+        ],
+    )
+    conn.execute("""
+        INSERT INTO lexical_evidence_rankings VALUES
+        ('run-1', 'input-1', 'legacy-example', 'example', 1, TRUE, TRUE, '{}')
+        """)
+
+    monkeypatch.setattr("src.learning.schema.MIGRATIONS", all_migrations)
+    apply_migrations(conn)
+
+    assert conn.execute(
+        "SELECT count(*) FROM lexical_evidence_items WHERE evidence_id = 'legacy-example'"
+    ).fetchone() == (1,)
+    assert conn.execute(
+        "SELECT source_row_id FROM lexical_source_evidence"
+    ).fetchall() == [(99,)]
+    assert conn.execute(
+        "SELECT source_table FROM lexical_source_evidence"
+    ).fetchall() == [("sentences",)]
+    assert conn.execute(
+        "SELECT source_word_id, link_rank FROM lexical_word_evidence_links"
+    ).fetchall() == [(10, 2)]
+    assert conn.execute(
+        "SELECT input_id, evidence_role, selected FROM lexical_source_evidence_rankings"
+    ).fetchall() == [("input-1", "example", True)]
 
 
 def test_migration_v6_rejects_colliding_rekeyed_input_identities(

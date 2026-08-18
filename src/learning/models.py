@@ -184,6 +184,9 @@ class EvidenceItem(BaseModel):
     source_name: str = Field(min_length=1)
     value: Any
     created_at: datetime
+    # Source-level evidence is linked to a word and can support several
+    # definition inputs.  It intentionally has no lexical_evidence_items row.
+    is_source_evidence: bool = False
 
     @field_validator("value")
     @classmethod
