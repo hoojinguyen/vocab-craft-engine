@@ -104,3 +104,44 @@ def test_verified_export_is_atomic_and_refuses_an_existing_destination(
 
     with pytest.raises(FileExistsError):
         exporter.export(pack, destination)
+
+
+def test_verified_export_never_publishes_when_release_build_recording_fails(
+    graph_catalog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from src.learning.verified_lexical_exporter import VerifiedLexicalPackExporter
+
+    _, pack = _verified_pack(graph_catalog)
+    destination = tmp_path / "english_dataset_verified_v1"
+    exporter = VerifiedLexicalPackExporter(graph_catalog.store)
+
+    def fail_record(*_args, **_kwargs) -> None:
+        raise RuntimeError("release metadata unavailable")
+
+    monkeypatch.setattr(exporter, "_record_release_build", fail_record)
+
+    with pytest.raises(RuntimeError, match="metadata unavailable"):
+        exporter.export(pack, destination)
+
+    assert not destination.exists()
+    assert not destination.is_symlink()
+    assert (
+        graph_catalog.store.fetch_value(
+            "SELECT count(*) FROM lexical_release_builds WHERE release_version = ?",
+            [pack.version],
+        )
+        == 0
+    )
+
+
+def test_verified_export_refuses_a_dangling_destination_symlink(
+    graph_catalog, tmp_path: Path
+):
+    from src.learning.verified_lexical_exporter import VerifiedLexicalPackExporter
+
+    _, pack = _verified_pack(graph_catalog)
+    destination = tmp_path / "english_dataset_verified_v1"
+    destination.symlink_to(tmp_path / "not-published")
+
+    with pytest.raises(FileExistsError):
+        VerifiedLexicalPackExporter(graph_catalog.store).export(pack, destination)

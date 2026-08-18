@@ -269,3 +269,77 @@ def test_verified_pack_composes_one_approved_sense_and_all_approved_provenance(
         "rejected_input_count": 1,
         "validated_input_count": 2,
     }
+
+
+def test_verified_pack_uses_only_the_evidence_gated_candidate_payload(
+    graph_catalog,
+):
+    from src.learning.verified_lexical_pack import VerifiedLexicalPackComposer
+
+    seeded = seed_resolved_release_graph(graph_catalog)
+    repository = ContentRepository(graph_catalog.store)
+    candidate_id = _input_candidates(graph_catalog.store, seeded["validation_run_id"])[
+        seeded["approved_input_ids"][0]
+    ]
+    original_revision_id = graph_catalog.store.fetch_value(
+        """
+        SELECT revision_id FROM content_revisions
+        WHERE source_candidate_id = ?
+        ORDER BY revision_number
+        LIMIT 1
+        """,
+        [candidate_id],
+    )
+    assert original_revision_id is not None
+    changed_payload = repository.candidate_payload(candidate_id)
+    changed_payload["definition_en"] = "a deliberately unrelated but valid meaning"
+    repository.create_revision(
+        str(original_revision_id),
+        changed_payload,
+        "fixture-reviewer",
+        "Changed definition without new source evidence",
+    )
+
+    pack = VerifiedLexicalPackComposer(graph_catalog.store).compose(
+        seeded["validation_run_id"], "v1"
+    )
+
+    assert pack.senses[0]["definition_en"] == "a set of written pages"
+
+
+def test_verified_pack_rejects_a_candidate_mapped_from_another_raw_input(
+    graph_catalog,
+):
+    from src.learning.verified_lexical_pack import VerifiedLexicalPackComposer
+
+    seeded = seed_resolved_release_graph(graph_catalog)
+    candidates = _input_candidates(graph_catalog.store, seeded["validation_run_id"])
+    approved_input_id = seeded["approved_input_ids"][0]
+    rejected_input_id = seeded["rejected_input_id"]
+    approved_candidate_id = candidates[approved_input_id]
+    approved_canonical_key = graph_catalog.store.fetch_value(
+        "SELECT canonical_key FROM lexical_input_canonical_map WHERE input_id = ?",
+        [approved_input_id],
+    )
+    assert approved_canonical_key is not None
+    graph_catalog.store.connection().execute(
+        """
+        UPDATE lexical_input_dispositions
+        SET state = 'validated', candidate_id = ?
+        WHERE validation_run_id = ? AND input_id = ?
+        """,
+        [approved_candidate_id, seeded["validation_run_id"], rejected_input_id],
+    )
+    graph_catalog.store.connection().execute(
+        """
+        UPDATE lexical_input_canonical_map
+        SET canonical_key = ?, candidate_id = ?
+        WHERE input_id = ?
+        """,
+        [approved_canonical_key, approved_candidate_id, rejected_input_id],
+    )
+
+    with pytest.raises(ValueError, match="candidate raw record does not match"):
+        VerifiedLexicalPackComposer(graph_catalog.store).compose(
+            seeded["validation_run_id"], "v1"
+        )

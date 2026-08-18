@@ -83,13 +83,16 @@ class VerifiedLexicalPackExporter:
         self, pack: VerifiedLexicalPack, output_dir: Path
     ) -> VerifiedLexicalExportResult:
         destination = Path(output_dir)
-        if destination.exists():
+        if destination.exists() or destination.is_symlink():
             raise FileExistsError(destination)
         self._require_unpublished_version(pack.version)
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
             tempfile.mkdtemp(prefix=f".{_DATABASE_NAME}.", dir=destination.parent)
         )
+        result = self._result_for_destination(destination)
+        release_recorded = False
+        published = False
         try:
             sqlite_path = staging / _DATABASE_NAME
             self._write_database(sqlite_path, pack)
@@ -118,13 +121,22 @@ class VerifiedLexicalPackExporter:
                 )
             )
             self._fsync_directory(staging)
+            self._record_release_build(pack, manifest_path, result.output_dir)
+            release_recorded = True
             os.replace(staging, destination)
+            published = True
             self._fsync_directory(destination.parent)
         except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
+            if release_recorded and not published:
+                self._delete_release_build(pack.version)
+            if not published:
+                shutil.rmtree(staging, ignore_errors=True)
             raise
+        return result
 
-        result = VerifiedLexicalExportResult(
+    @staticmethod
+    def _result_for_destination(destination: Path) -> VerifiedLexicalExportResult:
+        return VerifiedLexicalExportResult(
             output_dir=destination,
             sqlite_path=destination / _DATABASE_NAME,
             manifest_path=destination / "manifest.json",
@@ -132,8 +144,6 @@ class VerifiedLexicalPackExporter:
             quarantine_path=destination / _QUARANTINE_NAME,
             quarantine_sha256_path=destination / f"{_QUARANTINE_NAME}.sha256",
         )
-        self._record_release_build(pack, result)
-        return result
 
     def _require_unpublished_version(self, version: str) -> None:
         existing = self.store.fetch_value(
@@ -259,9 +269,9 @@ class VerifiedLexicalPackExporter:
             raise ValueError("verified lexical release checksum does not match SQLite")
 
     def _record_release_build(
-        self, pack: VerifiedLexicalPack, result: VerifiedLexicalExportResult
+        self, pack: VerifiedLexicalPack, manifest_path: Path, output_path: Path
     ) -> None:
-        manifest_sha256 = self._sha256(result.manifest_path)
+        manifest_sha256 = self._sha256(manifest_path)
         with self.store.transaction() as connection:
             existing = connection.execute(
                 "SELECT release_build_id FROM lexical_release_builds WHERE release_version = ?",
@@ -284,8 +294,15 @@ class VerifiedLexicalPackExporter:
                     pack.version,
                     manifest_sha256,
                     canonical_json(pack.reconciliation),
-                    str(result.output_dir),
+                    str(output_path),
                 ],
+            )
+
+    def _delete_release_build(self, version: str) -> None:
+        with self.store.transaction() as connection:
+            connection.execute(
+                "DELETE FROM lexical_release_builds WHERE release_version = ?",
+                [version],
             )
 
     @staticmethod

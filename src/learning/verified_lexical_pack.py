@@ -43,6 +43,7 @@ class _InputOutcome:
     canonical_key: str | None
     mapped_candidate_id: str | None
     candidate_state: str | None
+    candidate_raw_record_id: str | None
     candidate_payload_json: str | None
     candidate_evidence_json: str | None
 
@@ -89,8 +90,8 @@ class VerifiedLexicalPackComposer:
         provenance: list[dict[str, object]] = []
         for canonical_key in sorted(approved_by_key):
             grouped_outcomes = approved_by_key[canonical_key]
-            sense_id, payload, source_candidate_id = self._latest_approved_sense(
-                canonical_key
+            sense_id, payload, source_candidate_id = (
+                self._evidence_gated_approved_sense(canonical_key, grouped_outcomes)
             )
             grouped_candidate_ids = {
                 str(outcome.disposition_candidate_id) for outcome in grouped_outcomes
@@ -189,7 +190,8 @@ class VerifiedLexicalPackComposer:
                    input.source_definition_id, disposition.state,
                    disposition.candidate_id, mapping.canonical_key,
                    mapping.candidate_id, candidate.state,
-                   candidate.normalized_payload_json, candidate.evidence_json
+                   candidate.raw_record_id, candidate.normalized_payload_json,
+                   candidate.evidence_json
             FROM lexical_definition_inputs AS input
             LEFT JOIN lexical_input_dispositions AS disposition
               ON disposition.input_id = input.input_id
@@ -217,8 +219,9 @@ class VerifiedLexicalPackComposer:
                 canonical_key=None if row[6] is None else str(row[6]),
                 mapped_candidate_id=None if row[7] is None else str(row[7]),
                 candidate_state=None if row[8] is None else str(row[8]),
-                candidate_payload_json=None if row[9] is None else str(row[9]),
-                candidate_evidence_json=None if row[10] is None else str(row[10]),
+                candidate_raw_record_id=None if row[9] is None else str(row[9]),
+                candidate_payload_json=None if row[10] is None else str(row[10]),
+                candidate_evidence_json=None if row[11] is None else str(row[11]),
             )
             for row in rows
         ]
@@ -285,6 +288,16 @@ class VerifiedLexicalPackComposer:
             raise ValueError(
                 "lexical disposition and canonical map disagree on candidate"
             )
+        if outcome.candidate_raw_record_id != outcome.raw_record_id:
+            raise ValueError("candidate raw record does not match its lexical input")
+        if outcome.candidate_evidence_json is None:
+            raise ValueError("released lexical input is missing candidate evidence")
+        evidence = json.loads(outcome.candidate_evidence_json)
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("input_id") != outcome.input_id
+        ):
+            raise ValueError("candidate evidence does not match its lexical input")
 
     def _require_approved_input(
         self, validation_run_id: str, outcome: _InputOutcome
@@ -346,10 +359,16 @@ class VerifiedLexicalPackComposer:
         )
         return row is not None and int(row[0]) > 0 and int(row[1]) == 0
 
-    def _latest_approved_sense(
-        self, canonical_key: str
+    def _evidence_gated_approved_sense(
+        self, canonical_key: str, outcomes: list[_InputOutcome]
     ) -> tuple[str, dict[str, Any], str]:
-        row = (
+        candidate_payloads = {
+            str(outcome.disposition_candidate_id): str(outcome.candidate_payload_json)
+            for outcome in outcomes
+            if outcome.disposition_candidate_id is not None
+            and outcome.candidate_payload_json is not None
+        }
+        rows = (
             self.store.connection()
             .execute(
                 """
@@ -360,20 +379,22 @@ class VerifiedLexicalPackComposer:
               AND content.content_type = 'sense'
               AND revision.review_state = 'approved'
             ORDER BY revision.revision_number DESC, revision.revision_id DESC
-            LIMIT 1
             """,
                 [canonical_key],
             )
-            .fetchone()
+            .fetchall()
         )
-        if row is None:
-            raise ValueError(
-                "approved lexical canonical content has no approved revision"
-            )
-        payload = json.loads(str(row[1]))
-        if not isinstance(payload, dict):
-            raise TypeError("approved lexical revision payload must be an object")
-        return str(row[0]), payload, str(row[2])
+        for row in rows:
+            source_candidate_id = str(row[2])
+            if candidate_payloads.get(source_candidate_id) != str(row[1]):
+                continue
+            payload = json.loads(str(row[1]))
+            if not isinstance(payload, dict):
+                raise TypeError("approved lexical revision payload must be an object")
+            return str(row[0]), payload, source_candidate_id
+        raise ValueError(
+            "approved lexical canonical content has no evidence-gated revision"
+        )
 
     @staticmethod
     def _sense_row(
