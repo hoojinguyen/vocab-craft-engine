@@ -1,6 +1,7 @@
 # Lexical 53k evidence-remediation pipeline
 
-**Status:** Ready for user review before implementation planning  
+**Status:** Approved for implementation — see
+[`2026-08-18-lexical-53k-evidence-remediation.md`](../plans/2026-08-18-lexical-53k-evidence-remediation.md)
 **Date:** 2026-08-18
 
 ## Purpose
