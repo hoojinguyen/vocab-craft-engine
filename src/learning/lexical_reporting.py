@@ -44,8 +44,19 @@ class LexicalRunReporter:
             )
             .fetchall()
         )
+        source_evidence_inventory = self._source_evidence_inventory(snapshot_id)
         document = {
             "input_total": len(rows),
+            "normalized_source_evidence_count": source_evidence_inventory[
+                "normalized_source_evidence_count"
+            ],
+            "normalized_word_evidence_link_count": source_evidence_inventory[
+                "normalized_word_evidence_link_count"
+            ],
+            "source_definition_count": len(rows),
+            "source_linked_example_count": source_evidence_inventory[
+                "normalized_word_evidence_link_count"
+            ],
             "inputs": [
                 {
                     "input_id": str(row[0]),
@@ -169,6 +180,7 @@ class LexicalRunReporter:
             "input_total": input_total,
             "samples": self._samples(validation_run_id, disposition_rows),
             "snapshot_id": snapshot_id,
+            "source_evidence_inventory": self._source_evidence_inventory(snapshot_id),
             "validation_run_id": validation_run_id,
         }
         return self._write_json(Path(output_dir) / "remediation_report.json", document)
@@ -181,6 +193,27 @@ class LexicalRunReporter:
         if snapshot_id is None:
             raise ValueError(f"validation run {validation_run_id!r} does not exist")
         return str(snapshot_id)
+
+    def _source_evidence_inventory(self, snapshot_id: str) -> dict[str, int]:
+        """Counts are source facts, not a per-definition evidence expansion."""
+        evidence_count = self.store.fetch_value(
+            """
+            SELECT count(*) FROM lexical_source_evidence
+            WHERE snapshot_id = ? AND evidence_role = 'example'
+            """,
+            [snapshot_id],
+        )
+        link_count = self.store.fetch_value(
+            """
+            SELECT count(*) FROM lexical_word_evidence_links
+            WHERE snapshot_id = ?
+            """,
+            [snapshot_id],
+        )
+        return {
+            "normalized_source_evidence_count": int(evidence_count or 0),
+            "normalized_word_evidence_link_count": int(link_count or 0),
+        }
 
     def _samples(
         self, validation_run_id: str, disposition_rows: list[tuple[Any, ...]]
