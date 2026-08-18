@@ -942,10 +942,26 @@ def _apply_migration_009(conn: duckdb.DuckDBPyConnection) -> None:
         word_id,
     ) in rows:
         value = json.loads(str(value_json))
-        if not isinstance(value, dict) or value.get("kind") != "linked":
+        is_legacy_link = (
+            isinstance(value, dict)
+            and value.get("sentence_id") is not None
+            and value.get("text_en") is not None
+            and value.get("text_vi") is not None
+            and isinstance(value.get("word_sentences"), dict)
+        )
+        if not isinstance(value, dict) or (
+            value.get("kind") != "linked" and not is_legacy_link
+        ):
             continue
+        normalized_value = {
+            "kind": "linked",
+            "sentence_id": int(value.get("sentence_id", source_row_id)),
+            "text_en": value["text_en"],
+            "text_vi": value["text_vi"],
+            "source": value.get("source"),
+        }
         encoded = json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            normalized_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
         value_sha256 = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         source_evidence_id = str(
@@ -962,7 +978,9 @@ def _apply_migration_009(conn: duckdb.DuckDBPyConnection) -> None:
                 ),
             )
         )
-        link_rank = int(value.get("link_rank", 1))
+        link_rank = int(
+            value.get("link_rank", value.get("word_sentences", {}).get("rank", 1))
+        )
         conn.execute(
             """
             INSERT INTO lexical_source_evidence (

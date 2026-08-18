@@ -238,7 +238,7 @@ def test_migration_v9_normalizes_legacy_linked_examples_and_rankings(
         ('legacy-example', 'input-1', 'example', 99, 'tatoeba', ?, ?, current_timestamp)
         """,
         [
-            '{"kind":"linked","link_rank":2,"text_en":"Read this book.","text_vi":"Hãy đọc quyển sách này."}',
+            '{"id":99,"link_rank":2,"sentence_id":99,"source_table":"sentences","text_en":"Read this book.","text_vi":"Hãy đọc quyển sách này.","word_sentences":{"rank":2,"sentence_id":99,"word_id":10}}',
             "e" * 64,
         ],
     )

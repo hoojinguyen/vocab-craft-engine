@@ -998,6 +998,7 @@ class LexicalEvidenceSelector:
         """Select shared examples without materializing a word's whole inventory."""
         local = self.select(bundle)
         hasher = hashlib.sha256()
+        hasher.update(b"[")
         count = 0
         all_lemma_missing = True
         all_pos_incompatible = True
@@ -1005,8 +1006,9 @@ class LexicalEvidenceSelector:
         for evidence in source_examples:
             assessed = self._assess(bundle, evidence)
             count += 1
-            hasher.update(evidence.evidence_id.encode("utf-8"))
-            hasher.update(b"\n")
+            if count > 1:
+                hasher.update(b",")
+            hasher.update(canonical_json(evidence.evidence_id).encode("utf-8"))
             all_lemma_missing = all_lemma_missing and (
                 assessed[1]["lemma_match"] == "missing"
             )
@@ -1019,6 +1021,7 @@ class LexicalEvidenceSelector:
                 < self._sort_key(best[1], best[0])
             ):
                 best = assessed
+        hasher.update(b"]")
         summary = SourceExampleSummary(
             count=count,
             fingerprint=hasher.hexdigest(),
