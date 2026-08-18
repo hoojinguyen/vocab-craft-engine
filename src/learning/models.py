@@ -164,8 +164,8 @@ class LexicalDefinitionInput(BaseModel):
     input_id: str = Field(min_length=1)
     snapshot_id: str = Field(min_length=1)
     raw_record_id: str = Field(min_length=1)
-    source_word_id: int | None = None
-    source_definition_id: int | None = None
+    source_word_id: int = Field(gt=0)
+    source_definition_id: int = Field(gt=0)
     input_key: str = Field(min_length=1)
     source_definition_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     lemma: str = Field(min_length=1)
@@ -180,7 +180,7 @@ class EvidenceItem(BaseModel):
     evidence_id: str = Field(min_length=1)
     input_id: str = Field(min_length=1)
     evidence_role: EvidenceRole
-    source_row_id: int
+    source_row_id: int = Field(gt=0)
     source_name: str = Field(min_length=1)
     value: Any
     created_at: datetime

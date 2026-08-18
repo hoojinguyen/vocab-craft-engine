@@ -295,3 +295,50 @@ def test_lexical_evidence_models_are_frozen_and_canonicalize_json_values():
 def test_lexical_evidence_models_reject_invalid_hashes_json_and_approval(factory):
     with pytest.raises(ValidationError):
         factory()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("source_word_id", None),
+        ("source_word_id", 0),
+        ("source_word_id", -1),
+        ("source_definition_id", None),
+        ("source_definition_id", 0),
+        ("source_definition_id", -1),
+    ],
+)
+def test_lexical_definition_input_requires_positive_source_identifiers(
+    field_name: str, value: int | None
+):
+    input_values: dict[str, object] = {
+        "input_id": "input-1",
+        "snapshot_id": "snapshot-1",
+        "raw_record_id": "raw-1",
+        "source_word_id": 10,
+        "source_definition_id": 11,
+        "input_key": "lexical.book.noun.11",
+        "source_definition_sha256": "a" * 64,
+        "lemma": "book",
+        "pos": "noun",
+        "frequency_rank": 42,
+        "created_at": datetime(2026, 8, 18, tzinfo=UTC),
+    }
+    input_values[field_name] = value
+
+    with pytest.raises(ValidationError):
+        LexicalDefinitionInput(**input_values)
+
+
+@pytest.mark.parametrize("source_row_id", [None, 0, -1])
+def test_evidence_item_requires_a_positive_source_row_id(source_row_id: int | None):
+    with pytest.raises(ValidationError):
+        EvidenceItem(
+            evidence_id="evidence-1",
+            input_id="input-1",
+            evidence_role="definition",
+            source_row_id=source_row_id,
+            source_name="reference.db",
+            value={"text": "a set of pages"},
+            created_at=datetime(2026, 8, 18, tzinfo=UTC),
+        )
