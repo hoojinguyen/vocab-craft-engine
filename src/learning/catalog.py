@@ -178,7 +178,7 @@ class SourceCatalog:
         """
         prepared: list[tuple[SourceEvidenceLinkInput, str, str, str]] = []
         for link in links:
-            source_word_id = _positive_source_id(link.source_word_id)
+            _positive_source_id(link.source_word_id)
             source_row_id = _positive_source_id(link.source_row_id)
             if not link.snapshot_id:
                 raise ValueError("source evidence requires a snapshot ID")

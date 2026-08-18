@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from src.learning.catalog import RawRecordInput, SourceCatalog
+from src.learning.catalog import RawRecordInput, SourceCatalog, SourceEvidenceLinkInput
 from src.learning.models import ReviewState, SourceAssetInput, canonical_json
 
 FIRST_LEXICAL_POS = frozenset(
@@ -349,6 +349,7 @@ class SQLiteLexicalImportReport:
     eligible_words: int
     imported_or_existing_raw_records: int
     eligible_definitions: int | None = None
+    source_example_links: int | None = None
 
     @property
     def imported_raw_records(self) -> int:
@@ -447,6 +448,7 @@ class SQLiteLexicalReferenceImporter:
         scanned_words = 0
         eligible_words = 0
         eligible_definitions = 0
+        source_example_links = 0
         previous_word_id: int | None = None
         previous_eligible_word_id: int | None = None
         with tempfile.TemporaryDirectory(
@@ -460,6 +462,9 @@ class SQLiteLexicalReferenceImporter:
             try:
                 connection.execute("PRAGMA query_only = ON")
                 connection.execute("BEGIN")
+                source_example_links = self._import_source_example_links(
+                    connection, snapshot_id
+                )
                 cursor = connection.execute(
                     """
                     SELECT
@@ -511,7 +516,51 @@ class SQLiteLexicalReferenceImporter:
             eligible_words=eligible_words,
             imported_or_existing_raw_records=eligible_definitions,
             eligible_definitions=eligible_definitions,
+            source_example_links=source_example_links,
         )
+
+    def _import_source_example_links(
+        self, connection: sqlite3.Connection, snapshot_id: str
+    ) -> int:
+        """Persist each linked bilingual source sentence once per source word."""
+        cursor = connection.execute(
+            """
+            SELECT word_sentences.word_id, sentences.id, word_sentences.rank,
+                   sentences.text_en, sentences.text_vi, sentences.source
+            FROM word_sentences
+            JOIN words ON words.id = word_sentences.word_id
+            JOIN sentences ON sentences.id = word_sentences.sentence_id
+            WHERE words.frequency_rank BETWEEN 1 AND ?
+              AND sentences.text_en IS NOT NULL
+              AND sentences.text_vi IS NOT NULL
+            ORDER BY words.frequency_rank, word_sentences.word_id,
+                     word_sentences.rank, sentences.id
+            """,
+            [MAX_FREQUENCY_RANK],
+        )
+        total = 0
+        while rows := cursor.fetchmany(IMPORT_BATCH_SIZE):
+            links = [
+                SourceEvidenceLinkInput(
+                    snapshot_id=snapshot_id,
+                    source_word_id=int(word_id),
+                    source_row_id=int(sentence_id),
+                    source_name=str(source_name or "sqlite-sentences"),
+                    source_table="sentences",
+                    link_rank=int(link_rank),
+                    value={
+                        "kind": "linked",
+                        "sentence_id": int(sentence_id),
+                        "text_en": text_en,
+                        "text_vi": text_vi,
+                        "source": source_name,
+                    },
+                )
+                for word_id, sentence_id, link_rank, text_en, text_vi, source_name in rows
+            ]
+            self.catalog.append_source_example_links(links)
+            total += len(links)
+        return total
 
     @staticmethod
     def _stage_verified_snapshot(
@@ -723,42 +772,6 @@ class SQLiteLexicalReferenceImporter:
                 [word_id],
             ).fetchall()
         ]
-        examples = [
-            {
-                "id": int(sentence_id),
-                "source_row_id": int(sentence_id),
-                "source_table": "sentences",
-                "sentence_id": int(sentence_id),
-                "link_rank": int(link_rank),
-                "word_sentences": {
-                    "word_id": int(word_id),
-                    "sentence_id": int(sentence_id),
-                    "rank": int(link_rank),
-                },
-                "text_en": text_en,
-                "text_vi": text_vi,
-                "source": sentence_source,
-            }
-            for (
-                sentence_id,
-                link_rank,
-                text_en,
-                text_vi,
-                sentence_source,
-            ) in connection.execute(
-                """
-                SELECT sentences.id, word_sentences.rank,
-                       sentences.text_en, sentences.text_vi, sentences.source
-                FROM word_sentences
-                JOIN sentences ON sentences.id = word_sentences.sentence_id
-                WHERE word_sentences.word_id = ?
-                  AND sentences.text_en IS NOT NULL
-                  AND sentences.text_vi IS NOT NULL
-                ORDER BY word_sentences.rank, sentences.id
-                """,
-                [word_id],
-            ).fetchall()
-        ]
         translations = [
             {
                 "source_row_id": item["source_row_id"],
@@ -800,21 +813,16 @@ class SQLiteLexicalReferenceImporter:
             "definition": definition,
             "definitions": definitions,
             "translations": translations,
-            "examples": examples,
+            "examples": [],
             "source_tables": {
                 "words": {"source_row_id": int(word_id)},
                 "definitions": [item["source_row_id"] for item in definitions],
-                "word_sentences": [
-                    {"sentence_id": item["sentence_id"], "rank": item["link_rank"]}
-                    for item in examples
-                ],
-                "sentences": [item["source_row_id"] for item in examples],
+                "linked_example_scope": {"source_word_id": int(word_id)},
             },
             "source_ids": {
                 "words": [int(word_id)],
                 "definitions": [item["source_row_id"] for item in definitions],
-                "word_sentences": [item["word_sentences"] for item in examples],
-                "sentences": [item["source_row_id"] for item in examples],
+                "linked_example_word_id": int(word_id),
             },
         }
         return RawRecordInput(

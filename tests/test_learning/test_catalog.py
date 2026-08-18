@@ -619,8 +619,13 @@ def test_append_source_evidence_links_deduplicates_sentence_value_and_word_link(
     second_ids = catalog.append_source_example_links([link])
 
     assert second_ids == first_ids
-    assert catalog.store.fetch_value("SELECT count(*) FROM lexical_source_evidence") == 1
-    assert catalog.store.fetch_value("SELECT count(*) FROM lexical_word_evidence_links") == 1
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_source_evidence") == 1
+    )
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_word_evidence_links")
+        == 1
+    )
 
 
 @pytest.mark.parametrize("source_word_id,source_row_id", [(0, 30), (10, -1)])

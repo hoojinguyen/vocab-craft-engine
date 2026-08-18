@@ -622,7 +622,14 @@ def test_import_ranked_definitions_includes_every_ranked_definition_regardless_o
         "SELECT payload_json FROM raw_reference_records "
         "WHERE external_key = 'sqlite-lexical-definition:10:1'"
     )
-    assert len(json.loads(book_payload)["examples"]) == 5
+    assert json.loads(book_payload)["examples"] == []
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_source_evidence") == 5
+    )
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_word_evidence_links")
+        == 5
+    )
     assert (
         catalog.store.fetch_value(
             "SELECT input_key FROM lexical_definition_inputs "
@@ -695,7 +702,7 @@ def test_import_ranked_definitions_batches_251_records_and_is_idempotent(
     )
 
     assert first.imported_or_existing_raw_records == 251
-    assert transaction_calls == 2
+    assert transaction_calls == 3
     assert (
         catalog.store.fetch_value("SELECT count(*) FROM raw_reference_records") == 252
     )
@@ -709,7 +716,7 @@ def test_import_ranked_definitions_batches_251_records_and_is_idempotent(
     )
 
     assert second.imported_or_existing_raw_records == 251
-    assert transaction_calls == 4
+    assert transaction_calls == 6
     assert (
         catalog.store.fetch_value("SELECT count(*) FROM raw_reference_records") == 252
     )
