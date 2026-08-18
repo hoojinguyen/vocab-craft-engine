@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.learning.lexical_evidence import EvidenceSelection
 
 _SENSE_LEMMA_PATTERN = re.compile(r"^[a-z]+(?:-[a-z]+)*$")
 _SENSE_PARTS_OF_SPEECH = frozenset(
@@ -88,6 +91,19 @@ class QualityGate:
         validator = getattr(self, f"_validate_{content_type}", None)
         if validator is not None:
             validator(payload, report, revision_id)
+        return report
+
+    def validate_lexical_source_evidence(
+        self, selection: EvidenceSelection, revision_id: str | None = None
+    ) -> GateReport:
+        """Expose source-evidence failures as first-class quality gate results.
+
+        ``sense.complete`` is intentionally not consulted here.  It is a legacy
+        structural summary and cannot establish that an example proves a sense.
+        """
+        report = GateReport()
+        for failure in selection.failures:
+            report.add(failure.code, failure.message, revision_id)
         return report
 
     def validate_graph(
