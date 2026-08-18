@@ -10,6 +10,7 @@ from src.learning.lexical_evidence import (
     LexicalEvidenceSelector,
 )
 from src.learning.lexical_remediation import LexicalRemediationService
+from src.learning.models import EvidenceRanking, EvidenceRole
 from src.learning.quality import QualityGate
 
 
@@ -251,6 +252,112 @@ def test_inputs_share_complete_normalized_word_example_inventory(
     assert len(source_inventory[0]["fingerprint"]) == 64
 
 
+def test_virtual_examples_preserve_word_sentence_link_rank(
+    graph_catalog: SourceCatalog,
+):
+    snapshot_id = _snapshot(graph_catalog)
+    input_id = _append_input(
+        graph_catalog,
+        snapshot_id,
+        external_key="book:rank",
+        word_id=10,
+        definition_id=1,
+    )
+    graph_catalog.append_source_example_links(
+        [
+            SourceEvidenceLinkInput(
+                snapshot_id=snapshot_id,
+                source_word_id=10,
+                source_row_id=10,
+                source_name="tatoeba",
+                source_table="sentences",
+                link_rank=2,
+                value={
+                    "kind": "linked",
+                    "sentence_id": 10,
+                    "text_en": "This book is less preferred.",
+                    "text_vi": "Cuốn sách này ít được ưu tiên hơn.",
+                    "source": "tatoeba",
+                },
+            ),
+            SourceEvidenceLinkInput(
+                snapshot_id=snapshot_id,
+                source_word_id=10,
+                source_row_id=20,
+                source_name="tatoeba",
+                source_table="sentences",
+                link_rank=1,
+                value={
+                    "kind": "linked",
+                    "sentence_id": 20,
+                    "text_en": "This book is preferred.",
+                    "text_vi": "Cuốn sách này được ưu tiên.",
+                    "source": "tatoeba",
+                },
+            ),
+        ]
+    )
+
+    selection = LexicalEvidenceSelector().select(
+        LexicalEvidenceRepository(graph_catalog.store).get_input(input_id)
+    )
+
+    selected = selection.selected_by_role(EvidenceRole.EXAMPLE)
+    assert [item.evidence.source_row_id for item in selected] == [20]
+    assert selected[0].reason["verified_provenance"] is True
+
+
+def test_source_ranking_rejects_evidence_not_linked_to_its_input_word(
+    graph_catalog: SourceCatalog,
+):
+    snapshot_id = _snapshot(graph_catalog)
+    input_id = _append_input(
+        graph_catalog,
+        snapshot_id,
+        external_key="book:unlinked",
+        word_id=99,
+        definition_id=1,
+    )
+    source_evidence_id = graph_catalog.append_source_example_links(
+        [
+            SourceEvidenceLinkInput(
+                snapshot_id=snapshot_id,
+                source_word_id=10,
+                source_row_id=10,
+                source_name="tatoeba",
+                source_table="sentences",
+                link_rank=1,
+                value={
+                    "kind": "linked",
+                    "sentence_id": 10,
+                    "text_en": "This book is unrelated.",
+                    "text_vi": "Cuốn sách này không liên quan.",
+                    "source": "tatoeba",
+                },
+            )
+        ]
+    )[0]
+    repository = LexicalEvidenceRepository(graph_catalog.store)
+    repository.create_validation_run("cross-link-run", snapshot_id, "v1", {})
+
+    with pytest.raises(ValueError, match="not linked to lexical input"):
+        repository.upsert_source_rankings(
+            "cross-link-run",
+            [
+                EvidenceRanking(
+                    validation_run_id="cross-link-run",
+                    input_id=input_id,
+                    evidence_id=source_evidence_id,
+                    evidence_role=EvidenceRole.EXAMPLE,
+                    rank=1,
+                    selected=True,
+                    eligible=True,
+                    reason={},
+                )
+            ],
+        )
+
+
 def test_remediation_persists_only_selected_normalized_example_rankings(
     graph_catalog: SourceCatalog,
 ):
@@ -309,6 +416,14 @@ def test_remediation_persists_only_selected_normalized_example_rankings(
     inventory = rationale["source_evidence_inventory"]["example"]
     assert inventory["count"] == 5
     assert len(inventory["fingerprint"]) == 64
+    attempt_json = graph_catalog.store.fetch_value(
+        """
+        SELECT selection_json FROM lexical_remediation_attempts
+        WHERE validation_run_id = ?
+        """,
+        ["normalized-example-run"],
+    )
+    assert "ranked_evidence_ids" not in str(attempt_json)
 
 
 @pytest.mark.parametrize(

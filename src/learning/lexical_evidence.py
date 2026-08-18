@@ -278,7 +278,7 @@ class LexicalEvidenceRepository:
                 """
             SELECT source_evidence.source_evidence_id, source_evidence.source_row_id,
                    source_evidence.source_name, source_evidence.value_json,
-                   source_evidence.created_at
+                   source_evidence.created_at, word_link.link_rank
             FROM lexical_word_evidence_links AS word_link
             JOIN lexical_source_evidence AS source_evidence
               ON source_evidence.source_evidence_id = word_link.source_evidence_id
@@ -298,7 +298,10 @@ class LexicalEvidenceRepository:
                 evidence_role=EvidenceRole.EXAMPLE,
                 source_row_id=int(source_row_id),
                 source_name=str(source_name),
-                value=json.loads(str(value_json)),
+                value={
+                    **json.loads(str(value_json)),
+                    "link_rank": int(link_rank),
+                },
                 created_at=created_at,
                 is_source_evidence=True,
             )
@@ -308,6 +311,7 @@ class LexicalEvidenceRepository:
                 source_name,
                 value_json,
                 created_at,
+                link_rank,
             ) in source_example_rows
         )
         raw_payload = json.loads(str(raw_payload_json))
@@ -482,6 +486,34 @@ class LexicalEvidenceRepository:
         if any(ranking.validation_run_id != validation_run_id for ranking in rankings):
             raise ValueError("rankings must belong to one validation run")
         with self.store.transaction() as connection:
+            for ranking in rankings:
+                linked = connection.execute(
+                    """
+                    SELECT 1
+                    FROM validation_runs AS run
+                    JOIN lexical_definition_inputs AS input
+                      ON input.snapshot_id = run.snapshot_id
+                    JOIN lexical_word_evidence_links AS word_link
+                      ON word_link.snapshot_id = input.snapshot_id
+                     AND word_link.source_word_id = input.source_word_id
+                    JOIN lexical_source_evidence AS source_evidence
+                      ON source_evidence.source_evidence_id = word_link.source_evidence_id
+                    WHERE run.validation_run_id = ?
+                      AND input.input_id = ?
+                      AND source_evidence.source_evidence_id = ?
+                      AND source_evidence.evidence_role = ?
+                    """,
+                    [
+                        validation_run_id,
+                        ranking.input_id,
+                        ranking.evidence_id,
+                        ranking.evidence_role.value,
+                    ],
+                ).fetchone()
+                if linked is None:
+                    raise ValueError(
+                        "source evidence ranking is not linked to lexical input"
+                    )
             connection.executemany(
                 """
                 INSERT INTO lexical_source_evidence_rankings (
@@ -1011,11 +1043,7 @@ class LexicalEvidenceSelector:
                     SourceEvidenceFailure(
                         "example.lemma_missing",
                         "No source example contains the lemma or a recognized inflection",
-                        {
-                            "evidence_ids": [
-                                item.evidence.evidence_id for item in examples
-                            ]
-                        },
+                        self._failure_evidence_details(examples),
                     )
                 )
             elif examples and all(
@@ -1025,11 +1053,7 @@ class LexicalEvidenceSelector:
                     SourceEvidenceFailure(
                         "example.pos_or_form_mismatch",
                         "Source examples use a different part of speech or form",
-                        {
-                            "evidence_ids": [
-                                item.evidence.evidence_id for item in examples
-                            ]
-                        },
+                        self._failure_evidence_details(examples),
                     )
                 )
             else:
@@ -1037,11 +1061,7 @@ class LexicalEvidenceSelector:
                     SourceEvidenceFailure(
                         "example.sense_unproven",
                         "No selected source example proves the imported definition's sense",
-                        {
-                            "evidence_ids": [
-                                item.evidence.evidence_id for item in examples
-                            ]
-                        },
+                        self._failure_evidence_details(examples),
                     )
                 )
 
@@ -1127,6 +1147,29 @@ class LexicalEvidenceSelector:
                 )
             )
         return tuple(failures)
+
+    @staticmethod
+    def _failure_evidence_details(
+        items: list[RankedEvidence],
+    ) -> dict[str, Any]:
+        """Do not serialize the shared source inventory for every input."""
+        local_ids = [
+            item.evidence.evidence_id
+            for item in items
+            if not item.evidence.is_source_evidence
+        ]
+        source_ids = [
+            item.evidence.evidence_id
+            for item in items
+            if item.evidence.is_source_evidence
+        ]
+        details: dict[str, Any] = {"evidence_ids": local_ids}
+        if source_ids:
+            details["source_evidence_count"] = len(source_ids)
+            details["source_evidence_fingerprint"] = hashlib.sha256(
+                canonical_json(source_ids).encode("utf-8")
+            ).hexdigest()
+        return details
 
     @staticmethod
     def _has_conflict(

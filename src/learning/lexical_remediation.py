@@ -336,9 +336,7 @@ class LexicalRemediationService:
             "selected_evidence_ids": [
                 item.evidence.evidence_id for item in selection.selected
             ],
-            "ranked_evidence_ids": [
-                item.evidence.evidence_id for item in selection.items
-            ],
+            "source_evidence_inventory": selection.source_inventory(),
             "source_failure_codes": list(selection.failure_codes),
         }
 
