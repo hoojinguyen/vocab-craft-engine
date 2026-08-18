@@ -237,24 +237,62 @@ def test_source_evidence_policy_quarantines_semantically_unproven_examples(
     assert report.passed is False
 
 
-def test_semantic_gate_rejects_auxiliary_do_after_legacy_structural_gate_passes(
+@pytest.mark.parametrize(
+    ("lemma", "pos", "definition_en", "example", "expected_code"),
+    [
+        (
+            "do",
+            "verb",
+            "perform an action",
+            "I do not know the answer.",
+            "example.pos_or_form_mismatch",
+        ),
+        (
+            "word",
+            "verb",
+            "express something in words",
+            "I learned a new word today.",
+            "example.pos_or_form_mismatch",
+        ),
+        (
+            "yet",
+            "adv",
+            "until the present time",
+            "Yet the train left on time.",
+            "example.sense_unproven",
+        ),
+        (
+            "book",
+            "noun",
+            "a set of written pages",
+            "Read it before class.",
+            "example.lemma_missing",
+        ),
+    ],
+)
+def test_semantic_gate_rejects_pilot_cases_after_legacy_structural_gate_passes(
     graph_catalog: SourceCatalog,
+    lemma: str,
+    pos: str,
+    definition_en: str,
+    example: str,
+    expected_code: str,
 ):
     snapshot_id = _snapshot(graph_catalog)
     input_id = _append_input(
         graph_catalog,
         snapshot_id,
-        external_key="pilot:do:structural-pass",
+        external_key=f"pilot:{lemma}:structural-pass",
         word_id=10,
         definition_id=1,
-        lemma="do",
-        pos="verb",
-        definition_en="perform an action",
+        lemma=lemma,
+        pos=pos,
+        definition_en=definition_en,
         examples=[
             {
                 "id": 10,
                 "source_row_id": 10,
-                "text_en": "I do not know the answer.",
+                "text_en": example,
                 "text_vi": "Tôi không biết câu trả lời.",
                 "source": "tatoeba",
             }
@@ -266,14 +304,14 @@ def test_semantic_gate_rejects_auxiliary_do_after_legacy_structural_gate_passes(
     payload = LexicalRemediationService._candidate_payload(selection)
     payload["examples"] = [
         {
-            "text_en": "I do not know the answer.",
+            "text_en": example,
             "text_vi": "Tôi không biết câu trả lời.",
             "source": "tatoeba",
         }
     ]
 
     assert QualityGate().validate_payload("sense", payload).passed is True
-    assert "example.pos_or_form_mismatch" in selection.failure_codes
+    assert expected_code in selection.failure_codes
 
 
 def test_source_evidence_gate_reports_missing_translation_ipa_and_conflicting_metadata(
@@ -382,3 +420,64 @@ def test_source_evidence_gate_distinguishes_unknown_translation_quality(
 
     assert "translation.quality_unknown" in codes
     assert "translation.missing_or_invalid" not in codes
+
+
+def test_source_evidence_gate_reports_missing_or_invalid_translation(
+    graph_catalog: SourceCatalog,
+):
+    snapshot_id = _snapshot(graph_catalog)
+    input_id = _append_input(
+        graph_catalog,
+        snapshot_id,
+        external_key="missing-translation:book",
+        word_id=10,
+        definition_id=1,
+        definition_vi=None,
+        examples=[
+            {
+                "id": 10,
+                "source_row_id": 10,
+                "text_en": "Read this book.",
+                "text_vi": "Hãy đọc quyển sách này.",
+                "source": "tatoeba",
+            }
+        ],
+    )
+
+    selection = LexicalEvidenceSelector().select(
+        LexicalEvidenceRepository(graph_catalog.store).get_input(input_id)
+    )
+
+    assert "translation.missing_or_invalid" in selection.failure_codes
+
+
+def test_source_evidence_gate_reports_incomplete_provenance(
+    graph_catalog: SourceCatalog,
+):
+    snapshot_id = _snapshot(graph_catalog)
+    input_id = _append_input(
+        graph_catalog,
+        snapshot_id,
+        external_key="incomplete-provenance:book",
+        word_id=10,
+        definition_id=1,
+        examples=[
+            {
+                "id": 10,
+                "source_row_id": 10,
+                "text_en": "Read this book.",
+                "text_vi": "Hãy đọc quyển sách này.",
+                "source": "tatoeba",
+            }
+        ],
+    )
+    graph_catalog.store.connection().execute(
+        "UPDATE lexical_evidence_items SET source_name = 'untrusted-source' WHERE input_id = ?",
+        [input_id],
+    )
+
+    selection = LexicalEvidenceSelector().select(
+        LexicalEvidenceRepository(graph_catalog.store).get_input(input_id)
+    )
+
+    assert "provenance.incomplete" in selection.failure_codes

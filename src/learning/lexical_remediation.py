@@ -117,14 +117,19 @@ class LexicalRemediationService:
                     raise RuntimeError("remediation interrupted after checkpoint")
 
     def retry_input(self, validation_run_id: str, input_id: str) -> InputDisposition:
-        """Record another auditable attempt for an existing quarantined input."""
+        """Return the existing outcome for an immutable quarantined input.
+
+        Source evidence and the deterministic policy are immutable within a
+        validation run, so repeating this request cannot produce a new
+        selection.  Recording another attempt would only duplicate audit
+        history; a later adjudication run must use a different policy/run.
+        """
         existing = self.evidence_repository.get_disposition(validation_run_id, input_id)
         if existing is None:
             raise ValueError("cannot retry an input without a prior disposition")
         if existing.state is not InputDispositionState.QUARANTINED:
             raise ValueError("only a quarantined input may be retried")
-        bundle = self.evidence_repository.get_input(input_id)
-        return self._remediate(bundle, validation_run_id, retry=True)
+        return existing
 
     def _remediate(
         self,

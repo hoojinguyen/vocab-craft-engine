@@ -152,7 +152,7 @@ def test_completed_and_resumed_runs_have_same_selection_disposition_and_candidat
     )
 
 
-def test_duplicate_inputs_map_to_one_canonical_key_and_retry_keeps_alternatives(
+def test_duplicate_inputs_map_to_one_canonical_key_and_same_selection_retry_is_idempotent(
     graph_catalog,
 ):
     snapshot_id = _snapshot(graph_catalog)
@@ -207,7 +207,7 @@ def test_duplicate_inputs_map_to_one_canonical_key_and_retry_keeps_alternatives(
             "SELECT count(*) FROM lexical_remediation_attempts WHERE input_id = ?",
             [input_ids[0]],
         )
-        == 2
+        == 1
     )
     alternatives = graph_catalog.store.fetch_value(
         "SELECT alternatives_json FROM lexical_quarantine_cases WHERE input_id = ?",

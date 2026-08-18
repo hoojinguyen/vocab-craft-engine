@@ -132,7 +132,7 @@ class LexicalRunReporter:
                 """
             SELECT outcome, count(*)
             FROM lexical_remediation_attempts
-            WHERE validation_run_id = ?
+            WHERE validation_run_id = ? AND attempt_number > 1
             GROUP BY outcome ORDER BY outcome
             """,
                 [validation_run_id],
@@ -277,6 +277,28 @@ class QuarantineExporter:
 
     def _write_database(self, validation_run_id: str, path: Path) -> None:
         source = self.store.connection()
+        stale_cases = source.execute(
+            """
+            SELECT disposition.input_id
+            FROM lexical_input_dispositions AS disposition
+            LEFT JOIN lexical_quarantine_cases AS quarantine
+              ON quarantine.input_id = disposition.input_id
+            WHERE disposition.validation_run_id = ?
+              AND disposition.state = 'quarantined'
+              AND (
+                  quarantine.case_id IS NULL
+                  OR quarantine.latest_validation_run_id <> ?
+              )
+            ORDER BY disposition.input_id
+            LIMIT 1
+            """,
+            [validation_run_id, validation_run_id],
+        ).fetchone()
+        if stale_cases is not None:
+            raise ValueError(
+                "validation run is not current for quarantine export: "
+                f"{stale_cases[0]}"
+            )
         cases = source.execute(
             """
             SELECT quarantine.case_id, quarantine.input_id, quarantine.latest_validation_run_id,

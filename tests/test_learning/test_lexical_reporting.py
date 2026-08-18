@@ -138,3 +138,30 @@ def test_quarantine_export_is_internal_sqlite_with_integrity_and_hash(
         assert (
             connection.execute("SELECT count(*) FROM evidence_items").fetchone()[0] > 0
         )
+
+
+def test_quarantine_export_refuses_historical_run_after_case_changes(
+    graph_catalog, tmp_path
+):
+    snapshot_id, historical_run_id = _mixed_run(graph_catalog)
+    LexicalRemediationService(graph_catalog.store).run(
+        snapshot_id, validation_run_id="report-run-later"
+    )
+
+    with pytest.raises(ValueError, match="not current for quarantine export"):
+        QuarantineExporter(graph_catalog.store).export(
+            historical_run_id, tmp_path / "quarantine"
+        )
+
+
+def test_reporter_counts_only_attempts_after_the_initial_attempt_as_retries(
+    graph_catalog, tmp_path
+):
+    _, run_id = _mixed_run(graph_catalog)
+
+    report_path = LexicalRunReporter(graph_catalog.store).write_remediation_report(
+        run_id, tmp_path / "run"
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["counts_by_retry_outcome"] == {}
