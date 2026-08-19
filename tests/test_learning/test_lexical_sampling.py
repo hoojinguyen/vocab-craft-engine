@@ -78,6 +78,18 @@ def test_stratified_pilot_is_stable_and_has_requested_size(graph_catalog):
         "2501-3500",
     }
     assert first.inventory_sha256 == second.inventory_sha256
+    assert all(
+        key.startswith(
+            (
+                "1-500|kaikki|",
+                "501-1500|kaikki|",
+                "1501-2500|kaikki|",
+                "2501-3500|kaikki|",
+            )
+        )
+        for key in first.stratum_counts
+    )
+    assert {key.rsplit("|", 1)[1] for key in first.stratum_counts} == {"noun", "verb"}
 
 
 def test_stratified_pilot_rejects_invalid_and_oversized_requests(graph_catalog):

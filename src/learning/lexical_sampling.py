@@ -89,12 +89,12 @@ class LexicalPilotSampler:
             }
             if not available:
                 break
-            total_population = sum(available.values())
+            total_population = sum(len(grouped[key]) for key in strata)
             allocation = {key: 0 for key in available}
             fractional: list[tuple[float, tuple[str, str, str]]] = []
-            for key, population in available.items():
-                ideal = remaining * population / total_population
-                extra = min(population, int(ideal))
+            for key, capacity in available.items():
+                ideal = remaining * len(grouped[key]) / total_population
+                extra = min(capacity, int(ideal))
                 allocation[key] = extra
                 fractional.append((ideal - int(ideal), key))
             assigned = sum(allocation.values())
