@@ -78,12 +78,48 @@ class LexicalRunReporter:
     def write_remediation_report(
         self, validation_run_id: str, output_dir: Path
     ) -> Path:
+        run_row = (
+            self.store.connection()
+            .execute(
+                "SELECT selection_json, completed_at FROM validation_runs WHERE validation_run_id = ?",
+                [validation_run_id],
+            )
+            .fetchone()
+        )
+        if run_row is None:
+            raise ValueError(f"validation run {validation_run_id!r} does not exist")
+        selection = json.loads(str(run_row[0]))
+        checkpoint = (
+            self.store.connection()
+            .execute(
+                """
+            SELECT phase, last_input_key, processed_count, completed_at
+            FROM lexical_run_checkpoints
+            WHERE validation_run_id = ? AND phase = 'remediation'
+            """,
+                [validation_run_id],
+            )
+            .fetchone()
+        )
+        if run_row[1] is not None and (checkpoint is None or checkpoint[3] is None):
+            raise ValueError("completed remediation run has an incomplete checkpoint")
         snapshot_id = self._snapshot_id(validation_run_id)
+        selected_ids = tuple(str(value) for value in selection.get("input_ids", ()))
         input_total = int(
             self.store.fetch_value(
-                "SELECT count(*) FROM lexical_definition_inputs WHERE snapshot_id = ?",
-                [snapshot_id],
+                "SELECT count(*) FROM lexical_definition_inputs WHERE snapshot_id = ?"
+                + (
+                    " AND input_id IN (" + ",".join("?" for _ in selected_ids) + ")"
+                    if selected_ids
+                    else ""
+                ),
+                [snapshot_id, *selected_ids],
             )
+        )
+        input_filter = (
+            " AND input.input_id IN (" + ",".join("?" for _ in selected_ids) + ")"
+            if selected_ids
+            else ""
         )
         disposition_rows = (
             self.store.connection()
@@ -100,10 +136,13 @@ class LexicalRunReporter:
               ON disposition.input_id = input.input_id
              AND disposition.validation_run_id = ?
             WHERE input.snapshot_id = ?
+            """
+                + input_filter
+                + """
             ORDER BY input.frequency_rank, input.source_word_id,
                      input.source_definition_id, input.input_key
             """,
-                [validation_run_id, snapshot_id],
+                [validation_run_id, snapshot_id, *selected_ids],
             )
             .fetchall()
         )
@@ -119,6 +158,13 @@ class LexicalRunReporter:
         counts_by_state = self._count(row[8] for row in disposition_rows)
         if sum(counts_by_state.values()) != input_total:
             raise ValueError("remediation disposition counts do not reconcile")
+        missing_reason_count = sum(
+            1
+            for row in disposition_rows
+            if row[8] == "quarantined" and not json.loads(str(row[9]))
+        )
+        if missing_reason_count:
+            raise ValueError("quarantined dispositions are missing failure reasons")
         counts_by_rank_band = self._count(
             self._rank_band(int(row[6])) for row in disposition_rows
         )
@@ -177,6 +223,14 @@ class LexicalRunReporter:
             },
             "counts_by_source": counts_by_source,
             "counts_by_state": counts_by_state,
+            "selection": selection,
+            "checkpoint": {
+                "phase": None if checkpoint is None else str(checkpoint[0]),
+                "last_input_key": None if checkpoint is None else checkpoint[1],
+                "processed_count": 0 if checkpoint is None else int(checkpoint[2]),
+                "completed": checkpoint is not None and checkpoint[3] is not None,
+            },
+            "quarantine_with_missing_reason_count": missing_reason_count,
             "input_total": input_total,
             "samples": self._samples(validation_run_id, disposition_rows),
             "snapshot_id": snapshot_id,

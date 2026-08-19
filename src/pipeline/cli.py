@@ -126,6 +126,10 @@ def parse_arguments(args_list: list[str] | None = None):
     remediate_lexical.add_argument("--snapshot-id", required=True)
     remediate_lexical.add_argument("--validation-run-id")
     remediate_lexical.add_argument("--resume", action="store_true")
+    remediate_lexical.add_argument("--pilot-size", type=int)
+    remediate_lexical.add_argument("--pilot-seed")
+    remediate_lexical.add_argument("--batch-size", type=int, default=250)
+    remediate_lexical.add_argument("--output-dir")
     retry_lexical = curriculum_subparsers.add_parser(
         "retry-lexical-quarantine", help="Retry one open lexical quarantine case"
     )
