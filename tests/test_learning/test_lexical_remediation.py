@@ -152,6 +152,114 @@ def test_completed_and_resumed_runs_have_same_selection_disposition_and_candidat
     )
 
 
+def test_fixed_inventory_processes_only_selected_inputs(graph_catalog):
+    snapshot_id = _snapshot(graph_catalog)
+    selected = [
+        _append_input(
+            graph_catalog,
+            snapshot_id,
+            external_key=f"pilot:{index}",
+            word_id=index,
+            definition_id=index,
+            examples=[
+                {
+                    "id": index,
+                    "source_row_id": index,
+                    "text_en": "Read this book.",
+                    "text_vi": "Hãy đọc quyển sách này.",
+                    "source": "tatoeba",
+                }
+            ],
+        )
+        for index in (1, 2)
+    ]
+    omitted = _append_input(
+        graph_catalog,
+        snapshot_id,
+        external_key="pilot:omitted",
+        word_id=3,
+        definition_id=3,
+        examples=[
+            {
+                "id": 3,
+                "source_row_id": 3,
+                "text_en": "Read this book.",
+                "text_vi": "Hãy đọc quyển sách này.",
+                "source": "tatoeba",
+            }
+        ],
+    )
+    metadata = {"kind": "stratified_pilot_v1", "input_ids": selected}
+    report = LexicalRemediationService(graph_catalog.store).run(
+        snapshot_id,
+        validation_run_id="pilot-run",
+        input_ids=tuple(selected),
+        selection_metadata=metadata,
+        batch_size=1,
+    )
+    assert report.processed_count == 2
+    assert graph_catalog.store.connection().execute(
+        "SELECT input_id FROM lexical_input_dispositions WHERE validation_run_id = ?",
+        ["pilot-run"],
+    ).fetchall() == [(selected[0],), (selected[1],)]
+    assert (
+        graph_catalog.store.fetch_value(
+            "SELECT count(*) FROM lexical_input_dispositions WHERE input_id = ?",
+            [omitted],
+        )
+        == 0
+    )
+
+
+def test_fixed_inventory_resume_is_idempotent(graph_catalog):
+    snapshot_id = _snapshot(graph_catalog)
+    selected = tuple(
+        _append_input(
+            graph_catalog,
+            snapshot_id,
+            external_key=f"resume-pilot:{index}",
+            word_id=index,
+            definition_id=index,
+            examples=[
+                {
+                    "id": index,
+                    "source_row_id": index,
+                    "text_en": "Read this book.",
+                    "text_vi": "Hãy đọc quyển sách này.",
+                    "source": "tatoeba",
+                }
+            ],
+        )
+        for index in (1, 2, 3)
+    )
+    metadata = {"kind": "stratified_pilot_v1", "input_ids": list(selected)}
+    service = LexicalRemediationService(graph_catalog.store)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        service.run(
+            snapshot_id,
+            validation_run_id="resume-pilot",
+            input_ids=selected,
+            selection_metadata=metadata,
+            batch_size=2,
+            interrupt_after=2,
+        )
+    resumed = service.run(
+        snapshot_id,
+        validation_run_id="resume-pilot",
+        input_ids=selected,
+        selection_metadata=metadata,
+        batch_size=2,
+    )
+    assert resumed.processed_count == 3
+    assert (
+        graph_catalog.store.fetch_value(
+            "SELECT count(*) FROM lexical_remediation_attempts WHERE validation_run_id = ?",
+            ["resume-pilot"],
+        )
+        == 3
+    )
+
+
 def test_duplicate_inputs_map_to_one_canonical_key_and_same_selection_retry_is_idempotent(
     graph_catalog,
 ):

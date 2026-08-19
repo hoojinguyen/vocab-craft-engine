@@ -64,15 +64,32 @@ class LexicalRemediationService:
         snapshot_id: str,
         *,
         validation_run_id: str | None = None,
+        input_ids: tuple[str, ...] | None = None,
+        selection_metadata: dict[str, Any] | None = None,
+        batch_size: int = _BATCH_SIZE,
         interrupt_after: int | None = None,
     ) -> RemediationRunReport:
-        """Process a snapshot in stable 250-input batches and resume safely."""
+        """Process a fixed inventory or snapshot in bounded, resumable batches."""
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if input_ids is not None:
+            if not input_ids or len(set(input_ids)) != len(input_ids):
+                raise ValueError("input_ids must be non-empty and unique")
+            if selection_metadata is None or selection_metadata.get(
+                "input_ids"
+            ) != list(input_ids):
+                raise ValueError(
+                    "selection metadata must contain the exact input inventory"
+                )
+            self._validate_selected_inputs(snapshot_id, input_ids)
+        elif selection_metadata is None:
+            selection_metadata = {"kind": "full_snapshot_v1"}
         run_id = validation_run_id or str(uuid4())
         self.evidence_repository.create_validation_run(
             run_id,
             snapshot_id,
             LEXICAL_REMEDIATION_POLICY_VERSION,
-            LEXICAL_REMEDIATION_SELECTION,
+            {**LEXICAL_REMEDIATION_SELECTION, **(selection_metadata or {})},
         )
         checkpoint = self.evidence_repository.get_checkpoint(run_id, _REMEDIATION_PHASE)
         if checkpoint is not None and checkpoint.completed_at is not None:
@@ -82,10 +99,15 @@ class LexicalRemediationService:
         after_input_key = None if checkpoint is None else checkpoint.last_input_key
         processed_this_call = 0
         while True:
-            input_ids = self.evidence_repository.list_input_ids(
-                snapshot_id, after_input_key=after_input_key, limit=_BATCH_SIZE
-            )
-            if not input_ids:
+            if input_ids is None:
+                current_ids = self.evidence_repository.list_input_ids(
+                    snapshot_id, after_input_key=after_input_key, limit=batch_size
+                )
+            else:
+                current_ids = list(
+                    input_ids[processed_count : processed_count + batch_size]
+                )
+            if not current_ids:
                 self.evidence_repository.write_checkpoint(
                     run_id,
                     _REMEDIATION_PHASE,
@@ -95,7 +117,7 @@ class LexicalRemediationService:
                 )
                 self._complete_validation_run(run_id)
                 return self._report(run_id, snapshot_id, processed_count)
-            for input_id in input_ids:
+            for input_id in current_ids:
                 bundle = self.evidence_repository.get_input(
                     input_id, include_source_examples=False
                 )
@@ -117,6 +139,20 @@ class LexicalRemediationService:
                     and processed_this_call >= interrupt_after
                 ):
                     raise RuntimeError("remediation interrupted after checkpoint")
+
+    def _validate_selected_inputs(
+        self, snapshot_id: str, input_ids: tuple[str, ...]
+    ) -> None:
+        placeholders = ", ".join("?" for _ in input_ids)
+        count = self.store.fetch_value(
+            f"""
+            SELECT count(*) FROM lexical_definition_inputs
+            WHERE snapshot_id = ? AND input_id IN ({placeholders})
+            """,
+            [snapshot_id, *input_ids],
+        )
+        if int(count or 0) != len(input_ids):
+            raise ValueError("selection contains inputs outside snapshot")
 
     def retry_input(self, validation_run_id: str, input_id: str) -> InputDisposition:
         """Return the existing outcome for an immutable quarantined input.
