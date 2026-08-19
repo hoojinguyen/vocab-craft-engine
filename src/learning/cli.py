@@ -103,13 +103,61 @@ def run_parsed_curriculum_command(args: Any) -> int:
             return 0
         if command == "remediate-lexical":
             from src.learning.lexical_remediation import LexicalRemediationService
+            from src.learning.lexical_sampling import LexicalPilotSampler
 
             if args.resume and not args.validation_run_id:
                 raise ValueError("--resume requires --validation-run-id")
-            report = LexicalRemediationService(store).run(
-                args.snapshot_id, validation_run_id=args.validation_run_id
+            if args.batch_size <= 0:
+                raise ValueError("--batch-size must be positive")
+            if args.resume and args.pilot_size is not None:
+                raise ValueError(
+                    "--resume uses the stored pilot selection; omit --pilot-size"
+                )
+            output_dir = (
+                Path(args.output_dir)
+                if args.output_dir
+                else LEXICAL_53K_RUN_DIR / (args.validation_run_id or "remediation")
             )
+            input_ids = None
+            selection_metadata = {"kind": "full_snapshot_v1"}
+            if args.resume:
+                manifest_path = output_dir / "selection_manifest.json"
+                if manifest_path.exists():
+                    selection_metadata = json.loads(
+                        manifest_path.read_text(encoding="utf-8")
+                    )
+                    input_ids = tuple(selection_metadata.get("input_ids", ()))
+            if args.pilot_size is not None:
+                if not args.validation_run_id:
+                    raise ValueError("--pilot-size requires --validation-run-id")
+                if not args.pilot_seed:
+                    raise ValueError("--pilot-size requires --pilot-seed")
+                selection = LexicalPilotSampler(store).select(
+                    args.snapshot_id, args.pilot_size, args.pilot_seed
+                )
+                input_ids = selection.input_ids
+                selection_metadata = selection.as_metadata()
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "selection_manifest.json").write_text(
+                    json.dumps(selection_metadata, sort_keys=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            report = LexicalRemediationService(store).run(
+                args.snapshot_id,
+                validation_run_id=args.validation_run_id,
+                input_ids=input_ids,
+                selection_metadata=selection_metadata,
+                batch_size=args.batch_size,
+            )
+            if report.completed_at is not None:
+                from src.learning.lexical_reporting import LexicalRunReporter
+
+                report_path = LexicalRunReporter(store).write_remediation_report(
+                    report.validation_run_id, output_dir
+                )
             print(report.validation_run_id)
+            if report.completed_at is not None:
+                print(report_path)
             return 0
         if command == "retry-lexical-quarantine":
             from src.learning.lexical_remediation import LexicalRemediationService
