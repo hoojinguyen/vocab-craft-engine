@@ -165,6 +165,39 @@ def approved_snapshot_id(catalog: SourceCatalog, legacy_sqlite: Path) -> str:
     )
 
 
+def test_ranked_link_import_derives_rank_when_legacy_table_has_no_rank(
+    catalog: SourceCatalog, legacy_sqlite: Path, approved_snapshot_id: str
+):
+    with sqlite3.connect(legacy_sqlite) as connection:
+        connection.executescript("""
+            ALTER TABLE word_sentences RENAME TO word_sentences_with_rank;
+            CREATE TABLE word_sentences (
+                word_id INTEGER NOT NULL,
+                sentence_id INTEGER NOT NULL,
+                PRIMARY KEY (word_id, sentence_id)
+            );
+            INSERT INTO word_sentences SELECT word_id, sentence_id
+            FROM word_sentences_with_rank;
+            DROP TABLE word_sentences_with_rank;
+            """)
+    importer = SQLiteLexicalReferenceImporter(catalog)
+    with sqlite3.connect(legacy_sqlite) as connection:
+        count = importer._import_source_example_links(connection, approved_snapshot_id)
+    assert count == 3
+    assert (
+        catalog.store.fetch_value(
+            "SELECT min(link_rank) FROM lexical_word_evidence_links"
+        )
+        == 1
+    )
+    assert (
+        catalog.store.fetch_value(
+            "SELECT max(link_rank) FROM lexical_word_evidence_links"
+        )
+        == 3
+    )
+
+
 def test_import_vertical_slice_snapshots_only_policy_eligible_lexical_bundles(
     catalog: SourceCatalog, legacy_sqlite: Path, approved_snapshot_id: str
 ):

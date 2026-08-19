@@ -628,6 +628,72 @@ def test_append_source_evidence_links_deduplicates_sentence_value_and_word_link(
     )
 
 
+def test_append_source_evidence_links_uses_set_oriented_writes_for_a_batch(
+    catalog: SourceCatalog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A full corpus import must not issue two SQL statements per sentence link."""
+    source_file = tmp_path / "materialized.db"
+    source_file.write_bytes(b"materialized SQLite")
+    source = _approved_source().model_copy(
+        update={"sha256": hashlib.sha256(source_file.read_bytes()).hexdigest()}
+    )
+    catalog.register_source(source)
+    snapshot_id = catalog.record_source_snapshot(
+        source.asset_id, source_file, datetime(2026, 8, 18, tzinfo=UTC)
+    )
+    link_insert_calls: list[str] = []
+    transaction = catalog.store.transaction
+
+    class RecordingConnection:
+        def __init__(self, connection: Any):
+            self._connection = connection
+
+        def execute(self, sql: str, params: Any = None) -> Any:
+            normalized_sql = " ".join(sql.split())
+            if (
+                "INSERT INTO lexical_source_evidence" in normalized_sql
+                or "INSERT INTO lexical_word_evidence_links" in normalized_sql
+            ):
+                link_insert_calls.append(normalized_sql)
+            return self._connection.execute(sql, params)
+
+    @contextmanager
+    def recording_transaction() -> Iterator[RecordingConnection]:
+        with transaction() as connection:
+            yield RecordingConnection(connection)
+
+    monkeypatch.setattr(catalog.store, "transaction", recording_transaction)
+    links = [
+        SourceEvidenceLinkInput(
+            snapshot_id=snapshot_id,
+            source_word_id=10,
+            source_row_id=index,
+            source_name="tatoeba",
+            source_table="sentences",
+            link_rank=index,
+            value={
+                "kind": "linked",
+                "sentence_id": index,
+                "text_en": f"Sentence {index}.",
+                "text_vi": f"Câu {index}.",
+                "source": "tatoeba",
+            },
+        )
+        for index in range(1, 251)
+    ]
+
+    catalog.append_source_example_links(links)
+
+    assert len(link_insert_calls) == 2
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_source_evidence") == 250
+    )
+    assert (
+        catalog.store.fetch_value("SELECT count(*) FROM lexical_word_evidence_links")
+        == 250
+    )
+
+
 @pytest.mark.parametrize("source_word_id,source_row_id", [(0, 30), (10, -1)])
 def test_append_source_evidence_links_rejects_non_positive_source_ids(
     catalog: SourceCatalog, tmp_path: Path, source_word_id: int, source_row_id: int

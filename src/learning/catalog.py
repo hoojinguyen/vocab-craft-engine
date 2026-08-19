@@ -233,39 +233,47 @@ class SourceCatalog:
                     raise ValueError(
                         "source evidence requires an approved source snapshot"
                     )
-            for link, value_json, value_sha256, source_evidence_id in links:
-                connection.execute(
-                    """
-                    INSERT INTO lexical_source_evidence (
-                        source_evidence_id, snapshot_id, evidence_role, source_table,
-                        source_row_id, source_name, value_json, value_sha256
-                    ) VALUES (?, ?, 'example', ?, ?, ?, ?, ?)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    [
-                        source_evidence_id,
-                        link.snapshot_id,
-                        link.source_table,
-                        _positive_source_id(link.source_row_id),
-                        link.source_name,
-                        value_json,
-                        value_sha256,
-                    ],
+            connection.execute(
+                """
+                INSERT INTO lexical_source_evidence (
+                    source_evidence_id, snapshot_id, evidence_role, source_table,
+                    source_row_id, source_name, value_json, value_sha256
                 )
-                connection.execute(
-                    """
-                    INSERT INTO lexical_word_evidence_links (
-                        snapshot_id, source_word_id, source_evidence_id, link_rank
-                    ) VALUES (?, ?, ?, ?)
-                    ON CONFLICT DO NOTHING
-                    """,
+                SELECT unnest(?), unnest(?), 'example', unnest(?), unnest(?),
+                       unnest(?), unnest(?), unnest(?)
+                ON CONFLICT DO NOTHING
+                """,
+                [
+                    [source_evidence_id for _, _, _, source_evidence_id in links],
+                    [link.snapshot_id for link, _, _, _ in links],
+                    [link.source_table for link, _, _, _ in links],
                     [
-                        link.snapshot_id,
-                        _positive_source_id(link.source_word_id),
-                        source_evidence_id,
-                        int(link.link_rank),
+                        _positive_source_id(link.source_row_id)
+                        for link, _, _, _ in links
                     ],
+                    [link.source_name for link, _, _, _ in links],
+                    [value_json for _, value_json, _, _ in links],
+                    [value_sha256 for _, _, value_sha256, _ in links],
+                ],
+            )
+            connection.execute(
+                """
+                INSERT INTO lexical_word_evidence_links (
+                    snapshot_id, source_word_id, source_evidence_id, link_rank
                 )
+                SELECT unnest(?), unnest(?), unnest(?), unnest(?)
+                ON CONFLICT DO NOTHING
+                """,
+                [
+                    [link.snapshot_id for link, _, _, _ in links],
+                    [
+                        _positive_source_id(link.source_word_id)
+                        for link, _, _, _ in links
+                    ],
+                    [source_evidence_id for _, _, _, source_evidence_id in links],
+                    [int(link.link_rank) for link, _, _, _ in links],
+                ],
+            )
         return [source_evidence_id for _, _, _, source_evidence_id in links]
 
     def _register_source_once(self, source: SourceAssetInput) -> None:

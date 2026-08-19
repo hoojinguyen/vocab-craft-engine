@@ -523,9 +523,25 @@ class SQLiteLexicalReferenceImporter:
         self, connection: sqlite3.Connection, snapshot_id: str
     ) -> int:
         """Persist each linked bilingual source sentence once per source word."""
+        word_sentence_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(word_sentences)")
+        }
+        if "rank" in word_sentence_columns:
+            link_rank_expression = "word_sentences.rank"
+            order_expression = "word_sentences.rank"
+        else:
+            # Some production snapshots predate the rank column.  Derive a
+            # stable rank from sentence ID rather than inventing an arbitrary
+            # insertion-order dependency.
+            link_rank_expression = (
+                "ROW_NUMBER() OVER (PARTITION BY word_sentences.word_id "
+                "ORDER BY word_sentences.sentence_id)"
+            )
+            order_expression = "word_sentences.sentence_id"
         cursor = connection.execute(
-            """
-            SELECT word_sentences.word_id, sentences.id, word_sentences.rank,
+            f"""
+            SELECT word_sentences.word_id, sentences.id, {link_rank_expression},
                    sentences.text_en, sentences.text_vi, sentences.source
             FROM word_sentences
             JOIN words ON words.id = word_sentences.word_id
@@ -534,7 +550,7 @@ class SQLiteLexicalReferenceImporter:
               AND sentences.text_en IS NOT NULL
               AND sentences.text_vi IS NOT NULL
             ORDER BY words.frequency_rank, word_sentences.word_id,
-                     word_sentences.rank, sentences.id
+                     {order_expression}, sentences.id
             """,
             [MAX_FREQUENCY_RANK],
         )
